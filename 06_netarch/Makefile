@@ -10,7 +10,9 @@ SRCS-y := netarch.c net_context.c ring.c arp.c udp.c icmp.c port.c
 # Build using pkg-config variables if possible
 ifeq ($(shell pkg-config --exists libdpdk && echo 0),0)
 
-all: shared
+# dpdk-pdump installed by this DPDK build is statically linked. Use the same
+# DPDK linkage mode and PMD registration order in the primary process.
+all: static
 .PHONY: shared static
 shared: build/$(APP)-shared
 	ln -sf $(APP)-shared build/$(APP)
@@ -22,8 +24,14 @@ PKGCONF=pkg-config --define-prefix
 PC_FILE := $(shell $(PKGCONF) --path libdpdk)
 CFLAGS += -O3 $(shell $(PKGCONF) --cflags libdpdk)
 CFLAGS += -DALLOW_EXPERIMENTAL_API
-LDFLAGS_SHARED = $(shell $(PKGCONF) --libs libdpdk)
-LDFLAGS_STATIC = -Wl,-Bstatic $(shell $(PKGCONF) --static --libs libdpdk)
+# Force --no-as-needed so ALL DPDK libraries are linked, not just the ones the
+# app references directly. This makes every library's constructor register its
+# tailq, which a full secondary process (e.g. dpdk-pdump) requires; otherwise
+# the secondary panics with "Cannot init tail queues for objects".
+LDFLAGS_SHARED = $(shell $(PKGCONF) --libs libdpdk | sed 's/-Wl,--as-needed/-Wl,--no-as-needed/')
+# pkg-config already names DPDK archives explicitly (librte_*.a). Do not add
+# -Bstatic globally: system dependencies such as libc and libgcc stay dynamic.
+LDFLAGS_STATIC = $(shell $(PKGCONF) --static --libs libdpdk)
 
 build/$(APP)-shared: $(SRCS-y) Makefile $(PC_FILE) | build
 	$(CC) $(CFLAGS) $(SRCS-y) -o $@ $(LDFLAGS) $(LDFLAGS_SHARED)

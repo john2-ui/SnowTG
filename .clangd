@@ -1,0 +1,14 @@
+CompileFlags:
+  Add:
+    - -I/usr/local/include
+    - -I/usr/include/dbus-1.0
+    - -I/usr/lib/x86_64-linux-gnu/dbus-1.0/include
+    - -I/usr/include/libnl3
+    - -include
+    - rte_config.h
+    - -march=native
+    - -mrtm
+    - -DALLOW_EXPERIMENTAL_API
+
+Index:
+  Background: Build
