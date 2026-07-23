@@ -1,11 +1,12 @@
+/**
+ * @file net_addr.c
+ * @brief Registry and lookup operations for userspace sockets.
+ */
 #include "net_addr.h"
 
 struct local_addr *g_local_addr = NULL;
 
-int get_fd_from_bitmap(void) {
-        int fd = DEFAULT_FD_NUM;
-        return fd;
-}
+int get_fd_from_bitmap(void) { return DEFAULT_FD_NUM; }
 
 struct local_addr *get_local_addr_from_fd(int sockfd) {
         struct local_addr *addr;

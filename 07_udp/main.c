@@ -1,11 +1,12 @@
 /**
- * @file netarch.c
+ * @file main.c
  * @brief Entry point: EAL setup, the rx/tx I/O loop, the worker that
  *        dispatches packets to the protocol modules, and the ARP sweep timer.
  *
  * Data flow:
- *   NIC --rx--> in_ring --> pkt_worker --> {arp,udp,icmp}_handle --> out_ring
- *       --tx--> NIC
+ *   main lcore: NIC RX -> in ring; out ring -> NIC TX
+ *   worker:    in ring -> protocol handlers; socket send rings -> out ring
+ *   UDP app:   socket receive ring -> echo application -> socket send ring
  */
 #include "arp.h"
 #include "config.h"
@@ -14,10 +15,9 @@
 #include "net_context.h"
 #include "port.h"
 #include "ring.h"
-#include "socket_api.h"
 #include "udp.h"
+#include "udp_app.h"
 
-#include <netinet/in.h>
 #include <rte_cycles.h>
 #include <rte_eal.h>
 #include <rte_ethdev.h>
@@ -104,68 +104,12 @@ static int pkt_worker(void *arg) {
         return 0;
 }
 
-#define UDP_APP_RECV_BUFFER_SIZE 128
-/**
- * @brief
- *
- */
-static int udp_server_entry(__attribute__((unused)) void *arg) {
-
-        int connfd = nsocket(AF_INET, SOCK_DGRAM, 0);
-        if (connfd == -1) {
-                printf("sockfd failed\n");
-                return -1;
-        }
-
-        struct sockaddr_in localaddr, clientaddr; // struct sockaddr
-        memset(&localaddr, 0, sizeof(struct sockaddr_in));
-
-        localaddr.sin_port = htons(8889);
-        localaddr.sin_family = AF_INET;
-        localaddr.sin_addr.s_addr = inet_addr("192.168.21.2"); // 0.0.0.0
-
-        if (nbind(connfd, (struct sockaddr *)&localaddr, sizeof(localaddr)) <
-            0) {
-                LOG_ERROR("nbind failed");
-                return -1;
-        }
-
-        LOG_INFO("UDP server listening on " IP_FMT ":%u",
-                 IP_ARG(g_net.local_ip), rte_be_to_cpu_16(localaddr.sin_port));
-
-        char buffer[UDP_APP_RECV_BUFFER_SIZE] = {0};
-        socklen_t addrlen = sizeof(clientaddr);
-        while (1) {
-
-                if (nrecvfrom(connfd, buffer, UDP_APP_RECV_BUFFER_SIZE, 0,
-                              (struct sockaddr *)&clientaddr, &addrlen) < 0) {
-
-                        continue;
-
-                } else {
-
-                        printf("recv from %s:%d, data:%s\n",
-                               inet_ntoa(clientaddr.sin_addr),
-                               ntohs(clientaddr.sin_port), buffer);
-                        if (nsendto(connfd, buffer, strlen(buffer), 0,
-                                    (struct sockaddr *)&clientaddr,
-                                    sizeof(clientaddr)) < 0) {
-                                LOG_ERROR("nsendto failed");
-                        }
-                }
-        }
-
-        nclose(connfd);
-}
-
 #if ENABLE_ARP_SWEEP
 /**
  * @brief Timer callback: broadcast/known ARP requests across the /24 subnet.
  */
 static void arp_sweep_cb(__attribute__((unused)) struct rte_timer *timer,
                          void *arg) {
-        static const uint8_t broadcast_mac[RTE_ETHER_ADDR_LEN] = {
-            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
         struct rte_mempool *mp = (struct rte_mempool *)arg;
         struct inout_ring *ring = ring_instance();
 
@@ -174,7 +118,7 @@ static void arp_sweep_cb(__attribute__((unused)) struct rte_timer *timer,
                     (g_net.local_ip & 0x00FFFFFF) | (0xFF000000 & (i << 24));
 
                 uint8_t *known = arp_lookup(dst_ip);
-                const uint8_t *dst_mac = known ? known : broadcast_mac;
+                const uint8_t *dst_mac = known ? known : g_broadcast_mac;
 
                 struct rte_mbuf *arp = arp_build_pkt(
                     mp, RTE_ARP_OP_REQUEST, dst_mac, g_net.local_ip, dst_ip);
@@ -245,7 +189,7 @@ int main(int argc, char *argv[]) {
                          "main=%u worker=%u\n",
                          main_lcore, worker_lcore);
 
-        if (rte_eal_remote_launch(udp_server_entry, mp, app_lcore) < 0)
+        if (rte_eal_remote_launch(udp_app_entry, mp, app_lcore) < 0)
                 rte_exit(EXIT_FAILURE,
                          "failed to launch udp_server on lcore %u\n",
                          app_lcore);

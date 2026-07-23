@@ -16,13 +16,13 @@
 #define ENABLE_ARP 1
 /** Answer ICMP echo requests (ping). */
 #define ENABLE_ICMP 1
-/** Echo received UDP datagrams back to the sender. */
+/** Dispatch received UDP datagrams to the userspace socket layer. */
 #define ENABLE_UDP_ECHO 1
 /** Periodically sweep the subnet with ARP requests. */
 #define ENABLE_ARP_SWEEP 1
 /** Enable the packet-capture framework so dpdk-pdump can attach. */
 #define ENABLE_PDUMP 1
-/**  */
+/** Launch the example UDP echo application on a dedicated lcore. */
 #define ENABLE_UDP_APP 1
 
 /** Number of mbufs in the packet pool. */

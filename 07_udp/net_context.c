@@ -5,6 +5,8 @@
 #include <rte_ethdev.h>
 
 struct net_context g_net;
+const uint8_t g_broadcast_mac[RTE_ETHER_ADDR_LEN] = {0xFF, 0xFF, 0xFF,
+                                                     0xFF, 0xFF, 0xFF};
 
 void net_context_init(uint16_t port_id, uint32_t local_ip) {
         g_net.port_id = port_id;

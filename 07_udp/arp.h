@@ -17,39 +17,6 @@
 #include <stdint.h>
 
 /**
- * @brief Insert an item at the head of a doubly linked list.
- *
- * @param item Pointer to the item to insert.
- * @param list Head pointer of the list. It is updated by this macro.
- */
-#define LL_ADD(item, list)                                                     \
-        do {                                                                   \
-                (item)->prev = NULL;                                           \
-                (item)->next = (list);                                         \
-                if ((list) != NULL)                                            \
-                        (list)->prev = (item);                                 \
-                (list) = (item);                                               \
-        } while (0)
-
-/**
- * @brief Remove an item from a doubly linked list.
- *
- * @param item Pointer to the item to remove.
- * @param list Head pointer of the list. It is updated when removing the head.
- */
-#define LL_REMOVE(item, list)                                                  \
-        do {                                                                   \
-                if ((item)->prev != NULL)                                      \
-                        (item)->prev->next = (item)->next;                     \
-                if ((item)->next != NULL)                                      \
-                        (item)->next->prev = (item)->prev;                     \
-                if ((list) == (item))                                          \
-                        (list) = (item)->next;                                 \
-                (item)->prev = NULL;                                           \
-                (item)->next = NULL;                                           \
-        } while (0)
-
-/**
  * @brief One IPv4-to-Ethernet-address mapping in the ARP table.
  */
 struct arp_entry {

@@ -5,7 +5,8 @@
 APP = dpdk_udp
 
 # all source are stored in SRCS-y
-SRCS-y := main.c net_context.c ring.c arp.c udp.c icmp.c port.c socket_api.c net_addr.c
+SRCS-y := main.c net_context.c ring.c arp.c udp.c icmp.c port.c \
+	socket_api.c net_addr.c udp_app.c
 
 # Build using pkg-config variables if possible
 ifeq ($(shell pkg-config --exists libdpdk && echo 0),0)

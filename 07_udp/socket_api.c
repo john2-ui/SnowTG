@@ -1,12 +1,13 @@
 #include "socket_api.h"
+
 #include "arp.h"
 #include "config.h"
+#include "list.h"
 #include "log.h"
 #include "net_addr.h"
 #include "net_context.h"
-#include "ring.h"
 #include "udp.h"
-#include <bits/pthreadtypes.h>
+
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <pthread.h>
@@ -14,11 +15,19 @@
 #include <rte_ip.h>
 #include <rte_lcore.h>
 #include <rte_malloc.h>
-#include <rte_memcpy.h>
+#include <rte_mbuf.h>
 #include <rte_ring.h>
 #include <rte_udp.h>
 #include <string.h>
-// TODO: linux hook
+
+/** Release every packet still owned by a socket ring. */
+static void free_queued_packets(struct rte_ring *ring) {
+        struct rte_mbuf *mbuf;
+
+        while (rte_ring_sc_dequeue(ring, (void **)&mbuf) == 0)
+                rte_pktmbuf_free(mbuf);
+}
+
 int nsocket(__attribute__((unused)) int domain, int type,
             __attribute__((unused)) int protocol) {
         int fd = get_fd_from_bitmap();
@@ -30,11 +39,11 @@ int nsocket(__attribute__((unused)) int domain, int type,
                 return -1;
         }
 
+        memset(addr, 0, sizeof(*addr));
         addr->fd_ = fd;
 
-        if (type == SOCK_DGRAM) {
+        if (type == SOCK_DGRAM)
                 addr->protocol_ = IPPROTO_UDP;
-        }
 
         addr->recv_buf_ =
             rte_ring_create("recv_buf", RING_SIZE, rte_socket_id(),
@@ -49,15 +58,26 @@ int nsocket(__attribute__((unused)) int domain, int type,
                                           rte_socket_id(), RING_F_SC_DEQ);
         if (addr->send_buf_ == NULL) {
                 LOG_ERROR("rte_ring_create() failed");
+                rte_ring_free(addr->recv_buf_);
                 rte_free(addr);
                 return -1;
         }
 
-        pthread_cond_t blank_cond = PTHREAD_COND_INITIALIZER;
-        rte_memcpy(&addr->cond_, &blank_cond, sizeof(pthread_cond_t));
-
-        pthread_mutex_t blank_mutex = PTHREAD_MUTEX_INITIALIZER;
-        rte_memcpy(&addr->mutex_, &blank_mutex, sizeof(pthread_mutex_t));
+        if (pthread_mutex_init(&addr->mutex_, NULL) != 0) {
+                LOG_ERROR("pthread_mutex_init() failed");
+                rte_ring_free(addr->send_buf_);
+                rte_ring_free(addr->recv_buf_);
+                rte_free(addr);
+                return -1;
+        }
+        if (pthread_cond_init(&addr->cond_, NULL) != 0) {
+                LOG_ERROR("pthread_cond_init() failed");
+                pthread_mutex_destroy(&addr->mutex_);
+                rte_ring_free(addr->send_buf_);
+                rte_ring_free(addr->recv_buf_);
+                rte_free(addr);
+                return -1;
+        }
 
         LL_ADD(addr, g_local_addr);
 
@@ -153,13 +173,9 @@ ssize_t nsendto(int sockfd, const void *buf, size_t len,
         }
 
         const struct sockaddr_in *daddr = (const struct sockaddr_in *)dest_addr;
-        uint8_t *dst_mac = arp_lookup(daddr->sin_addr.s_addr);
-        static const uint8_t broadcast_mac[RTE_ETHER_ADDR_LEN] = {
-            0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+        const uint8_t *dst_mac = arp_lookup(daddr->sin_addr.s_addr);
         if (dst_mac == NULL)
-                dst_mac = (uint8_t *)
-                    broadcast_mac; // udp_out(): if dst_mac is broadcast mac,
-                                   // send arp request to get mac
+                dst_mac = g_broadcast_mac;
 
         struct rte_mbuf *mbuf = udp_build_pkt(
             g_net.mp, dst_mac, host->local_ip_, daddr->sin_addr.s_addr,
@@ -189,6 +205,16 @@ int nclose(int sockfd) {
                 return -1;
         }
 
+        /*
+         * Stop future lookups before releasing resources owned by this socket.
+         * The current design expects socket lifecycle calls to be serialized
+         * with packet processing by the application.
+         */
+        LL_REMOVE(host, g_local_addr);
+        free_queued_packets(host->recv_buf_);
+        free_queued_packets(host->send_buf_);
+        pthread_cond_destroy(&host->cond_);
+        pthread_mutex_destroy(&host->mutex_);
         rte_ring_free(host->recv_buf_);
         rte_ring_free(host->send_buf_);
         rte_free(host);

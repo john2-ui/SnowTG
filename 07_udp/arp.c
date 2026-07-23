@@ -1,5 +1,6 @@
 #include "arp.h"
 
+#include "list.h"
 #include "log.h"
 #include "net_context.h"
 

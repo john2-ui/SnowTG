@@ -26,6 +26,9 @@ struct net_context {
 /** Process-wide network identity, populated by net_context_init(). */
 extern struct net_context g_net;
 
+/** Ethernet broadcast address shared by ARP and unresolved UDP output. */
+extern const uint8_t g_broadcast_mac[RTE_ETHER_ADDR_LEN];
+
 /**
  * @brief Initialize the global context and read the port MAC address.
  *

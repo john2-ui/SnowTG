@@ -12,6 +12,20 @@
 #include <rte_udp.h>
 #include <string.h>
 
+static struct rte_ipv4_hdr *udp_ipv4_header(struct rte_mbuf *mbuf) {
+        struct rte_ether_hdr *eth =
+            rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
+        return (struct rte_ipv4_hdr *)(eth + 1);
+}
+
+static struct rte_udp_hdr *udp_header(struct rte_ipv4_hdr *ip) {
+        return (struct rte_udp_hdr *)(ip + 1);
+}
+
+static int mac_is_broadcast(const uint8_t *mac) {
+        return memcmp(mac, g_broadcast_mac, RTE_ETHER_ADDR_LEN) == 0;
+}
+
 struct rte_mbuf *udp_build_pkt(struct rte_mempool *mp, const uint8_t *dst_mac,
                                uint32_t src_ip, uint32_t dst_ip,
                                uint16_t src_port, uint16_t dst_port,
@@ -68,27 +82,9 @@ struct rte_mbuf *udp_build_pkt(struct rte_mempool *mp, const uint8_t *dst_mac,
 int udp_handle(struct rte_mempool *mp, struct rte_mbuf *mbuf) {
         struct rte_ether_hdr *eth =
             rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
-        struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *)(eth + 1);
-        struct rte_udp_hdr *udp = (struct rte_udp_hdr *)(ip + 1);
-
-        // uint16_t dgram_len = rte_be_to_cpu_16(udp->dgram_len);
-        // uint16_t payload_len = dgram_len - sizeof(struct rte_udp_hdr);
-
-        // LOG_INFO("udp " IP_FMT ":%u -> " IP_FMT ":%u len=%u",
-        //          IP_ARG(ip->src_addr), rte_be_to_cpu_16(udp->src_port),
-        //          IP_ARG(ip->dst_addr), rte_be_to_cpu_16(udp->dst_port),
-        //          payload_len);
-
-        // /* Echo the payload back to the sender with source/destination
-        // swapped.
-        //  */
-        // struct rte_mbuf *reply = udp_build_pkt(
-        //     mp, eth->src_addr.addr_bytes, ip->dst_addr, ip->src_addr,
-        //     udp->dst_port, udp->src_port, (uint8_t *)(udp + 1), payload_len);
-        // if (reply != NULL)
-        //         rte_ring_mp_enqueue_burst(out, (void **)&reply, 1, NULL);
-
-        // rte_pktmbuf_free(mbuf);
+        struct rte_ipv4_hdr *ip = udp_ipv4_header(mbuf);
+        struct rte_udp_hdr *udp = udp_header(ip);
+        (void)mp;
 
         uint16_t payload_len =
             rte_be_to_cpu_16(udp->dgram_len) - sizeof(struct rte_udp_hdr);
@@ -107,13 +103,6 @@ int udp_handle(struct rte_mempool *mp, struct rte_mbuf *mbuf) {
                 LOG_WARN("no socket for " IP_FMT ":%u proto=%u",
                          IP_ARG(ip->dst_addr), rte_be_to_cpu_16(udp->dst_port),
                          ip->next_proto_id);
-                for (struct local_addr *s = g_local_addr; s != NULL;
-                     s = s->next) {
-                        LOG_WARN("  bound fd=%d " IP_FMT ":%u proto=%u", s->fd_,
-                                 IP_ARG(s->local_ip_),
-                                 rte_be_to_cpu_16(s->local_port_),
-                                 s->protocol_);
-                }
                 rte_pktmbuf_free(mbuf);
                 return -1;
         }
@@ -135,33 +124,24 @@ int udp_handle(struct rte_mempool *mp, struct rte_mbuf *mbuf) {
 }
 
 int udp_out(struct rte_mempool *mp) {
-        // send all packets in the send buffer
-        struct local_addr *addr;
-        for (addr = g_local_addr; addr != NULL; addr = addr->next) {
+        for (struct local_addr *addr = g_local_addr; addr != NULL;
+             addr = addr->next) {
                 struct rte_mbuf *mbuf;
-                int nb_snd =
+                int dequeue_result =
                     rte_ring_sc_dequeue(addr->send_buf_, (void **)&mbuf);
-                if (nb_snd < 0)
+                if (dequeue_result < 0)
                         continue;
-
-                // LOG
 
                 struct rte_ether_hdr *eth =
                     rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
-                struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *)(eth + 1);
-                if (eth->dst_addr.addr_bytes[0] == 0xFF &&
-                    eth->dst_addr.addr_bytes[1] == 0xFF &&
-                    eth->dst_addr.addr_bytes[2] == 0xFF &&
-                    eth->dst_addr.addr_bytes[3] == 0xFF &&
-                    eth->dst_addr.addr_bytes[4] == 0xFF &&
-                    eth->dst_addr.addr_bytes[5] == 0xFF) {
-                        // broadcast mac
+                struct rte_ipv4_hdr *ip = udp_ipv4_header(mbuf);
+
+                if (mac_is_broadcast(eth->dst_addr.addr_bytes)) {
                         uint8_t *dst_mac = arp_lookup(ip->dst_addr);
                         if (dst_mac != NULL) {
                                 rte_memcpy(eth->dst_addr.addr_bytes, dst_mac,
                                            RTE_ETHER_ADDR_LEN);
                         } else {
-                                // send arp request to get mac
                                 struct rte_mbuf *arp =
                                     arp_build_pkt(mp, RTE_ARP_OP_REQUEST,
                                                   eth->dst_addr.addr_bytes,
@@ -193,9 +173,7 @@ int udp_out(struct rte_mempool *mp) {
                         continue;
                 }
 
-                struct rte_udp_hdr *udp =
-                    (struct rte_udp_hdr *)((struct rte_ipv4_hdr *)(eth + 1) +
-                                           1);
+                struct rte_udp_hdr *udp = udp_header(ip);
                 uint16_t payload_len = rte_be_to_cpu_16(udp->dgram_len) -
                                        (uint16_t)sizeof(struct rte_udp_hdr);
                 const char *payload = (const char *)(udp + 1);

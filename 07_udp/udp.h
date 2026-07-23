@@ -1,13 +1,12 @@
 /**
  * @file udp.h
- * @brief UDP packet build/handle helpers (simple echo service).
+ * @brief UDP packet construction, socket delivery, and egress helpers.
  */
 #ifndef NETARCH_UDP_H
 #define NETARCH_UDP_H
 
 #include <rte_mbuf.h>
 #include <rte_mempool.h>
-#include <rte_ring.h>
 #include <stdint.h>
 
 /**
@@ -33,21 +32,25 @@ struct rte_mbuf *udp_build_pkt(struct rte_mempool *mp, const uint8_t *dst_mac,
                                const uint8_t *data, uint16_t data_len);
 
 /**
- * @brief Handle one inbound UDP datagram by echoing it to the sender.
+ * @brief Deliver one inbound UDP datagram to its bound socket.
  *
- * The inbound mbuf is always freed before returning.
+ * On success ownership of @p mbuf transfers to the socket receive ring. If no
+ * socket matches or the ring is full, this function frees the mbuf.
  *
- * @param mp     Mempool used to allocate the mbuf.
+ * @param mp   Reserved mempool argument retained for handler API consistency.
  * @param mbuf Inbound frame (consumed by this call).
- *
+ * @return 0 when delivered, -1 when dropped.
  */
 int udp_handle(struct rte_mempool *mp, struct rte_mbuf *mbuf);
 
 /**
- * @brief
+ * @brief Move one pending datagram per socket toward the NIC output ring.
  *
- * @param mp
- * @return int
+ * If a destination MAC is unresolved, an ARP request is emitted and the UDP
+ * mbuf is returned to its socket send ring.
+ *
+ * @param mp Mempool used for ARP request packets.
+ * @return 0 after scanning the socket list.
  */
 int udp_out(struct rte_mempool *mp);
 
