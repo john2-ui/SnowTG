@@ -15,8 +15,7 @@
 #include "net_context.h"
 #include "port.h"
 #include "ring.h"
-#include "tcp.h"
-#include "udp.h"
+#include "socket.h"
 #include "udp_app.h"
 
 #include <netinet/in.h>
@@ -57,35 +56,33 @@ static void dispatch_packet(struct rte_mempool *mp, struct rte_mbuf *mbuf,
         if (eth->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
                 LOG_DEBUG("dropping non-IPv4 frame (ethertype=0x%04x)",
                           rte_be_to_cpu_16(eth->ether_type));
+                /* TODO: support IPv6 (RTE_ETHER_TYPE_IPV6) and ARP beyond IPv4.
+                 * Only ARP and IPv4 are handled today. */
                 rte_pktmbuf_free(mbuf);
                 return;
         }
 
         struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *)(eth + 1);
+        /* TODO: IP fragment reassembly. Fragmented IPv4 datagrams (non-zero
+         * fragment_offset / MF flag) are passed straight to the L4 handler,
+         * which only sees the first fragment; the rest are misparsed. */
 
         switch (ip->next_proto_id) {
-#if ENABLE_UDP_ECHO
-        case IPPROTO_UDP:
-                udp_handle(mp, mbuf);
-                return;
-#endif
-
-#if ENABLE_TCP_APP
-        case IPPROTO_TCP:
-                tcp_handle(mbuf);
-                rte_pktmbuf_free(mbuf);
-                return;
-#endif
-
 #if ENABLE_ICMP
         case IPPROTO_ICMP:
                 icmp_handle(mp, mbuf, out);
                 return;
 #endif
-        default:
+        default: {
+                const struct sock_ops *ops = sock_ops_lookup(ip->next_proto_id);
+                if (ops != NULL && ops->ingress != NULL) {
+                        ops->ingress(mbuf); /* ingress consumes mbuf */
+                        return;
+                }
                 LOG_DEBUG("dropping IPv4 proto %u", ip->next_proto_id);
                 rte_pktmbuf_free(mbuf);
                 return;
+        }
         }
 }
 
@@ -106,13 +103,16 @@ static int pkt_worker(void *arg) {
                 for (unsigned int i = 0; i < nb_rx; i++)
                         dispatch_packet(mp, mbufs[i], ring->out);
 
-#if ENABLE_UDP_APP
-                udp_out(mp);
-#endif
-
-#if ENABLE_TCP_APP
-                tcp_out(mp);
-#endif
+                /*
+                 * Drain each socket's send ring toward the NIC. Iterating the
+                 * unified socket list means any transport registered via
+                 * sock_ops is flushed here without per-protocol calls.
+                 */
+                for (struct nsock *sk = g_sock_list; sk != NULL;
+                     sk = sk->next) {
+                        if (sk->ops->tx_flush != NULL)
+                                sk->ops->tx_flush(sk, mp);
+                }
         }
 
         return 0;
@@ -209,6 +209,9 @@ int main(int argc, char *argv[]) {
                          app_lcore);
         LOG_INFO("udp_server scheduled on lcore %u", app_lcore);
 #endif
+        /* TODO: add a TCP echo/server application (analogous to udp_app_entry)
+         * to exercise the listen/accept/recv/send path once tcp_ops gains
+         * connect/listen/accept. No TCP app exists yet. */
 
         if (rte_eal_remote_launch(pkt_worker, mp, worker_lcore) < 0)
                 rte_exit(EXIT_FAILURE,

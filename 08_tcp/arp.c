@@ -55,6 +55,10 @@ void arp_table_add(uint32_t ip, const uint8_t *mac) {
 
         LL_ADD(entry, table->entries);
         table->count++;
+        /* TODO: ARP cache aging/eviction. Entries are never expired or
+         * replaced, so the table grows for the life of the process and stale
+         * MAC bindings persist forever. Add a last-seen timestamp and a
+         * periodic sweep (or an LRU cap). */
 
         LOG_INFO("arp learn " IP_FMT " -> " MAC_FMT " (entries=%d)", IP_ARG(ip),
                  MAC_ARG(mac), table->count);

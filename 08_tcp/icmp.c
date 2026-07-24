@@ -77,6 +77,8 @@ struct rte_mbuf *icmp_build_pkt(struct rte_mempool *mp, const uint8_t *dst_mac,
         icmp->icmp_cksum = 0;
         icmp->icmp_cksum =
             icmp_checksum((uint16_t *)icmp, sizeof(struct rte_icmp_hdr));
+        /* TODO: copy the echo request payload back into the reply. The current
+         * reply carries only the ICMP header, so ping payloads are lost. */
 
         return mbuf;
 }
@@ -89,6 +91,9 @@ void icmp_handle(struct rte_mempool *mp, struct rte_mbuf *mbuf,
         struct rte_icmp_hdr *icmp = (struct rte_icmp_hdr *)(ip + 1);
 
         if (icmp->icmp_type != RTE_IP_ICMP_ECHO_REQUEST) {
+                /* TODO: handle other ICMP types (destination unreachable, time
+                 * exceeded, parameter problem) -- at minimum to surface errors
+                 * to the UDP/TCP send paths. Everything non-echo is dropped. */
                 rte_pktmbuf_free(mbuf);
                 return;
         }

@@ -1,34 +1,41 @@
 /**
  * @file tcp.h
- * @brief Minimal TCP TCB table, passive open (server) 3-way handshake, and
- *        ingress/egress helpers.
+ * @brief TCP control block, table-driven state machine, and ingress/egress.
  *
- * Currently only the server side of the handshake is implemented: an inbound
- * SYN creates a stream in LISTEN, a SYN+ACK is queued, and a matching ACK
- * moves the stream to ESTABLISHED. Socket API unification with UDP is TODO.
+ * The TCP-specific connection state lives in @ref tcp_stream, which is embedded
+ * inside the unified @ref nsock (see socket.h) as @c nsock.u.tcp. The socket
+ * itself owns the fd, rings, local address, and synchronization primitives, so
+ * @ref tcp_stream only carries what is genuinely TCP-private: the peer 4-tuple,
+ * the connection status, and the send/receive sequence numbers.
+ *
+ * The state machine is table-driven: @ref tcp_state_ops indexes one handler per
+ * @ref TCP_STATUS, so adding a state or a transition is a one-line table edit
+ * plus a handler function instead of touching a hand-written switch.
+ *
+ * Server-side passive open (LISTEN -> SYN_RECV -> ESTABLISHED) is implemented;
+ * active open and teardown are stubbed (@ref tcp_state_drop) for now.
  */
 #ifndef NETARCH_TCP_H
 #define NETARCH_TCP_H
 
-#include "net_addr.h"
-
-#include <rte_ether.h>
-#include <rte_malloc.h>
-#include <rte_mempool.h>
-#include <rte_ring_core.h>
+#include <rte_mbuf.h>
 #include <rte_tcp.h>
 #include <stddef.h>
 #include <stdint.h>
-#include <sys/types.h>
+
+struct nsock; /* Forward declaration; full definition in socket.h. */
 
 /** Maximum number of TCP option words carried in a @ref tcp_fragment. */
 #define TCP_MAX_OPTIONS 10
 
 /**
  * @brief TCP connection state (subset of the classic TCP state machine).
+ *
+ * @c TCP_STATUS_MAX is one past the last real state and is used to size the
+ * state-handler table.
  */
 typedef enum _TCP_STATUS {
-        TCP_STATUS_CLOSED,
+        TCP_STATUS_CLOSED = 0,
         TCP_STATUS_LISTEN,
         TCP_STATUS_SYN_SENT,
         TCP_STATUS_SYN_RECV,
@@ -39,39 +46,25 @@ typedef enum _TCP_STATUS {
         TCP_STATUS_CLOSING,
         TCP_STATUS_FIN_WAIT_1,
         TCP_STATUS_FIN_WAIT_2,
+        TCP_STATUS_MAX,
 } TCP_STATUS;
 
 /**
- * @brief One TCP control block (TCB) / connection stream.
+ * @brief TCP-private connection state, embedded in @ref nsock.u.tcp.
  *
- * For the current server-only path, @c src_* identifies the remote peer
- * (client) and @c dst_* identifies the local endpoint, both taken from the
- * first inbound segment. Addresses and ports are in network byte order;
- * sequence numbers are in host byte order.
- *
- * TODO: Merge with UDP @c local_addr once a shared socket layer exists.
+ * @c remote_* identifies the peer; the local endpoint lives on the enclosing
+ * @ref nsock (@c local_ip / @c local_port). Addresses and ports are in network
+ * byte order; sequence numbers are in host byte order.
  */
 struct tcp_stream {
-        int fd; /**< Socket fd placeholder; unused until sock API lands. */
-
-        uint32_t src_ip;   /**< Remote IPv4 (network order). */
-        uint32_t dst_ip;   /**< Local IPv4 (network order). */
-        uint16_t src_port; /**< Remote TCP port (network order). */
-        uint16_t dst_port; /**< Local TCP port (network order). */
-        uint16_t proto;    /**< IP protocol (IPPROTO_TCP). */
-
-        uint8_t local_mac[RTE_ETHER_ADDR_LEN]; /**< Local Ethernet address. */
+        uint32_t remote_ip;   /**< Peer IPv4 (network order). */
+        uint16_t remote_port; /**< Peer TCP port (network order). */
+        uint16_t _pad;        /**< Keep the struct word-aligned. */
 
         uint32_t sent_seq; /**< Next sequence number to send (host order). */
         uint32_t recv_ack; /**< Ack number tracked for the peer (host order). */
 
         TCP_STATUS status; /**< Current connection state. */
-
-        struct rte_ring *recv_buf; /**< Inbound app payload fragments. */
-        struct rte_ring *send_buf; /**< Outbound @ref tcp_fragment queue. */
-
-        struct tcp_stream *prev; /**< Previous TCB in the table list. */
-        struct tcp_stream *next; /**< Next TCB in the table list. */
 };
 
 /**
@@ -100,96 +93,65 @@ struct tcp_fragment {
 };
 
 /**
- * @brief Global table of active TCP streams (TCB set).
+ * @brief Find an existing TCP connection by the 4-tuple.
+ *
+ * Scans the unified socket list for a TCP socket whose peer and local tuple
+ * match. The local half is read from the enclosing @ref nsock.
+ *
+ * @param remote_ip   Peer IPv4 (network order).
+ * @param local_ip    Local IPv4 (network order).
+ * @param remote_port Peer TCP port (network order).
+ * @param local_port  Local TCP port (network order).
+ * @return Matching socket, or NULL if none exists.
  */
-struct tcp_table {
-        int count; /**< Number of streams currently in @c tcb_set. */
-        struct tcp_stream *tcb_set; /**< Head of the TCB linked list. */
-};
+struct nsock *tcp_stream_search(uint32_t remote_ip, uint32_t local_ip,
+                                uint16_t remote_port, uint16_t local_port);
 
 /**
- * @brief Get the singleton TCP table, creating it on first use.
- * @return Pointer to the initialized table (never NULL).
+ * @brief Allocate a new TCP socket, seed an ISN, and register it.
+ *
+ * The socket starts in @c TCP_STATUS_LISTEN (server passive open). Rings, fd,
+ * and synchronization state are owned by the unified @ref nsock allocator.
+ *
+ * @param remote_ip   Peer IPv4 (network order).
+ * @param local_ip    Local IPv4 (network order).
+ * @param remote_port Peer TCP port (network order).
+ * @param local_port  Local TCP port (network order).
+ * @return Newly created socket (never NULL; aborts on allocation failure).
  */
-struct tcp_table *tcp_table_instance(void);
+struct nsock *tcp_stream_create(uint32_t remote_ip, uint32_t local_ip,
+                                uint16_t remote_port, uint16_t local_port);
 
 /**
- * @brief Find an existing stream by the 4-tuple.
+ * @brief Transition a TCP socket to a new status with uniform logging.
  *
- * @param src_ip   Remote IPv4 (network order).
- * @param dst_ip   Local IPv4 (network order).
- * @param src_port Remote TCP port (network order).
- * @param dst_port Local TCP port (network order).
- * @param proto    Unused; reserved for a unified socket lookup.
- * @return Matching stream, or NULL if none exists.
+ * Centralizing the transition makes the state machine easy to audit and
+ * extend: every status change goes through this one helper.
  */
-struct tcp_stream *tcp_stream_search(uint32_t src_ip, uint32_t dst_ip,
-                                     uint16_t src_port, uint16_t dst_port,
-                                     uint8_t proto);
-
-/**
- * @brief Allocate a new stream, seed an ISN, and insert it into the table.
- *
- * The stream starts in @c TCP_STATUS_LISTEN (server passive open).
- *
- * @param src_ip   Remote IPv4 (network order).
- * @param dst_ip   Local IPv4 (network order).
- * @param src_port Remote TCP port (network order).
- * @param dst_port Local TCP port (network order).
- * @param proto    Unused; reserved for a unified socket lookup.
- * @return Newly created stream (never NULL; aborts on allocation failure).
- */
-struct tcp_stream *tcp_stream_create(uint32_t src_ip, uint32_t dst_ip,
-                                     uint16_t src_port, uint16_t dst_port,
-                                     uint8_t proto);
-
-/**
- * @brief LISTEN-state handler: answer an inbound SYN with a queued SYN+ACK.
- *
- * On success the stream transitions to @c TCP_STATUS_SYN_RECV and a
- * @ref tcp_fragment is enqueued on @c stream->send_buf for @ref tcp_out.
- *
- * @param stream Connection in LISTEN.
- * @param tcphdr Inbound TCP header.
- * @return 0.
- */
-int tcp_stream_handle_listen(struct tcp_stream *stream,
-                             struct rte_tcp_hdr *tcphdr);
-
-/**
- * @brief SYN_RECV-state handler: complete the handshake on a matching ACK.
- *
- * Transitions the stream to @c TCP_STATUS_ESTABLISHED when the peer ACK
- * acknowledges the local ISN (+1).
- *
- * @param stream Connection in SYN_RECV.
- * @param tcp_hdr Inbound TCP header.
- * @return 0.
- */
-int tcp_stream_handle_syn_recv(struct tcp_stream *stream,
-                               struct rte_tcp_hdr *tcp_hdr);
+void tcp_stream_set_status(struct nsock *sk, TCP_STATUS new_status);
 
 /**
  * @brief Dispatch one inbound TCP frame through the connection state machine.
  *
- * Creates a stream on first sight, learns the peer MAC into the ARP table,
- * then routes the segment to the handler for the current status. Does not
- * free @p mbuf; the caller owns that.
+ * Parses the frame, finds or creates the matching socket, learns the peer MAC
+ * into the ARP table, then routes the segment to the handler for the current
+ * status. Always consumes @p mbuf (see sock_ops.h lifecycle contract).
  *
- * @param mbuf Inbound Ethernet/IPv4/TCP frame.
  * @return 0.
  */
-int tcp_handle(struct rte_mbuf *mbuf);
+int tcp_ingress(struct rte_mbuf *mbuf);
 
 /**
- * @brief Drain pending outbound fragments from every active stream.
+ * @brief Drain pending outbound fragments from one TCP socket to the NIC.
  *
- * For each stream in SYN_RECV or ESTABLISHED, dequeue one fragment, resolve
- * the peer MAC (emitting ARP if needed), build a packet, and enqueue it on
- * the NIC output ring.
+ * Dequeues one @ref tcp_fragment, resolves the peer MAC (emitting ARP if
+ * needed), builds a packet, and enqueues it on the NIC output ring.
  *
- * @param mp Mempool used for TCP and ARP packets.
+ * @return 0 after attempting one dequeue.
  */
-void tcp_out(struct rte_mempool *mp);
+int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp);
+
+/** Initial advertised window: 10 * default MSS. */
+#define TCP_INITIAL_WINDOW_SIZE 14600
 
 #endif /* NETARCH_TCP_H */
