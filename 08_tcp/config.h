@@ -24,6 +24,8 @@
 #define ENABLE_PDUMP 1
 /** Launch the example UDP echo application on a dedicated lcore. */
 #define ENABLE_UDP_APP 1
+/** */
+#define ENABLE_TCP_APP 1
 
 /** Number of mbufs in the packet pool. */
 #define NUM_MBUFS (4096 - 1)

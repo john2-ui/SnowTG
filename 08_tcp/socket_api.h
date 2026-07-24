@@ -1,5 +1,5 @@
 /**
- * @file socket_api.h
+ * @file socket_api.h(only for udp now)
  * @brief Minimal datagram socket API backed by DPDK rings.
  */
 #ifndef NETARCH_SOCKET_API_H

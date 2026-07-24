@@ -2,11 +2,11 @@
 # Copyright(c) 2010-2014 Intel Corporation
 
 # binary name
-APP = dpdk_udp
+APP = dpdk_tcp
 
 # all source are stored in SRCS-y
 SRCS-y := main.c net_context.c ring.c arp.c udp.c icmp.c port.c \
-	socket_api.c net_addr.c udp_app.c
+	socket_api.c net_addr.c udp_app.c tcp.c
 
 # Build using pkg-config variables if possible
 ifeq ($(shell pkg-config --exists libdpdk && echo 0),0)

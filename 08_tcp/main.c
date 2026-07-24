@@ -15,9 +15,11 @@
 #include "net_context.h"
 #include "port.h"
 #include "ring.h"
+#include "tcp.h"
 #include "udp.h"
 #include "udp_app.h"
 
+#include <netinet/in.h>
 #include <rte_cycles.h>
 #include <rte_eal.h>
 #include <rte_ethdev.h>
@@ -67,6 +69,14 @@ static void dispatch_packet(struct rte_mempool *mp, struct rte_mbuf *mbuf,
                 udp_handle(mp, mbuf);
                 return;
 #endif
+
+#if ENABLE_TCP_APP
+        case IPPROTO_TCP:
+                tcp_handle(mbuf);
+                rte_pktmbuf_free(mbuf);
+                return;
+#endif
+
 #if ENABLE_ICMP
         case IPPROTO_ICMP:
                 icmp_handle(mp, mbuf, out);
@@ -98,6 +108,10 @@ static int pkt_worker(void *arg) {
 
 #if ENABLE_UDP_APP
                 udp_out(mp);
+#endif
+
+#if ENABLE_TCP_APP
+                tcp_out(mp);
 #endif
         }
 
