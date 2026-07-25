@@ -392,30 +392,6 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
             sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
         (void)tcp_enqueue_fragment(sk, ack_f);
 
-        /*
-         * Debug echo: reflect the payload back to the peer.
-         * TODO: remove once a real TCP application drives tcp_send.
-         */
-        {
-                struct tcp_fragment *echo_f =
-                    tcp_make_fragment(sk, RTE_TCP_ACK_FLAG | RTE_TCP_PSH_FLAG,
-                                      sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
-                echo_f->payload_len = payload_len;
-                echo_f->payload = rte_malloc("tcp_payload", payload_len, 0);
-                if (echo_f->payload == NULL) {
-                        LOG_ERROR("tcp echo payload alloc failed");
-                        rte_free(echo_f);
-                } else {
-                        const uint8_t *data = rte_pktmbuf_mtod_offset(
-                            mbuf, const uint8_t *,
-                            sizeof(struct rte_ether_hdr) +
-                                sizeof(struct rte_ipv4_hdr) + hdrlen);
-                        rte_memcpy(echo_f->payload, data, payload_len);
-                        if (tcp_enqueue_fragment(sk, echo_f) == 0)
-                                sk->u.tcp.sent_seq += payload_len;
-                }
-        }
-
         /* TODO: honor the peer's advertised rx_win (hdr->rx_win) before letting
          * tcp_send enqueue more data -- there is no flow control / sliding
          * window yet. */
@@ -647,8 +623,7 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
 }
 
 ssize_t tcp_send(struct nsock *sk, const void *buf, size_t len,
-                 __attribute__((unused)) const struct sockaddr *dest,
-                 __attribute__((unused)) socklen_t addrlen) {
+                 __attribute__((unused)) int flags) {
         if (sk->u.tcp.status != TCP_STATUS_ESTABLISHED) {
                 LOG_ERROR("tcp_send: fd=%d not established (status=%s)", sk->fd,
                           tcp_status_str(sk->u.tcp.status));
@@ -699,8 +674,7 @@ ssize_t tcp_send(struct nsock *sk, const void *buf, size_t len,
 }
 
 ssize_t tcp_recv(struct nsock *sk, void *buf, size_t len,
-                 struct sockaddr *src_addr,
-                 __attribute__((unused)) socklen_t *addrlen) {
+                 __attribute__((unused)) int flags) {
         struct rte_mbuf *mbuf;
         int nb = -1;
         pthread_mutex_lock(&sk->mutex);
@@ -713,27 +687,30 @@ ssize_t tcp_recv(struct nsock *sk, void *buf, size_t len,
         struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *)(eth + 1);
         struct rte_tcp_hdr *tcp = (struct rte_tcp_hdr *)(ip + 1);
 
-        if (src_addr) {
-                struct sockaddr_in *sin = (struct sockaddr_in *)src_addr;
-                sin->sin_family = AF_INET;
-                sin->sin_port = tcp->src_port;
-                sin->sin_addr.s_addr = ip->src_addr;
-        }
-
         uint8_t hdrlen = (tcp->data_off >> 4) * 4;
         size_t payload_len = rte_be_to_cpu_16(ip->total_length) -
                              sizeof(struct rte_ipv4_hdr) - hdrlen;
-        const void *data = (const void *)((uint8_t *)tcp + hdrlen);
+        uint8_t *data = (uint8_t *)tcp + hdrlen;
 
         size_t n = len < payload_len ? len : payload_len;
         rte_memcpy(buf, data, n);
-        rte_pktmbuf_free(mbuf);
 
-        /* TODO: byte-stream reassembly; a short read currently drops the
-         * remainder of this segment. */
-        if (n < payload_len)
-                LOG_WARN("tcp_recv fd=%d short read: %zu of %zu bytes dropped",
-                         sk->fd, n, payload_len);
+        if (n < payload_len) {
+                /* Keep the unread tail so the next recv continues the stream.
+                 */
+                memmove(data, data + n, payload_len - n);
+                ip->total_length =
+                    rte_cpu_to_be_16((uint16_t)(sizeof(struct rte_ipv4_hdr) +
+                                                hdrlen + (payload_len - n)));
+                if (rte_ring_mp_enqueue(sk->recv_buf, mbuf) != 0) {
+                        LOG_ERROR("tcp_recv: recv_buf full while truncating, "
+                                  "dropping remainder");
+                        rte_pktmbuf_free(mbuf);
+                }
+                return (ssize_t)n;
+        }
+
+        rte_pktmbuf_free(mbuf);
         return (ssize_t)n;
 }
 
@@ -901,6 +878,8 @@ const struct sock_ops tcp_ops = {
     .tx_flush = tcp_tx_flush,
     .send = tcp_send,
     .recv = tcp_recv,
+    .sendto = NULL,
+    .recvfrom = NULL,
     .close = tcp_close,
     /* TODO: implement active open (tcp_ops.connect / SYN_SENT path).
      * Passive open (listen/accept) is implemented. */

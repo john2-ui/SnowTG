@@ -6,7 +6,7 @@
  * Data flow:
  *   main lcore: NIC RX -> in ring; out ring -> NIC TX
  *   worker:    in ring -> protocol handlers; socket send rings -> out ring
- *   UDP app:   socket receive ring -> echo application -> socket send ring
+ *   UDP/TCP app: socket receive ring -> echo application -> socket send ring
  */
 #include "arp.h"
 #include "config.h"
@@ -16,6 +16,7 @@
 #include "port.h"
 #include "ring.h"
 #include "socket.h"
+#include "tcp_app.h"
 #include "udp_app.h"
 
 #include <netinet/in.h>
@@ -195,23 +196,38 @@ int main(int argc, char *argv[]) {
                          "main lcore %u\n",
                          main_lcore);
 
+        unsigned int next_app_lcore = worker_lcore;
+
 #if ENABLE_UDP_APP
-        unsigned int app_lcore = rte_get_next_lcore(worker_lcore, 1, 0);
-        if (app_lcore == RTE_MAX_LCORE)
+        next_app_lcore = rte_get_next_lcore(next_app_lcore, 1, 0);
+        if (next_app_lcore == RTE_MAX_LCORE)
                 rte_exit(EXIT_FAILURE,
-                         "ENABLE_UDP_APP needs 3 lcores (e.g. -l 0-2), "
+                         "ENABLE_UDP_APP needs an extra lcore after worker "
+                         "(e.g. -l 0-2), main=%u worker=%u\n",
+                         main_lcore, worker_lcore);
+
+        if (rte_eal_remote_launch(udp_app_entry, mp, next_app_lcore) < 0)
+                rte_exit(EXIT_FAILURE,
+                         "failed to launch udp_server on lcore %u\n",
+                         next_app_lcore);
+        LOG_INFO("udp_server scheduled on lcore %u", next_app_lcore);
+#endif
+
+#if ENABLE_TCP_APP
+        next_app_lcore = rte_get_next_lcore(next_app_lcore, 1, 0);
+        if (next_app_lcore == RTE_MAX_LCORE)
+                rte_exit(EXIT_FAILURE,
+                         "ENABLE_TCP_APP needs an extra lcore after worker/UDP "
+                         "app (e.g. -l 0-3 when both apps are on), "
                          "main=%u worker=%u\n",
                          main_lcore, worker_lcore);
 
-        if (rte_eal_remote_launch(udp_app_entry, mp, app_lcore) < 0)
+        if (rte_eal_remote_launch(tcp_app_entry, mp, next_app_lcore) < 0)
                 rte_exit(EXIT_FAILURE,
-                         "failed to launch udp_server on lcore %u\n",
-                         app_lcore);
-        LOG_INFO("udp_server scheduled on lcore %u", app_lcore);
+                         "failed to launch tcp_server on lcore %u\n",
+                         next_app_lcore);
+        LOG_INFO("tcp_server scheduled on lcore %u", next_app_lcore);
 #endif
-        /* TODO: add a TCP echo/server application (analogous to udp_app_entry)
-         * to exercise nlisten/naccept/nrecvfrom/nsendto. tcp_ops.listen/accept
-         * are implemented; only the app entry point is missing. */
 
         if (rte_eal_remote_launch(pkt_worker, mp, worker_lcore) < 0)
                 rte_exit(EXIT_FAILURE,

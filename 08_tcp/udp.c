@@ -5,8 +5,8 @@
  *
  * Inbound:  udp_ingress -> find socket by (ip,port,proto) -> recv_buf
  * Outbound: udp_tx_flush -> arp resolve -> out ring -> NIC
- * App:      udp_send builds a datagram into send_buf; udp_recv pulls one from
- *           recv_buf.
+ * App:      udp_sendto builds a datagram into send_buf; udp_recvfrom pulls one
+ *           from recv_buf.
  */
 #include "udp.h"
 
@@ -154,13 +154,19 @@ int udp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
         return 0;
 }
 
-ssize_t udp_send(struct nsock *sk, const void *buf, size_t len,
-                 const struct sockaddr *dest_addr,
-                 __attribute__((unused)) socklen_t addrlen) {
+ssize_t udp_sendto(struct nsock *sk, const void *buf, size_t len,
+                   __attribute__((unused)) int flags,
+                   const struct sockaddr *dest_addr,
+                   __attribute__((unused)) socklen_t addrlen) {
         if (g_net.mp == NULL) {
                 LOG_ERROR("mbuf pool not initialized");
                 return -1;
         }
+        if (dest_addr == NULL) {
+                LOG_ERROR("udp_sendto: fd=%d missing dest", sk->fd);
+                return -1;
+        }
+
         const struct sockaddr_in *daddr = (const struct sockaddr_in *)dest_addr;
         const uint8_t *dst_mac = arp_lookup(daddr->sin_addr.s_addr);
         if (dst_mac == NULL)
@@ -181,16 +187,17 @@ ssize_t udp_send(struct nsock *sk, const void *buf, size_t len,
                 return -1;
         }
         LOG_INFO(
-            "udp_send fd=%d " IP_FMT ":%u -> " IP_FMT ":%u len=%zu data=%.*s",
+            "udp_sendto fd=%d " IP_FMT ":%u -> " IP_FMT ":%u len=%zu data=%.*s",
             sk->fd, IP_ARG(sk->local_ip), rte_be_to_cpu_16(sk->local_port),
             IP_ARG(daddr->sin_addr.s_addr), rte_be_to_cpu_16(daddr->sin_port),
             len, (int)len, (const char *)buf);
         return (ssize_t)len;
 }
 
-ssize_t udp_recv(struct nsock *sk, void *buf, size_t len,
-                 struct sockaddr *src_addr,
-                 __attribute__((unused)) socklen_t *addrlen) {
+ssize_t udp_recvfrom(struct nsock *sk, void *buf, size_t len,
+                     __attribute__((unused)) int flags,
+                     struct sockaddr *src_addr,
+                     __attribute__((unused)) socklen_t *addrlen) {
         struct rte_mbuf *mbuf;
         int nb = -1;
         pthread_mutex_lock(&sk->mutex);
@@ -249,8 +256,10 @@ const struct sock_ops udp_ops = {
     .protocol = IPPROTO_UDP,
     .ingress = udp_ingress,
     .tx_flush = udp_tx_flush,
-    .send = udp_send,
-    .recv = udp_recv,
+    .send = NULL,
+    .recv = NULL,
+    .sendto = udp_sendto,
+    .recvfrom = udp_recvfrom,
     .close = udp_close,
     .connect = NULL,
     .listen = NULL,

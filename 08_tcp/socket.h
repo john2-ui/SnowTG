@@ -7,13 +7,16 @@
  * local address, receive/send rings, blocking-wait synchronization, the
  * per-protocol @ref sock_ops, and list linkage). Transport-private state is
  * embedded in the @c u union -- TCP puts its @ref tcp_stream there; UDP has no
- * private state today.
+ * private peer state (the socket is the local 2-tuple only).
  *
- * The socket API entry points (nsocket/nbind/nsendto/nrecvfrom/nclose, plus
- * nconnect/nlisten/naccept for TCP) are thin dispatchers: they resolve the fd
- * to a @ref nsock and forward to @c sk->ops->... . The packet worker likewise
- * iterates @ref g_sock_list and calls @c sk->ops->tx_flush per socket, so no
- * transport-specific code lives in the API surface or the worker loop.
+ * Addressing model:
+ *   - UDP: socket <-> (local_ip, local_port). Each datagram carries its peer
+ *     via @c nsendto / @c nrecvfrom.
+ *   - TCP: socket <-> 4-tuple after accept/connect. Use @c nsend / @c nrecv.
+ *
+ * The socket API entry points are thin dispatchers: they resolve the fd to a
+ * @ref nsock and forward to @c sk->ops->... . The packet worker iterates
+ * @ref g_sock_list and calls @c sk->ops->tx_flush per socket.
  */
 #ifndef NETARCH_SOCKET_H
 #define NETARCH_SOCKET_H
@@ -112,8 +115,14 @@ struct nsock *nsock_from_4tuple(uint32_t remote_ip, uint32_t local_ip,
  */
 int nsocket(int domain, int type, int protocol);
 int nbind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
+/** Connected send (TCP). */
+ssize_t nsend(int sockfd, const void *buf, size_t len, int flags);
+/** Connected receive (TCP). */
+ssize_t nrecv(int sockfd, void *buf, size_t len, int flags);
+/** Datagram send (UDP); @p dest_addr is the peer for this packet. */
 ssize_t nsendto(int sockfd, const void *buf, size_t len, int flags,
                 const struct sockaddr *dest_addr, socklen_t addrlen);
+/** Datagram receive (UDP); @p src_addr receives the peer of this packet. */
 ssize_t nrecvfrom(int sockfd, void *buf, size_t len, int flags,
                   struct sockaddr *src_addr, socklen_t *addrlen);
 int nclose(int sockfd);

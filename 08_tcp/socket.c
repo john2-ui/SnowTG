@@ -225,26 +225,42 @@ int nbind(int sockfd, const struct sockaddr *addr,
         return 0;
 }
 
-ssize_t nsendto(int sockfd, const void *buf, size_t len,
-                __attribute__((unused)) int flags,
-                const struct sockaddr *dest_addr, socklen_t addrlen) {
+ssize_t nsend(int sockfd, const void *buf, size_t len, int flags) {
         struct nsock *sk = nsock_from_fd(sockfd);
         if (sk == NULL || sk->ops->send == NULL) {
-                LOG_ERROR("nsendto: bad fd=%d", sockfd);
+                LOG_ERROR("nsend: unsupported on fd=%d", sockfd);
                 return -1;
         }
-        return sk->ops->send(sk, buf, len, dest_addr, addrlen);
+        return sk->ops->send(sk, buf, len, flags);
 }
 
-ssize_t nrecvfrom(int sockfd, void *buf, size_t len,
-                  __attribute__((unused)) int flags, struct sockaddr *src_addr,
-                  socklen_t *addrlen) {
+ssize_t nrecv(int sockfd, void *buf, size_t len, int flags) {
         struct nsock *sk = nsock_from_fd(sockfd);
         if (sk == NULL || sk->ops->recv == NULL) {
-                LOG_ERROR("nrecvfrom: bad fd=%d", sockfd);
+                LOG_ERROR("nrecv: unsupported on fd=%d", sockfd);
                 return -1;
         }
-        return sk->ops->recv(sk, buf, len, src_addr, addrlen);
+        return sk->ops->recv(sk, buf, len, flags);
+}
+
+ssize_t nsendto(int sockfd, const void *buf, size_t len, int flags,
+                const struct sockaddr *dest_addr, socklen_t addrlen) {
+        struct nsock *sk = nsock_from_fd(sockfd);
+        if (sk == NULL || sk->ops->sendto == NULL) {
+                LOG_ERROR("nsendto: unsupported on fd=%d", sockfd);
+                return -1;
+        }
+        return sk->ops->sendto(sk, buf, len, flags, dest_addr, addrlen);
+}
+
+ssize_t nrecvfrom(int sockfd, void *buf, size_t len, int flags,
+                  struct sockaddr *src_addr, socklen_t *addrlen) {
+        struct nsock *sk = nsock_from_fd(sockfd);
+        if (sk == NULL || sk->ops->recvfrom == NULL) {
+                LOG_ERROR("nrecvfrom: unsupported on fd=%d", sockfd);
+                return -1;
+        }
+        return sk->ops->recvfrom(sk, buf, len, flags, src_addr, addrlen);
 }
 
 int nclose(int sockfd) {

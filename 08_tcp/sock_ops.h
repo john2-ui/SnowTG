@@ -50,13 +50,32 @@ struct sock_ops {
          */
         int (*tx_flush)(struct nsock *sk, struct rte_mempool *mp);
 
-        /** Application send (datagram or stream). */
+        /**
+         * Connected send (TCP). Peer comes from the TCB; @p dest is unused.
+         * NULL for connectionless transports.
+         */
         ssize_t (*send)(struct nsock *sk, const void *buf, size_t len,
-                        const struct sockaddr *dest, socklen_t addrlen);
+                        int flags);
 
-        /** Application receive (datagram or stream). */
-        ssize_t (*recv)(struct nsock *sk, void *buf, size_t len,
-                        struct sockaddr *src, socklen_t *addrlen);
+        /**
+         * Connected receive (TCP). NULL for connectionless transports.
+         */
+        ssize_t (*recv)(struct nsock *sk, void *buf, size_t len, int flags);
+
+        /**
+         * Datagram send (UDP). Socket is the local 2-tuple; @p dest is the
+         * peer for this packet. NULL for connection-oriented transports.
+         */
+        ssize_t (*sendto)(struct nsock *sk, const void *buf, size_t len,
+                          int flags, const struct sockaddr *dest,
+                          socklen_t addrlen);
+
+        /**
+         * Datagram receive (UDP). Fills @p src with the peer of this packet.
+         * NULL for connection-oriented transports.
+         */
+        ssize_t (*recvfrom)(struct nsock *sk, void *buf, size_t len, int flags,
+                            struct sockaddr *src, socklen_t *addrlen);
 
         /** Release the socket and every queued packet it still owns. */
         int (*close)(struct nsock *sk);

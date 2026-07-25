@@ -1,6 +1,9 @@
 /**
  * @file udp_app.c
  * @brief Example application built on the userspace datagram socket API.
+ *
+ * The UDP socket is only the local 2-tuple; each recvfrom/sendto carries the
+ * peer address for that datagram.
  */
 #include "udp_app.h"
 
@@ -53,7 +56,7 @@ int udp_app_entry(__attribute__((unused)) void *arg) {
                          rte_be_to_cpu_16(client_addr.sin_port), received,
                          (int)received, buffer);
 
-                if (nsendto(socket_fd, buffer, strlen(buffer), 0,
+                if (nsendto(socket_fd, buffer, (size_t)received, 0,
                             (struct sockaddr *)&client_addr,
                             sizeof(client_addr)) < 0)
                         LOG_ERROR("nsendto failed");

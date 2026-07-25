@@ -3,7 +3,8 @@
  * @brief UDP ops vector and packet construction helper.
  *
  * UDP behavior is exposed to the unified socket layer through @ref udp_ops.
- * The transport has no private state, so nothing is embedded in @ref nsock.
+ * A UDP socket is the local 2-tuple only; peer addresses travel with each
+ * datagram via @c sendto / @c recvfrom.
  */
 #ifndef NETARCH_UDP_H
 #define NETARCH_UDP_H
