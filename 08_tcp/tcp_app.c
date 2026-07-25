@@ -64,7 +64,7 @@ int tcp_app_entry(__attribute__((unused)) void *arg) {
                 while (1) {
                         ssize_t received =
                             nrecv(conn_fd, buffer, sizeof(buffer), 0);
-                        if (received < 0)
+                        if (received <= 0)
                                 break;
 
                         LOG_INFO("tcp app recv fd=%d len=%zd data=%.*s",
