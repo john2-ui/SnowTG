@@ -1,8 +1,6 @@
 # DPDK 程序调试方法与案例
 
-本文面向正在学习 DPDK 的开发者，介绍如何从日志、内核信息、Core Dump、
-二进制链接关系和 DPDK 多进程约束中定位问题。文中的案例来自
-`06_netarch` 项目开发过程；具体错误记录另见 `06_netarch/Error.md`。
+本文面向正在学习 DPDK 的开发者，介绍如何从日志、内核信息、Core Dump、 二进制链接关系和 DPDK 多进程约束中定位问题。文中的案例来自项目开发过程；具体错误记录另见 `目录下/Error.md`。
 
 ---
 
@@ -47,6 +45,8 @@
 
 ---
 
+
+
 ## 2. 建立故障时间线
 
 同时运行 primary 和 secondary 时，至少保留两个终端的输出：
@@ -83,7 +83,11 @@ primary，而不是 pdump 主动退出导致抓包停止。
 
 ---
 
+
+
 ## 3. 查看 Linux 内核崩溃日志
+
+
 
 ### 3.1 使用 journalctl
 
@@ -111,11 +115,13 @@ likely on CPU 0
 如何解读：
 
 - `segfault at 43c00`：被访问的虚拟地址。地址很小通常意味着 NULL 指针加偏移，
-  但仍需回溯确认。
+但仍需回溯确认。
 - `ip ...`：发生异常时的指令地址。
 - `in librte_mempool_cnxk.so`：崩溃指令属于哪个二进制或共享库。
 - `CPU 0`：发生故障的 CPU；在 DPDK 中可用于对应主 lcore/worker lcore。
 - `error 4`：x86 页错误信息之一，通常表示用户态读取不存在页面。
+
+
 
 ### 3.2 dmesg 作为替代
 
@@ -132,6 +138,8 @@ sudo dmesg -T | rg -i 'segfault|dpdk_netarch'
 错误地只检查 `udp.c`。
 
 ---
+
+
 
 ## 4. Core Dump 与 GDB
 
@@ -153,6 +161,8 @@ cat /proc/sys/kernel/core_pattern
 ulimit -c unlimited
 ```
 
+
+
 ### 4.2 使用 systemd-coredump
 
 若系统安装了对应组件：
@@ -168,6 +178,8 @@ sudo coredumpctl gdb dpdk_netarch
 ```bash
 sudo apt install systemd-coredump
 ```
+
+
 
 ### 4.3 GDB 常用命令
 
@@ -188,6 +200,8 @@ DPDK 是多线程轮询程序，不能只看当前线程，推荐：
 ```gdb
 thread apply all bt full
 ```
+
+
 
 ### 4.4 调试构建
 
@@ -211,6 +225,8 @@ addr2line -Cfipe build/dpdk_netarch-static 0x地址
 
 ---
 
+
+
 ## 5. 检查二进制与链接关系
 
 DPDK 多进程问题经常不是业务代码错误，而是 primary/secondary 构建环境不一致。
@@ -221,6 +237,8 @@ DPDK 多进程问题经常不是业务代码错误，而是 primary/secondary �
 file build/dpdk_netarch
 file "$(command -v dpdk-pdump)"
 ```
+
+
 
 ### 5.2 查看动态依赖
 
@@ -241,6 +259,8 @@ ldd "$(command -v dpdk-pdump)"
 ldd build/dpdk_netarch | rg -c 'librte'
 ```
 
+
+
 ### 5.3 查看 DPDK 版本与编译参数
 
 ```bash
@@ -249,6 +269,8 @@ pkg-config --cflags libdpdk
 pkg-config --libs libdpdk
 pkg-config --static --libs libdpdk
 ```
+
+
 
 ### 5.4 从 EAL 日志看链接模式
 
@@ -267,6 +289,8 @@ EAL: Detected static linkage of DPDK
 比较 primary 与 secondary 的这两行，是排查 DPDK 多进程问题的重要步骤。
 
 ---
+
+
 
 ## 6. DPDK 多进程调试检查表
 
@@ -297,7 +321,11 @@ sudo rm -f /var/run/dpdk/rte/mp_socket*
 
 ---
 
+
+
 ## 7. 案例一：Cannot initialize tailq: RTE_FIB
+
+
 
 ### 7.1 现象
 
@@ -306,6 +334,8 @@ EAL: Cannot initialize tailq: RTE_FIB
 EAL: Cannot init tail queues for objects
 EAL: PANIC in main(): Cannot init EAL
 ```
+
+
 
 ### 7.2 调查
 
@@ -351,7 +381,11 @@ EAL 报某个 tailq 不存在时：
 
 ---
 
+
+
 ## 8. 案例二：Failed to hotplug add device
+
+
 
 ### 8.1 现象
 
@@ -359,6 +393,8 @@ EAL 报某个 tailq 不存在时：
 EAL: Failed to hotplug add device
 vdev creation failed:create_mp_ring_vdev
 ```
+
+
 
 ### 8.2 调查
 
@@ -380,6 +416,8 @@ ls /usr/local/lib/x86_64-linux-gnu/dpdk/pmds-*/ | rg -i 'pcap|ring'
 dpkg -l | rg 'libpcap.*dev'
 ```
 
+
+
 ### 8.3 修复
 
 ```bash
@@ -390,6 +428,8 @@ ninja -C build
 sudo ninja -C build install
 sudo ldconfig
 ```
+
+
 
 ### 8.4 方法总结
 
@@ -402,7 +442,11 @@ sudo ldconfig
 
 ---
 
+
+
 ## 9. 案例三：启动 pdump 后 primary 在 mempool_cnxk 中崩溃
+
+
 
 ### 9.1 证据链
 
@@ -412,6 +456,8 @@ sudo ldconfig
 4. 内核指出崩溃位于 `librte_mempool_cnxk.so`。
 5. 当前硬件是 VMware VMXNET3，不应使用 CNXK mempool。
 6. primary 显示 shared linkage，pdump 显示 static linkage。
+
+
 
 ### 9.2 pdump 启用后发生了什么
 
@@ -436,6 +482,8 @@ primary 按自己的注册顺序解释
         ↓
 非法内存访问
 ```
+
+
 
 ### 9.3 最终修复方向
 
@@ -496,6 +544,8 @@ sudo dpdk-pdump -- \
 
 ---
 
+
+
 ## 10. DPDK 业务代码自身的常见检查
 
 外部工具触发崩溃不代表一定是 DPDK 库问题，也要检查业务代码。
@@ -539,7 +589,155 @@ for (unsigned int i = enqueued; i < nb_rx; i++)
 
 ---
 
-## 11. 推荐的完整调试流程
+
+
+## 11. 收不到包时的调试思路
+
+“看不到包”是最常见的故障表象，但它可能发生在数据通路的任何一段。盲目加日志
+往往事倍功半，应先把通路拆成几段，逐段确认包到底停在哪里，再聚焦到那一段加日志
+或抓包。
+
+### 11.1 先把通路分段
+
+一个典型 DPDK 应用的包路径是：
+
+```text
+对端发包 → 物理网卡 → NIC RX queue → rte_eth_rx_burst()
+   → ingress 分发 → 协议处理 → socket recv ring → 应用 recv()
+应用 send() → socket send ring → tx_flush → rte_eth_tx_burst()
+   → NIC TX queue → 物理网卡 → 对端收包
+```
+
+“看不到包”首先要确认是哪一段断掉。常见三种位置：
+
+1. **包根本没到本机网卡**：对端没发、路由不对、ARP 没解析、交换机丢包。
+2. **到了网卡但没进应用**：port 没 start、队列配置错误、RSS 把包分到别的
+  queue、promiscuous 未开导致目的 MAC 不匹配被硬件丢弃。
+3. **进了应用但没到上层**：`rx_burst` 拿到了但 ingress 没匹配到 socket、
+  ring 满丢包、校验失败被丢弃、TX 路径 ARP 未解析发不出去。
+
+
+
+### 11.2 关键路径加日志
+
+按通路从下往上加，每一段只确认“包有没有到这里”，不要一上来就打印包内容。建议
+的检查点：
+
+```c
+/* 1. RX 入口：确认从网卡收到了多少 */
+nb_rx = rte_eth_rx_burst(port_id, queue_id, rx, BURST);
+if (nb_rx)
+    LOG_DEBUG("rx_burst port=%u q=%u nb_rx=%u", port_id, queue_id, nb_rx);
+
+/* 2. ingress 分发：确认进入了协议处理 */
+const struct sock_ops *ops = sock_ops_lookup(ip->next_proto_id);
+if (ops == NULL) {
+    LOG_WARN("unknown proto=%u, drop", ip->next_proto_id);   /* 常见漏点 */
+    rte_pktmbuf_free(mbuf);
+    return;
+}
+LOG_DEBUG("%s ingress len=%u", ops->name, rte_pktmbuf_pkt_len(mbuf));
+
+/* 3. socket 匹配：确认找到了对应的 socket，而不是被丢弃 */
+if (sk == NULL) {
+    LOG_DEBUG("no socket match, drop");
+    rte_pktmbuf_free(mbuf);
+    return;
+}
+
+/* 4. ring 入队：确认没因为 ring 满而丢包 */
+if (rte_ring_sp_enqueue(ring, mbuf) != 0) {
+    LOG_WARN("recv ring full, drop");
+    rte_pktmbuf_free(mbuf);
+}
+
+/* 5. TX 出口：确认确实提交给了网卡 */
+nb_tx = rte_eth_tx_burst(port_id, queue_id, tx, n);
+LOG_DEBUG("tx_burst port=%u n=%u nb_tx=%u", port_id, n, nb_tx);
+```
+
+注意点：
+
+- 用计数器或“每 N 个包打一条”的方式，避免每个包都打印把日志冲掉。
+- `rx_burst` 一直返回 0，说明问题在网卡或队列；返回非 0 但上层没日志，说明问题
+在分发或匹配。
+- `tx_burst` 返回值小于提交数，说明网卡 TX 描述符不足或驱动反压，未提交的 mbuf
+仍归应用所有，需重试或释放。
+
+
+
+### 11.3 用抓包工具确认包的边界
+
+日志只能看到应用内部，抓包能确认“包是否真的到了网卡 / 从网卡发出”。两者配合才能
+区分是“没收到”还是“收到了但被业务丢了”。
+
+**dpdk-pdump 抓 DPDK 端口的 RX/TX**：
+
+```bash
+sudo dpdk-pdump -- \
+  --pdump 'port=0,queue=*,rx-dev=/tmp/rx.pcap,tx-dev=/tmp/tx.pcap'
+```
+
+- `rx.pcap` 有包：说明包已经到了 DPDK 端口的接收侧。
+- `rx.pcap` 无包但物理网卡侧（见下）有包：说明包没进 DPDK 端口，检查 port start、
+队列、MAC、promiscuous。
+- `tx.pcap` 有包：说明应用确实发出去了，问题在对端或链路。
+- `tx.pcap` 无包但应用 `tx_burst` 日志显示已提交：说明驱动层面没真正送出，检查
+TX 描述符、驱动状态。
+
+**物理网卡侧用 tcpdump 对照**（DPDK 接管端口后该网卡无法被内核抓包，因此需在
+对端机器或镜像口抓）：
+
+```bash
+# 在对端机器上抓，确认它确实发出/收到
+sudo tcpdump -i eth0 -nn host 10.0.0.2 -w /tmp/peer.pcap
+```
+
+**Wireshark 分析 pcap**：
+
+```bash
+wireshark /tmp/rx.pcap
+```
+
+重点看：
+
+- 以太网目的 MAC 是否匹配本端口（不匹配且未开 promiscuous 会被硬件丢）。
+- IP 目的地址是否本机。
+- ARP 是否完成（对端 MAC 未解析时 `tx_flush` 通常会发 ARP 请求并暂存包）。
+- 校验和：DPDK 网卡常做 TX checksum offload，pcap 里看到的是未计算的错误校验和，
+这是正常现象，不要误判为坏包。
+
+
+
+### 11.4 常见“看不到包”的根因清单
+
+
+| 现象                       | 可能原因                      | 排查方式                                         |
+| ------------------------ | ------------------------- | -------------------------------------------- |
+| `rx_burst` 恒为 0          | port 未 start / 未 link up  | 看 `rte_eth_dev_info`、link 状态日志               |
+| `rx_burst` 恒为 0          | 包进了别的 queue               | 检查 RSS 配置与 `queue_id`，或抓所有 queue             |
+| `rx_burst` 恒为 0          | 目的 MAC 不匹配且未开 promiscuous | `rte_eth_promiscuous_enable`                 |
+| 有 RX 无上层日志               | 协议号未注册 / socket 未匹配       | 看 ingress 的 `unknown proto` / `no socket` 日志 |
+| 有 RX 无 TX                | 对端 MAC 未解析（ARP 未完成）       | 看 ARP 表与 `tx_flush` 暂存队列                     |
+| 有 `tx_burst` 无 `tx.pcap` | TX 描述符不足 / 驱动反压           | 看 `nb_tx < n`，增加 TX 描述符或重试                   |
+| 间歇性丢包                    | ring 满丢包                  | 看 ring enqueue 返回值与 ring 计数                  |
+
+
+
+
+### 11.5 方法总结
+
+1. 先分段，确认“包停在哪一段”，再决定加日志还是抓包。
+2. 日志按通路从下往上加，每段只确认“有没有到”，先不打印内容。
+3. `rx.pcap` / `tx.pcap` / 对端 tcpdump 三者配合，区分“没收到”与“收到了被丢”。
+4. 一次只改一个变量（开 promiscuous、换 queue、修 ARP），复现后再判断。
+5. 把“在哪一段、什么现象、改成什么”记入 Error.md，形成可复用的排查路径。
+
+---
+
+
+
+## 12. 推荐的完整调试流程
 
 ```text
 1. 稳定复现
@@ -565,7 +763,9 @@ for (unsigned int i = enqueued; i < nb_rx; i++)
 
 ---
 
-## 12. 问题记录模板
+
+
+## 13. 问题记录模板
 
 每个问题建议按以下格式记录：
 
