@@ -19,11 +19,13 @@
 
 #include <netinet/in.h>
 #include <netinet/ip.h>
+#include <rte_bitops.h>
 #include <rte_ether.h>
 #include <rte_ip.h>
 #include <rte_lcore.h>
 #include <rte_malloc.h>
 #include <rte_mbuf_core.h>
+#include <rte_ring.h>
 #include <rte_tcp.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -80,6 +82,19 @@ static const char *tcp_flags_str(uint8_t flags) {
         return buf;
 }
 
+struct nsock *tcp_listener_lookup(uint32_t local_ip, uint16_t local_port) {
+        struct nsock *sk;
+        for (sk = g_sock_list; sk != NULL; sk = sk->next) {
+                if (sk->protocol != IPPROTO_TCP)
+                        continue;
+                if (sk->u.tcp.status != TCP_STATUS_LISTEN)
+                        continue;
+                if (sk->local_ip == local_ip && sk->local_port == local_port)
+                        return sk;
+        }
+        return NULL;
+}
+
 struct nsock *tcp_stream_search(uint32_t remote_ip, uint32_t local_ip,
                                 uint16_t remote_port, uint16_t local_port) {
         return nsock_from_4tuple(remote_ip, local_ip, remote_port, local_port,
@@ -103,6 +118,7 @@ static uint32_t tcp_next_isn(void) {
         return tcp_isn_state;
 }
 
+// This function is currently used by default to create a child tcp stream
 struct nsock *tcp_stream_create(uint32_t remote_ip, uint32_t local_ip,
                                 uint16_t remote_port, uint16_t local_port) {
         int fd = fd_alloc();
@@ -116,7 +132,7 @@ struct nsock *tcp_stream_create(uint32_t remote_ip, uint32_t local_ip,
         sk->local_port = local_port;
         sk->u.tcp.remote_ip = remote_ip;
         sk->u.tcp.remote_port = remote_port;
-        sk->u.tcp.status = TCP_STATUS_LISTEN;
+        sk->u.tcp.status = TCP_STATUS_SYN_RECV;
 
         sk->u.tcp.sent_seq = tcp_next_isn();
         sk->u.tcp.recv_ack = 0;
@@ -154,38 +170,57 @@ static struct tcp_fragment *tcp_fragment_alloc(void) {
         return f;
 }
 
-static int tcp_state_listen(struct nsock *sk, struct rte_tcp_hdr *hdr,
+static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
                             struct rte_mbuf *mbuf) {
         (void)mbuf;
         if (!(hdr->tcp_flags & RTE_TCP_SYN_FLAG)) {
-                LOG_DEBUG("tcp LISTEN ignore flags=%s from " IP_FMT ":%u",
-                          tcp_flags_str(hdr->tcp_flags),
-                          IP_ARG(sk->u.tcp.remote_ip),
-                          rte_be_to_cpu_16(sk->u.tcp.remote_port));
+
                 return 0;
         }
-        if (sk->u.tcp.status != TCP_STATUS_LISTEN)
+        if (listener->u.tcp.status != TCP_STATUS_LISTEN)
                 return 0;
 
+        // check backlog
+        if (rte_ring_count(listener->u.tcp.acceqt_queue) >=
+            listener->u.tcp.backlog) {
+                LOG_ERROR("tcp backlog full for fd=%d", listener->fd);
+                rte_pktmbuf_free(mbuf);
+                return 0;
+        }
+
+        struct nsock *child = tcp_stream_create(
+            listener->u.tcp.remote_ip, listener->local_ip,
+            listener->u.tcp.remote_port, listener->local_port);
+        child->u.tcp.listener =
+            listener; /**< this pointer will be used to find
+                         the listener in tcp_state_syn_recv() call */
+        if (child == NULL) {
+                LOG_ERROR("tcp stream create failed for fd=%d", listener->fd);
+                rte_pktmbuf_free(mbuf);
+                return 0;
+        }
+        child->u.tcp.status = TCP_STATUS_SYN_RECV;
+        rte_ring_mp_enqueue(listener->u.tcp.acceqt_queue, child);
+
+        LOG_INFO("tcp handshake [1/3] SYN rx " IP_FMT ":%u -> " IP_FMT
+                 ":%u seq=%u; reply SYN+ACK seq=%u ack=%u",
+                 IP_ARG(listener->u.tcp.remote_ip),
+                 rte_be_to_cpu_16(listener->u.tcp.remote_port),
+                 IP_ARG(listener->local_ip),
+                 rte_be_to_cpu_16(listener->local_port), ntohl(hdr->sent_seq),
+                 child->u.tcp.sent_seq, child->u.tcp.recv_ack);
+
         struct tcp_fragment *f = tcp_fragment_alloc();
-        f->src_port = sk->local_port;
-        f->dst_port = sk->u.tcp.remote_port;
-        f->sent_seq = sk->u.tcp.sent_seq;
+        f->src_port = child->local_port;
+        f->dst_port = listener->u.tcp.remote_port;
+        f->sent_seq = child->u.tcp.sent_seq;
         f->recv_ack = ntohl(hdr->sent_seq) + 1;
         f->tcp_flags = RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG;
         f->data_off = (5 << 4);
         f->rx_win = TCP_INITIAL_WINDOW_SIZE;
-        sk->u.tcp.recv_ack = f->recv_ack;
+        child->u.tcp.recv_ack = f->recv_ack;
+        rte_ring_mp_enqueue(child->send_buf, f);
 
-        LOG_INFO("tcp handshake [1/3] SYN rx " IP_FMT ":%u -> " IP_FMT
-                 ":%u seq=%u; reply SYN+ACK seq=%u ack=%u",
-                 IP_ARG(sk->u.tcp.remote_ip),
-                 rte_be_to_cpu_16(sk->u.tcp.remote_port), IP_ARG(sk->local_ip),
-                 rte_be_to_cpu_16(sk->local_port), ntohl(hdr->sent_seq),
-                 f->sent_seq, f->recv_ack);
-
-        rte_ring_mp_enqueue(sk->send_buf, f);
-        tcp_stream_set_status(sk, TCP_STATUS_SYN_RECV);
         return 0;
 }
 
@@ -220,6 +255,20 @@ static int tcp_state_syn_recv(struct nsock *sk, struct rte_tcp_hdr *hdr,
 
         sk->u.tcp.sent_seq += 1; /* the SYN consumes one sequence number */
         tcp_stream_set_status(sk, TCP_STATUS_ESTABLISHED);
+
+        // add to accept queue
+        struct nsock *listener = sk->u.tcp.listener;
+        if (listener != NULL && listener->u.tcp.acceqt_queue != NULL) {
+                if (rte_ring_mp_enqueue(listener->u.tcp.acceqt_queue, sk) !=
+                    0) {
+                        pthread_mutex_lock(&listener->mutex);
+                        pthread_cond_signal(&listener->cond);
+                        pthread_mutex_unlock(&listener->mutex);
+                } else {
+                        LOG_ERROR("tcp accept queue full for fd=%d",
+                                  listener->fd);
+                }
+        }
         return 0;
 }
 
@@ -393,20 +442,40 @@ int tcp_ingress(struct rte_mbuf *mbuf) {
         /* TODO: generate/accept RST for segments that match no connection or
          * that arrive in an invalid state; RST is currently ignored entirely.
          */
+
+        uint32_t remote_ip = iphdr->src_addr;
+        uint32_t local_ip = iphdr->dst_addr;
+        uint16_t remote_port = tcp_hdr->src_port;
+        uint16_t local_port = tcp_hdr->dst_port;
+
         struct nsock *sk =
-            tcp_stream_search(iphdr->src_addr, iphdr->dst_addr,
-                              tcp_hdr->src_port, tcp_hdr->dst_port);
-        if (sk == NULL)
-                sk = tcp_stream_create(iphdr->src_addr, iphdr->dst_addr,
-                                       tcp_hdr->src_port, tcp_hdr->dst_port);
+            tcp_stream_search(remote_ip, local_ip, remote_port, local_port);
 
-        TCP_STATUS st = sk->u.tcp.status;
-        int delivered = 0;
-        if (st < TCP_STATUS_MAX && tcp_state_ops[st].handle != NULL)
-                delivered = tcp_state_ops[st].handle(sk, tcp_hdr, mbuf);
+        // Existing connection (include syn_recv child connection)
+        if (sk != NULL) {
+                int delivered = 0;
+                TCP_STATUS st = sk->u.tcp.status;
+                if (st < TCP_STATUS_MAX && tcp_state_ops[st].handle != NULL) {
+                        delivered = tcp_state_ops[st].handle(sk, tcp_hdr, mbuf);
+                }
+                if (!delivered) {
+                        rte_pktmbuf_free(mbuf);
+                }
+        }
 
-        if (!delivered)
+        // syn packet(new connection)
+        if (tcp_hdr->tcp_flags & RTE_TCP_SYN_FLAG) {
+                struct nsock *listener =
+                    tcp_listener_lookup(local_ip, local_port);
+                if (listener != NULL) {
+                        (void)tcp_state_listen(listener, tcp_hdr, mbuf);
+                }
+                /* else TODO: RST*/
                 rte_pktmbuf_free(mbuf);
+                return 0;
+        }
+
+        rte_pktmbuf_free(mbuf);
         return 0;
 }
 
@@ -628,6 +697,51 @@ int tcp_close(struct nsock *sk) {
         return 0;
 }
 
+int tcp_listen(struct nsock *sk, int backlog) {
+        // sk is listener socket, no remote ip and port
+        sk->u.tcp.status = TCP_STATUS_LISTEN;
+        // The backlog needs to be rounded up to the nearest power of 2.
+        backlog = rte_align32pow2(backlog);
+        sk->u.tcp.backlog = backlog;
+        sk->u.tcp.remote_ip = sk->u.tcp.remote_port = 0;
+        char name[32];
+        snprintf(name, sizeof(name), "tcp_accept_%d", sk->fd);
+        sk->u.tcp.acceqt_queue =
+            rte_ring_create(name, backlog, rte_socket_id(), 0);
+        if (sk->u.tcp.acceqt_queue == NULL) {
+                LOG_ERROR("tcp_listen: acceqt_queue create failed");
+                return -1;
+        }
+        return 0;
+}
+
+int tcp_accept(struct nsock *sk, struct sockaddr *addr,
+               __attribute__((unused)) socklen_t *addrlen) {
+        if (sk->u.tcp.status != TCP_STATUS_LISTEN) {
+                LOG_ERROR("tcp_accept: fd=%d not listening", sk->fd);
+                return -1;
+        }
+        struct nsock *child;
+
+        pthread_mutex_lock(&sk->mutex);
+        while (rte_ring_sc_dequeue(sk->u.tcp.acceqt_queue, (void **)&child) <
+               0) {
+                // wait for listener socket to receive a ack packet
+                pthread_cond_wait(&sk->cond, &sk->mutex);
+        }
+        pthread_mutex_unlock(&sk->mutex);
+
+        // fill addr with remote ip and port
+        if (addr) {
+                struct sockaddr_in *sin = (struct sockaddr_in *)addr;
+                sin->sin_family = AF_INET;
+                sin->sin_port = child->u.tcp.remote_port;
+                sin->sin_addr.s_addr = child->u.tcp.remote_ip;
+        }
+
+        return child->fd;
+}
+
 const struct sock_ops tcp_ops = {
     .name = "tcp",
     .protocol = IPPROTO_TCP,
@@ -640,6 +754,6 @@ const struct sock_ops tcp_ops = {
      * as a real server with a backlog. Until then nconnect/nlisten/naccept
      * return -1 (see socket.c). */
     .connect = NULL,
-    .listen = NULL,
-    .accept = NULL,
+    .listen = tcp_listen,
+    .accept = tcp_accept,
 };

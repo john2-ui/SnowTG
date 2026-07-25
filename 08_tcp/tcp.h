@@ -61,6 +61,11 @@ struct tcp_stream {
         uint16_t remote_port; /**< Peer TCP port (network order). */
         uint16_t _pad;        /**< Keep the struct word-aligned. */
 
+        uint32_t backlog;              /**< Backlog of pending connections. */
+        struct rte_ring *acceqt_queue; /**< Queue of established connections. */
+
+        struct nsock *listener; /**< Pointer to the listener socket. */
+
         uint32_t sent_seq; /**< Next sequence number to send (host order). */
         uint32_t recv_ack; /**< Ack number tracked for the peer (host order). */
 
