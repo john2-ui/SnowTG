@@ -223,23 +223,95 @@ static int tcp_state_syn_recv(struct nsock *sk, struct rte_tcp_hdr *hdr,
         return 0;
 }
 
+static int tcp_enqueue_fragment(struct nsock *sk, struct tcp_fragment *f) {
+        if (rte_ring_mp_enqueue(sk->send_buf, f) != 0) {
+                LOG_ERROR("tcp send_buf full for fd=%d flags=0x%02x", sk->fd,
+                          f->tcp_flags);
+                if (f->payload)
+                        rte_free(f->payload);
+                rte_free(f);
+                return -1;
+        }
+        return 0;
+}
+
+/*
+ * Build a header-only (or payload-bearing) outbound fragment for @p sk.
+ * Ports and sequence numbers follow tcp_fragment conventions: ports network
+ * order, sent_seq/recv_ack/rx_win host order.
+ */
+static struct tcp_fragment *tcp_make_fragment(struct nsock *sk, uint8_t flags,
+                                              uint32_t sent_seq,
+                                              uint32_t recv_ack) {
+        struct tcp_fragment *f = tcp_fragment_alloc();
+        f->src_port = sk->local_port;
+        f->dst_port = sk->u.tcp.remote_port;
+        f->sent_seq = sent_seq;
+        f->recv_ack = recv_ack;
+        f->tcp_flags = flags;
+        f->data_off = (5 << 4);
+        f->rx_win = TCP_INITIAL_WINDOW_SIZE;
+        return f;
+}
+
 static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
                                  struct rte_mbuf *mbuf) {
         uint8_t hdrlen = (hdr->data_off >> 4) * 4;
         uint16_t payload_len =
             rte_be_to_cpu_16(tcp_ipv4_header(mbuf)->total_length) -
             sizeof(struct rte_ipv4_hdr) - hdrlen;
+
         if (payload_len == 0)
                 return 0; /* pure ACK: caller frees mbuf */
 
+        /* SYN is unexpected once established; ignore for now. */
+        if (hdr->tcp_flags & RTE_TCP_SYN_FLAG)
+                return 0;
+
         /* TODO: validate that hdr->sent_seq matches sk->u.tcp.recv_ack
          * (in-order delivery). Out-of-order, duplicate, or overlapping segments
-         * are currently neither detected nor reassembled -- they are delivered
-         * as they arrive, which corrupts the byte stream. */
-        sk->u.tcp.recv_ack = ntohl(hdr->sent_seq) + payload_len;
-        /* TODO: enqueue a pure ACK fragment onto sk->send_buf so the peer
-         * learns sk->u.tcp.recv_ack. Today no ACK is ever sent for received
-         * data, so the peer cannot retire its in-flight bytes. */
+         * are currently dropped rather than buffered/reassembled -- a full
+         * receive window / reassembly queue is still missing. */
+        uint32_t seq = ntohl(hdr->sent_seq);
+        if (seq != sk->u.tcp.recv_ack) {
+                LOG_DEBUG(
+                    "tcp ESTABLISHED drop ooo/dup seq=%u expect=%u len=%u", seq,
+                    sk->u.tcp.recv_ack, payload_len);
+                return 0;
+        }
+
+        /* In-order data: advance the next expected peer sequence number. */
+        sk->u.tcp.recv_ack += payload_len;
+
+        /* Pure ACK so the peer can retire its in-flight bytes. */
+        struct tcp_fragment *ack_f = tcp_make_fragment(
+            sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
+        (void)tcp_enqueue_fragment(sk, ack_f);
+
+        /*
+         * Debug echo: reflect the payload back to the peer.
+         * TODO: remove once a real TCP application drives tcp_send.
+         */
+        {
+                struct tcp_fragment *echo_f =
+                    tcp_make_fragment(sk, RTE_TCP_ACK_FLAG | RTE_TCP_PSH_FLAG,
+                                      sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
+                echo_f->payload_len = payload_len;
+                echo_f->payload = rte_malloc("tcp_payload", payload_len, 0);
+                if (echo_f->payload == NULL) {
+                        LOG_ERROR("tcp echo payload alloc failed");
+                        rte_free(echo_f);
+                } else {
+                        const uint8_t *data = rte_pktmbuf_mtod_offset(
+                            mbuf, const uint8_t *,
+                            sizeof(struct rte_ether_hdr) +
+                                sizeof(struct rte_ipv4_hdr) + hdrlen);
+                        rte_memcpy(echo_f->payload, data, payload_len);
+                        if (tcp_enqueue_fragment(sk, echo_f) == 0)
+                                sk->u.tcp.sent_seq += payload_len;
+                }
+        }
+
         /* TODO: honor the peer's advertised rx_win (hdr->rx_win) before letting
          * tcp_send enqueue more data -- there is no flow control / sliding
          * window yet. */
@@ -364,12 +436,13 @@ static struct rte_mbuf *tcp_build_pkt(struct rte_mempool *mp, uint32_t src_ip,
         tcp->rx_win = htons(f->rx_win);
         tcp->tcp_urp = f->tcp_urp;
         tcp->cksum = 0;
-        tcp->cksum = rte_ipv4_udptcp_cksum(ip, tcp);
 
         if (f->payload_len > 0)
                 rte_memcpy((uint8_t *)tcp + sizeof(struct rte_tcp_hdr) +
                                opt_bytes,
                            f->payload, f->payload_len);
+
+        tcp->cksum = rte_ipv4_udptcp_cksum(ip, tcp);
         return mbuf;
 }
 

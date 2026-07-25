@@ -66,6 +66,18 @@ flowchart LR
 - **worker lcore**：`ring->in` → `dispatch_packet` → `ops->ingress`；遍历 `g_sock_list` 调 `ops->tx_flush`。
 - **app lcore**：`udp_app_entry` 阻塞在 `nrecvfrom`，echo 回 `nsendto`。
 
+### 接收交付模型（设计建议）
+
+当前 TCP/UDP 的 `recv_buf` 直接挂整包 `mbuf`，应用侧 `nrecv` / `tcp_recv` 自己剥 eth/ip/tcp（或 udp）头再拷 payload。这是为了少一次分配与拷贝、先跑通路径的阶段性简化，**不是长期目标抽象**。
+
+更合理的分层是：
+
+- **协议层职责**：校验、（TCP）按序/重组、更新 ack、回 ACK、重传与窗口等；处理完成后把**已就绪的数据**交给应用。
+- **交付给应用的**：字节流或 payload（指针 + 长度），而不是仍带 L2/L3/L4 头的线包。
+- **不必**把 RX 数据再包装成发送侧的 `tcp_fragment`——那是 TX 描述符（主机侧字段 → `tcp_build_pkt`），不是通用接收缓冲。
+
+极致零拷贝时仍可把底层 buffer 指针交给应用，但应用看到的应是 **payload 视图**，而不是自己去解析三层头。等实现 short read 不丢数据、乱序重组、流式 `recv` 时，协议侧几乎必然要维护自己的接收缓冲（stream buffer），而不是继续把原始 `mbuf` 塞进 `recv_buf`。
+
 ---
 
 ## 二、已完成功能
