@@ -40,7 +40,7 @@
  * (UDP stores mbufs, TCP stores @ref tcp_fragment).
  */
 struct nsock {
-        int fd;           /**< Process-unique descriptor from fd_alloc(). */
+        int fd; /**< Descriptor from fd_alloc(), or -1 until tcp_accept(). */
         uint8_t protocol; /**< IPPROTO_UDP / IPPROTO_TCP. */
 
         uint32_t local_ip;   /**< Bound IPv4, network byte order. */
@@ -85,7 +85,8 @@ void fd_release(int fd);
 /**
  * @brief Allocate and register a @ref nsock with fresh, uniquely-named rings.
  *
- * @param fd       Descriptor from fd_alloc().
+ * @param fd       Descriptor from fd_alloc(), or -1 for an incomplete TCP
+ *                 child that will receive an fd later in tcp_accept.
  * @param protocol IP protocol number; selects the @ref sock_ops to bind.
  * @return Initialized socket, or NULL on allocation failure.
  */

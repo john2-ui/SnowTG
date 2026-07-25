@@ -210,8 +210,8 @@ int main(int argc, char *argv[]) {
         LOG_INFO("udp_server scheduled on lcore %u", app_lcore);
 #endif
         /* TODO: add a TCP echo/server application (analogous to udp_app_entry)
-         * to exercise the listen/accept/recv/send path once tcp_ops gains
-         * connect/listen/accept. No TCP app exists yet. */
+         * to exercise nlisten/naccept/nrecvfrom/nsendto. tcp_ops.listen/accept
+         * are implemented; only the app entry point is missing. */
 
         if (rte_eal_remote_launch(pkt_worker, mp, worker_lcore) < 0)
                 rte_exit(EXIT_FAILURE,

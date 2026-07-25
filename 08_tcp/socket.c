@@ -74,18 +74,21 @@ struct nsock *nsock_alloc(int fd, uint8_t protocol) {
         const struct sock_ops *ops = sock_ops_lookup(protocol);
         if (ops == NULL) {
                 LOG_ERROR("nsock_alloc: unknown protocol %u", protocol);
-                fd_release(fd);
+                if (fd >= 0)
+                        fd_release(fd);
                 return NULL;
         }
 
         struct nsock *sk = rte_malloc("nsock", sizeof(struct nsock), 0);
         if (sk == NULL) {
                 LOG_ERROR("rte_malloc(nsock) failed");
-                fd_release(fd);
+                if (fd >= 0)
+                        fd_release(fd);
                 return NULL;
         }
         memset(sk, 0, sizeof(*sk));
 
+        /* fd < 0: incomplete TCP child; real fd assigned in tcp_accept. */
         sk->fd = fd;
         sk->protocol = protocol;
         sk->ops = ops;
@@ -108,7 +111,8 @@ struct nsock *nsock_alloc(int fd, uint8_t protocol) {
                 if (sk->send_buf)
                         rte_ring_free(sk->send_buf);
                 rte_free(sk);
-                fd_release(fd);
+                if (fd >= 0)
+                        fd_release(fd);
                 return NULL;
         }
 
@@ -118,7 +122,8 @@ struct nsock *nsock_alloc(int fd, uint8_t protocol) {
                 rte_ring_free(sk->recv_buf);
                 rte_ring_free(sk->send_buf);
                 rte_free(sk);
-                fd_release(fd);
+                if (fd >= 0)
+                        fd_release(fd);
                 return NULL;
         }
 
@@ -141,6 +146,8 @@ void nsock_free(struct nsock *sk) {
 }
 
 struct nsock *nsock_from_fd(int fd) {
+        if (fd < 0)
+                return NULL;
         for (struct nsock *sk = g_sock_list; sk != NULL; sk = sk->next) {
                 if (sk->fd == fd)
                         return sk;
@@ -266,9 +273,6 @@ int nlisten(int sockfd, int backlog) {
                 LOG_ERROR("nlisten: unsupported on fd=%d", sockfd);
                 return -1;
         }
-        /* TODO: mark this socket as a TCP listener with a backlog queue, so
-         * tcp_ingress only creates child sockets for ports being listened on.
-         * Requires tcp_ops.listen (currently NULL). */
         return sk->ops->listen(sk, backlog);
 }
 
@@ -278,7 +282,5 @@ int naccept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
                 LOG_ERROR("naccept: unsupported on fd=%d", sockfd);
                 return -1;
         }
-        /* TODO: dequeue a completed (ESTABLISHED) child connection from the
-         * listen backlog and return its fd. Requires tcp_ops.accept. */
         return sk->ops->accept(sk, addr, addrlen);
 }

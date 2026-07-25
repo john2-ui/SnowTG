@@ -61,10 +61,18 @@ struct tcp_stream {
         uint16_t remote_port; /**< Peer TCP port (network order). */
         uint16_t _pad;        /**< Keep the struct word-aligned. */
 
-        uint32_t backlog;              /**< Backlog of pending connections. */
-        struct rte_ring *acceqt_queue; /**< Queue of established connections. */
+        /**
+         * Listen backlog. Caps incomplete (SYN_RECV) handshakes plus
+         * completed connections waiting in @c accept_queue.
+         */
+        uint32_t backlog;
+        /** Count of child sockets still in SYN_RECV for this listener. */
+        uint32_t syn_pending;
+        /** ESTABLISHED children waiting for naccept(); owned by listener. */
+        struct rte_ring *accept_queue;
 
-        struct nsock *listener; /**< Pointer to the listener socket. */
+        /** Parent listener; set on passive-open children, NULL otherwise. */
+        struct nsock *listener;
 
         uint32_t sent_seq; /**< Next sequence number to send (host order). */
         uint32_t recv_ack; /**< Ack number tracked for the peer (host order). */
@@ -113,16 +121,17 @@ struct nsock *tcp_stream_search(uint32_t remote_ip, uint32_t local_ip,
                                 uint16_t remote_port, uint16_t local_port);
 
 /**
- * @brief Allocate a new TCP socket, seed an ISN, and register it.
+ * @brief Allocate a new TCP child control block for a passive-open handshake.
  *
- * The socket starts in @c TCP_STATUS_LISTEN (server passive open). Rings, fd,
- * and synchronization state are owned by the unified @ref nsock allocator.
+ * Creates a socket in @c TCP_STATUS_SYN_RECV with @c fd == -1. A real fd is
+ * assigned later in @ref tcp_accept once the handshake completes, so a SYN
+ * flood cannot exhaust the process fd table.
  *
  * @param remote_ip   Peer IPv4 (network order).
  * @param local_ip    Local IPv4 (network order).
  * @param remote_port Peer TCP port (network order).
  * @param local_port  Local TCP port (network order).
- * @return Newly created socket (never NULL; aborts on allocation failure).
+ * @return Newly created socket, or NULL on allocation failure.
  */
 struct nsock *tcp_stream_create(uint32_t remote_ip, uint32_t local_ip,
                                 uint16_t remote_port, uint16_t local_port);
@@ -138,9 +147,10 @@ void tcp_stream_set_status(struct nsock *sk, TCP_STATUS new_status);
 /**
  * @brief Dispatch one inbound TCP frame through the connection state machine.
  *
- * Parses the frame, finds or creates the matching socket, learns the peer MAC
- * into the ARP table, then routes the segment to the handler for the current
- * status. Always consumes @p mbuf (see sock_ops.h lifecycle contract).
+ * Parses the frame, looks up an existing TCB by 4-tuple, or (for a bare SYN)
+ * a listening socket on the destination port. Learns the peer MAC into the ARP
+ * table, then routes the segment to the appropriate handler. Always consumes
+ * @p mbuf (see sock_ops.h lifecycle contract).
  *
  * @return 0.
  */
