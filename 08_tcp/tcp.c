@@ -414,6 +414,47 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
         return 1; /* mbuf ownership transferred to recv_buf */
 }
 
+static int tcp_state_last_ack(struct nsock *sk, struct rte_tcp_hdr *hdr,
+                              struct rte_mbuf *mbuf) {
+        // Passive close final step
+        (void)mbuf;
+        if (sk->u.tcp.status != TCP_STATUS_LAST_ACK)
+                return 0;
+
+        /* Peer retransmitted FIN (our ACK-of-FIN was lost): re-ACK. */
+        if (hdr->tcp_flags & RTE_TCP_FIN_FLAG) {
+                struct tcp_fragment *ack_f =
+                    tcp_make_fragment(sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
+                                      sk->u.tcp.recv_ack);
+                if (tcp_enqueue_fragment(sk, ack_f) == 0) {
+                        LOG_INFO("tcp LAST_ACK re-ACK peer FIN " IP_FMT
+                                 ":%u ack=%u",
+                                 IP_ARG(sk->u.tcp.remote_ip),
+                                 rte_be_to_cpu_16(sk->u.tcp.remote_port),
+                                 sk->u.tcp.recv_ack);
+                }
+        }
+
+        if (!(hdr->tcp_flags & RTE_TCP_ACK_FLAG))
+                return 0;
+
+        uint32_t acknum = ntohl(hdr->recv_ack);
+
+        if (acknum != sk->u.tcp.sent_seq) {
+                LOG_DEBUG(
+                    "tcp LAST_ACK ignore ack=%u expect=%u from " IP_FMT ":%u",
+                    acknum, sk->u.tcp.sent_seq, IP_ARG(sk->u.tcp.remote_ip),
+                    rte_be_to_cpu_16(sk->u.tcp.remote_port));
+                return 0;
+        }
+
+        tcp_stream_set_status(sk, TCP_STATUS_CLOSED);
+        tcp_drain_send(sk);
+        tcp_drain_recv(sk);
+        nsock_free(sk);
+        return 0;
+}
+
 /*
  * Default handler for every state that is not yet implemented. Each such state
  * needs its own real handler instead of this drop stub:
@@ -423,13 +464,14 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
  *                             SYN+ACK by sending ACK and entering ESTABLISHED.
  *   TCP_STATUS_FIN_WAIT_1  -> TODO: teardown -- our FIN sent, await ACK.
  *   TCP_STATUS_FIN_WAIT_2  -> TODO: teardown -- await peer FIN, then ACK +
- * TIME_WAIT. TCP_STATUS_CLOSING     -> TODO: simultaneous close path.
- *   TCP_STATUS_CLOSE_WAIT  -> TODO: peer FIN received; app must close, then
- * send FIN. TCP_STATUS_LAST_ACK    -> TODO: our FIN sent on a CLOSE_WAIT; await
- * final ACK. TCP_STATUS_TIME_WAIT   -> TODO: 2MSL wait before freeing the
- * socket.
+ *                             TIME_WAIT.
+ *   TCP_STATUS_CLOSING     -> TODO: simultaneous close path.
+ *   TCP_STATUS_CLOSE_WAIT  -> TODO: re-ACK peer FIN while waiting for app close
+ *                             (FIN itself is sent from tcp_close).
+ *   TCP_STATUS_TIME_WAIT   -> TODO: 2MSL wait before freeing the socket.
  *
- * Until these land, tcp_close() simply drops the queues without a FIN exchange.
+ * Passive close LAST_ACK is handled by tcp_state_last_ack. Until the remaining
+ * states land, other teardown paths in tcp_close() may still drop queues.
  */
 static int tcp_state_drop(struct nsock *sk, struct rte_tcp_hdr *hdr,
                           struct rte_mbuf *mbuf) {
@@ -453,7 +495,7 @@ static const struct tcp_state_ops tcp_state_ops[TCP_STATUS_MAX] = {
     [TCP_STATUS_SYN_RECV] = {tcp_state_syn_recv},
     [TCP_STATUS_ESTABLISHED] = {tcp_state_established},
     [TCP_STATUS_CLOSE_WAIT] = {tcp_state_drop},
-    [TCP_STATUS_LAST_ACK] = {tcp_state_drop},
+    [TCP_STATUS_LAST_ACK] = {tcp_state_last_ack},
     [TCP_STATUS_TIME_WAIT] = {tcp_state_drop},
     [TCP_STATUS_CLOSING] = {tcp_state_drop},
     [TCP_STATUS_FIN_WAIT_1] = {tcp_state_drop},
@@ -756,9 +798,14 @@ static void tcp_drain_recv(struct nsock *sk) {
 int tcp_close(struct nsock *sk) {
         LOG_INFO("tcp_close fd=%d status=%s", sk->fd,
                  tcp_status_str(sk->u.tcp.status));
-        /* TODO: perform a real FIN exchange (FIN_WAIT_1 -> FIN_WAIT_2 ->
-         * TIME_WAIT / CLOSE_WAIT -> LAST_ACK) instead of dropping the queues.
-         * This is the teardown counterpart of the tcp_state_drop stubs. */
+        /* TODO: active close (FIN_WAIT_1 -> FIN_WAIT_2 -> TIME_WAIT). Passive
+         * close is CLOSE_WAIT -> LAST_ACK -> CLOSED via tcp_state_last_ack. */
+
+        /* Already shutting down or done: keep the TCB so the worker can finish
+         * the handshake (LAST_ACK) or avoid a double free (CLOSED). */
+        if (sk->u.tcp.status == TCP_STATUS_LAST_ACK ||
+            sk->u.tcp.status == TCP_STATUS_CLOSED)
+                return 0;
 
         /* Listener teardown: completed children in accept_queue + half-open. */
         if (sk->u.tcp.accept_queue != NULL) {
@@ -793,22 +840,24 @@ int tcp_close(struct nsock *sk) {
                 sk->u.tcp.syn_pending = 0;
         }
 
-        // Passive close
+        /* Passive close: enqueue FIN, then wait for the peer's final ACK. */
         if (sk->u.tcp.status == TCP_STATUS_CLOSE_WAIT) {
                 struct tcp_fragment *fin_f =
                     tcp_make_fragment(sk, RTE_TCP_FIN_FLAG | RTE_TCP_ACK_FLAG,
                                       sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
-                if (tcp_enqueue_fragment(sk, fin_f) == 0)
-                        sk->u.tcp.sent_seq += 1;
-
+                if (tcp_enqueue_fragment(sk, fin_f) != 0) {
+                        LOG_ERROR("tcp_close: FIN enqueue failed fd=%d; stay "
+                                  "CLOSE_WAIT",
+                                  sk->fd);
+                        return -1;
+                }
+                sk->u.tcp.sent_seq += 1;
                 tcp_stream_set_status(sk, TCP_STATUS_LAST_ACK);
                 tcp_drain_recv(sk);
                 return 0;
         }
 
-        // Active close
-        // TODO: implement active close
-
+        /* Active close -- TODO: send FIN and enter FIN_WAIT_1. */
         tcp_drain_send(sk);
         tcp_drain_recv(sk);
         nsock_free(sk);

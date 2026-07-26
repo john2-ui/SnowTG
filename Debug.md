@@ -143,9 +143,73 @@ sudo dmesg -T | rg -i 'segfault|dpdk_netarch'
 
 ## 4. Core Dump 与 GDB
 
-内核日志只能提供有限信息。最可靠的方法仍是分析 Core Dump。
+内核日志只能提供有限信息。遇到 `Segmentation fault` 时，最可靠的方法是用 GDB
+现场复现，或事后分析 Core Dump。
 
-### 4.1 检查 Core Dump 设置
+### 4.1 调试构建（先开调试信息）
+
+发布构建常使用 `-O3` 且无 `-g`，栈回溯往往只有地址、看不到源码行号，变量也可能
+被优化掉。调试前建议临时改为：
+
+```make
+CFLAGS += -O0 -g $(shell $(PKGCONF) --cflags libdpdk)
+# 或更完整：
+CFLAGS += -O0 -g3 -fno-omit-frame-pointer
+```
+
+然后重新编译：
+
+```bash
+make clean && make
+```
+
+`-O0 -g` 最利于单步；若必须保持性能，至少加 `-g`（可保留 `-O3`），只是局部变量
+可能不可见。不要用调试构建做性能结论。
+
+
+
+### 4.2 直接用 GDB 跑起来（最常用）
+
+DPDK 需要 root，因此：
+
+```bash
+cd /path/to/app   # 例如 08_tcp
+sudo gdb --args ./build/dpdk_tcp
+```
+
+进入 GDB 后：
+
+```gdb
+(gdb) run
+```
+
+崩溃时会自动停住，然后：
+
+```gdb
+(gdb) bt              # 调用栈（最重要）
+(gdb) bt full         # 栈 + 局部变量
+(gdb) frame 0         # 切到最顶层（崩溃点）
+(gdb) list            # 看附近源码
+(gdb) info locals     # 当前帧局部变量
+(gdb) info args       # 当前帧参数
+(gdb) p 某个变量名     # 打印变量
+(gdb) p *指针         # 解引用看结构体
+```
+
+空指针 / 野指针崩溃时，常见输出类似：
+
+```text
+Program received signal SIGSEGV, Segmentation fault.
+0x... in tcp_process (...) at tcp.c:675
+```
+
+再执行 `bt` 就能看出是谁一路调到这里的。
+
+
+
+### 4.3 程序已经崩了：用 Core Dump
+
+#### 检查 Core Dump 设置
 
 ```bash
 ulimit -c
@@ -155,15 +219,20 @@ cat /proc/sys/kernel/core_pattern
 - `ulimit -c` 为 `0`：当前 shell 禁止生成传统 core 文件。
 - `core_pattern` 以 `|` 开头：崩溃信息会交给 apport/systemd-coredump 等程序。
 
-临时允许生成：
+临时允许生成并复现：
 
 ```bash
 ulimit -c unlimited
+sudo ./build/dpdk_tcp
+# 崩溃后查看 core
+ls -l core* /var/lib/apport/coredump 2>/dev/null
+sudo gdb ./build/dpdk_tcp ./core   # 或具体 core 路径
+(gdb) bt
 ```
 
+Ubuntu 上若启用了 apport，core 可能在 `/var/lib/apport/coredump/`。
 
-
-### 4.2 使用 systemd-coredump
+#### 使用 systemd-coredump
 
 若系统安装了对应组件：
 
@@ -181,7 +250,24 @@ sudo apt install systemd-coredump
 
 
 
-### 4.3 GDB 常用命令
+### 4.4 已经在跑：attach 上去
+
+```bash
+ps aux | grep dpdk_tcp
+sudo gdb -p <PID>
+```
+
+然后：
+
+```gdb
+(gdb) continue
+# 等它崩，或手动 Ctrl-C 再查
+(gdb) bt
+```
+
+
+
+### 4.5 GDB 常用命令
 
 进入 GDB 后：
 
@@ -191,6 +277,8 @@ bt full
 info threads
 thread apply all bt full
 frame 0
+info locals
+info args
 info registers
 disassemble /m
 ```
@@ -201,19 +289,50 @@ DPDK 是多线程轮询程序，不能只看当前线程，推荐：
 thread apply all bt full
 ```
 
+业务代码排查指针 / 复现路径时常用：
 
+```gdb
+(gdb) p stream
+(gdb) p *stream
+(gdb) p sock
+(gdb) p *sock
 
-### 4.4 调试构建
-
-发布构建常使用 `-O3`，变量可能被优化掉。需要回溯时可临时使用：
-
-```make
-CFLAGS += -O0 -g3 -fno-omit-frame-pointer
+(gdb) break tcp.c:675
+(gdb) break tcp_process
+(gdb) run
+(gdb) next          # 下一行（不进入函数）
+(gdb) step          # 进入函数
+(gdb) finish        # 跑完当前函数
+(gdb) continue
 ```
 
-重新构建后再复现。不要用调试构建做性能结论。
+条件断点与监视：
 
-### 4.5 使用 addr2line
+```gdb
+(gdb) break tcp.c:675 if sock->fd == 3
+(gdb) watch *stream
+(gdb) continue
+```
+
+
+
+### 4.6 Segfault 快速判断流程
+
+```text
+1. -g（或 -O0 -g）重编
+   ↓
+2. sudo gdb --args ./build/<app> → run
+   ↓
+3. 崩了看 bt / bt full
+   ↓
+4. 到崩溃帧看 info locals、可疑指针
+   ↓
+5. 在可疑函数设断点，单步复现
+```
+
+
+
+### 4.7 使用 addr2line
 
 已知二进制内偏移时：
 
