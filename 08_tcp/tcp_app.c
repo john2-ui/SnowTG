@@ -19,6 +19,7 @@
 #define TCP_APP_RECV_BUFFER_SIZE 128
 
 int tcp_app_entry(__attribute__((unused)) void *arg) {
+        int ret = 0;
         int listen_fd = nsocket(AF_INET, SOCK_STREAM, 0);
         if (listen_fd < 0) {
                 LOG_ERROR("tcp_app: nsocket failed");
@@ -34,12 +35,14 @@ int tcp_app_entry(__attribute__((unused)) void *arg) {
         if (nbind(listen_fd, (struct sockaddr *)&local_addr,
                   sizeof(local_addr)) < 0) {
                 LOG_ERROR("tcp_app: nbind failed");
-                return -1;
+                ret = -1;
+                goto out;
         }
 
         if (nlisten(listen_fd, TCP_APP_BACKLOG) < 0) {
                 LOG_ERROR("tcp_app: nlisten failed");
-                return -1;
+                ret = -1;
+                goto out;
         }
 
         LOG_INFO("TCP server listening on " IP_FMT ":%u",
@@ -81,5 +84,7 @@ int tcp_app_entry(__attribute__((unused)) void *arg) {
                 LOG_INFO("tcp_app closed fd=%d", conn_fd);
         }
 
-        return 0;
+out:
+        nclose(listen_fd);
+        return ret;
 }
