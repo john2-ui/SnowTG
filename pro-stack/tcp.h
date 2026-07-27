@@ -13,9 +13,11 @@
  * @ref TCP_STATUS, so adding a state or a transition is a one-line table edit
  * plus a handler function instead of touching a hand-written switch.
  *
- * Passive open (LISTEN -> SYN_RECV -> ESTABLISHED) and active open
- * (CLOSED -> SYN_SENT -> ESTABLISHED) are implemented; several teardown
- * states remain stubbed (@ref tcp_state_drop).
+ * Passive open (LISTEN -> SYN_RECV -> ESTABLISHED), active open
+ * (CLOSED -> SYN_SENT -> ESTABLISHED), and teardown (active FIN_WAIT_* /
+ * TIME_WAIT / CLOSING, passive CLOSE_WAIT / LAST_ACK) are implemented.
+ * CLOSED / LISTEN still use a drop stub for unexpected segments; RST
+ * generation for closed ports remains TODO.
  */
 #ifndef NETARCH_TCP_H
 #define NETARCH_TCP_H

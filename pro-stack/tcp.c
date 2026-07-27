@@ -10,7 +10,6 @@
 
 #include "arp.h"
 #include "config.h"
-#include "list.h"
 #include "log.h"
 #include "net_context.h"
 #include "pkt_frame.h"
@@ -273,12 +272,32 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                 pthread_mutex_lock(&sk->mutex);
                 pthread_cond_signal(&sk->cond);
                 pthread_mutex_unlock(&sk->mutex);
+        } else if (sk->u.tcp.status == TCP_STATUS_TIME_WAIT) {
+                tcp_stream_set_status(sk, TCP_STATUS_CLOSED);
+                tcp_drain_recv(sk);
+                tcp_drain_send(sk);
+                if (sk->fd < 0) {
+                        /* orphaned TCB: free immediately*/
+                        nsock_free(sk);
+                } else {
+                        /* call tcp_close()*/
+                        pthread_mutex_lock(&sk->mutex);
+                        pthread_cond_signal(&sk->cond);
+                        pthread_mutex_unlock(&sk->mutex);
+                }
         }
-        /* TODO: SYN_RECV retransmit, TIME_WAIT expiry, data RTO. */
+        /* TODO: SYN_RECV retransmit, data RTO. */
 }
 
 static void tcp_arm_syn_timer(struct nsock *sk, uint64_t delay_ms) {
         rte_timer_reset(&sk->u.tcp.timer, tcp_ms_to_cycles(delay_ms), SINGLE,
+                        tcp_timer_lcore(), tcp_timer_cb, sk);
+}
+
+static void tcp_enter_time_wait(struct nsock *sk) {
+        tcp_stream_set_status(sk, TCP_STATUS_TIME_WAIT);
+        sk->u.tcp.retries = 0;
+        rte_timer_reset(&sk->u.tcp.timer, tcp_ms_to_cycles(TCP_2MSL_MS), SINGLE,
                         tcp_timer_lcore(), tcp_timer_cb, sk);
 }
 
@@ -404,6 +423,27 @@ static int tcp_state_syn_recv(struct nsock *sk, struct rte_tcp_hdr *hdr,
         (void)mbuf;
         if (sk->u.tcp.status != TCP_STATUS_SYN_RECV)
                 return 0;
+
+        /* RST from peer: free the child TCB and keep listening */
+        if (hdr->tcp_flags & RTE_TCP_RST_FLAG) {
+                if (ntohl(hdr->sent_seq) != sk->u.tcp.recv_ack) {
+                        LOG_WARN("tcp SYN_RECV RST mismatch " IP_FMT
+                                 ":%u seq=%u expect=%u",
+                                 IP_ARG(sk->u.tcp.remote_ip),
+                                 rte_be_to_cpu_16(sk->u.tcp.remote_port),
+                                 ntohl(hdr->sent_seq), sk->u.tcp.recv_ack);
+                        return 0;
+                }
+                struct nsock *listener = sk->u.tcp.listener;
+                if (listener != NULL && listener->u.tcp.syn_pending > 0) {
+                        listener->u.tcp.syn_pending--;
+                }
+                rte_timer_stop(&sk->u.tcp.timer);
+                tcp_drain_send(sk);
+                tcp_drain_recv(sk);
+                nsock_free(sk);
+                return 0;
+        }
 
         /*
          * Peer lost our SYN+ACK and retransmitted SYN: resend SYN+ACK with the
@@ -586,29 +626,188 @@ static int tcp_state_last_ack(struct nsock *sk, struct rte_tcp_hdr *hdr,
         return 0;
 }
 
+static int tcp_state_time_wait(struct nsock *sk, struct rte_tcp_hdr *hdr,
+                               struct rte_mbuf *mbuf) {
+        (void)mbuf;
+        if (sk->u.tcp.status != TCP_STATUS_TIME_WAIT)
+                return 0;
+
+        /**peer retransmitted FIN (our ACK-of-FIN was lost): re-ACK. */
+        if (hdr->tcp_flags & RTE_TCP_FIN_FLAG) {
+                struct tcp_fragment *ack_f =
+                    tcp_make_fragment(sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
+                                      sk->u.tcp.recv_ack);
+                if (tcp_enqueue_fragment(sk, ack_f) == 0) {
+                        LOG_INFO("tcp TIME_WAIT re-ACK peer FIN " IP_FMT
+                                 ":%u ack=%u",
+                                 IP_ARG(sk->u.tcp.remote_ip),
+                                 rte_be_to_cpu_16(sk->u.tcp.remote_port),
+                                 sk->u.tcp.recv_ack);
+                }
+        }
+        return 0;
+}
+
+static int tcp_state_closing(struct nsock *sk, struct rte_tcp_hdr *hdr,
+                             struct rte_mbuf *mbuf) {
+
+        (void)mbuf;
+        if (sk->u.tcp.status != TCP_STATUS_CLOSING) {
+                return 0;
+        }
+
+        /** Peer retransmitted FIN (our ACK-of-FIN was lost): re-ACK. */
+        if (hdr->tcp_flags & RTE_TCP_FIN_FLAG) {
+                struct tcp_fragment *ack_f =
+                    tcp_make_fragment(sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
+                                      sk->u.tcp.recv_ack);
+                if (tcp_enqueue_fragment(sk, ack_f) == 0) {
+                        LOG_INFO("tcp CLOSING re-ACK peer FIN " IP_FMT
+                                 ":%u ack=%u",
+                                 IP_ARG(sk->u.tcp.remote_ip),
+                                 rte_be_to_cpu_16(sk->u.tcp.remote_port),
+                                 sk->u.tcp.recv_ack);
+                }
+        }
+
+        if (!(hdr->tcp_flags & RTE_TCP_ACK_FLAG))
+                return 0;
+
+        uint32_t acknum = ntohl(hdr->recv_ack);
+        if (acknum != sk->u.tcp.sent_seq) {
+                LOG_DEBUG(
+                    "tcp CLOSING ignore ack=%u expect=%u from " IP_FMT ":%u",
+                    acknum, sk->u.tcp.sent_seq, IP_ARG(sk->u.tcp.remote_ip),
+                    rte_be_to_cpu_16(sk->u.tcp.remote_port));
+                return 0;
+        }
+
+        LOG_INFO("tcp CLOSING rx ACK -> TIME_WAIT fd=%d", sk->fd);
+        tcp_enter_time_wait(sk);
+        return 0;
+}
+
+static int tcp_state_fin_wait_1(struct nsock *sk, struct rte_tcp_hdr *hdr,
+                                struct rte_mbuf *mbuf) {
+        int has_fin = !!(hdr->tcp_flags & RTE_TCP_FIN_FLAG);
+        int has_ack = !!(hdr->tcp_flags & RTE_TCP_ACK_FLAG);
+        int ack_ok = has_ack && (ntohl(hdr->recv_ack) == sk->u.tcp.sent_seq);
+        uint32_t seq = ntohl(hdr->sent_seq);
+
+        if (seq != sk->u.tcp.recv_ack) {
+                LOG_DEBUG("tcp FIN_WAIT_1 drop ooo/dup seq=%u expect=%u", seq,
+                          sk->u.tcp.recv_ack);
+                return 0;
+        }
+
+        if (has_fin) {
+                sk->u.tcp.recv_ack = seq + 1;
+                struct tcp_fragment *ack_f =
+                    tcp_make_fragment(sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
+                                      sk->u.tcp.recv_ack);
+                if (tcp_enqueue_fragment(sk, ack_f) == 0) {
+                        LOG_INFO("tcp FIN_WAIT_1 ACK peer FIN " IP_FMT
+                                 ":%u ack=%u",
+                                 IP_ARG(sk->u.tcp.remote_ip),
+                                 rte_be_to_cpu_16(sk->u.tcp.remote_port),
+                                 sk->u.tcp.recv_ack);
+                }
+
+                if (ack_ok) {
+                        tcp_enter_time_wait(sk);
+                } else {
+                        tcp_stream_set_status(sk, TCP_STATUS_CLOSING);
+                }
+                return 0;
+        }
+
+        if (ack_ok) {
+                tcp_stream_set_status(sk, TCP_STATUS_FIN_WAIT_2);
+                return 0;
+        }
+
+        LOG_DEBUG(
+            "tcp FIN_WAIT_1 drop seq=%u expect=%u len=%u flags=%s", seq,
+            sk->u.tcp.recv_ack,
+            (unsigned)(rte_be_to_cpu_16(tcp_ipv4_header(mbuf)->total_length) -
+                       sizeof(struct rte_ipv4_hdr) - (hdr->data_off >> 4) * 4),
+            tcp_flags_str(hdr->tcp_flags));
+        return 0; /* caller frees mbuf */
+}
+
+static int tcp_state_fin_wait_2(struct nsock *sk, struct rte_tcp_hdr *hdr,
+                                struct rte_mbuf *mbuf) {
+        (void)mbuf;
+        if (sk->u.tcp.status != TCP_STATUS_FIN_WAIT_2)
+                return 0;
+
+        /* Only peer FIN advances us; pure ACKs are ignored. */
+        if (!(hdr->tcp_flags & RTE_TCP_FIN_FLAG))
+                return 0;
+
+        uint32_t seq = ntohl(hdr->sent_seq);
+        if (seq != sk->u.tcp.recv_ack) {
+                LOG_DEBUG("tcp FIN_WAIT_2 drop ooo/dup seq=%u expect=%u", seq,
+                          sk->u.tcp.recv_ack);
+                return 0;
+        }
+
+        /* TODO: deliver any FIN-segment payload before consuming the FIN. */
+        sk->u.tcp.recv_ack = seq + 1;
+
+        struct tcp_fragment *ack_f = tcp_make_fragment(
+            sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
+        if (tcp_enqueue_fragment(sk, ack_f) == 0) {
+                LOG_INFO("tcp FIN_WAIT_2 ACK peer FIN " IP_FMT ":%u ack=%u",
+                         IP_ARG(sk->u.tcp.remote_ip),
+                         rte_be_to_cpu_16(sk->u.tcp.remote_port),
+                         sk->u.tcp.recv_ack);
+        }
+        LOG_INFO("tcp FIN_WAIT_2 rx FIN -> TIME_WAIT " IP_FMT ":%u ack=%u",
+                 IP_ARG(sk->u.tcp.remote_ip),
+                 rte_be_to_cpu_16(sk->u.tcp.remote_port), sk->u.tcp.recv_ack);
+        tcp_enter_time_wait(sk);
+
+        return 0;
+}
+
 /*
- * Default handler for every state that is not yet implemented. Each such state
- * needs its own real handler instead of this drop stub:
- *
- *   TCP_STATUS_CLOSED      -> TODO: RST handling for segments to a closed port.
- *   TCP_STATUS_SYN_SENT    -> handled by tcp_state_syn_sent.
- *   TCP_STATUS_FIN_WAIT_1  -> TODO: teardown -- our FIN sent, await ACK.
- *   TCP_STATUS_FIN_WAIT_2  -> TODO: teardown -- await peer FIN, then ACK +
- *                             TIME_WAIT.
- *   TCP_STATUS_CLOSING     -> TODO: simultaneous close path.
- *   TCP_STATUS_CLOSE_WAIT  -> TODO: re-ACK peer FIN while waiting for app close
- *                             (FIN itself is sent from tcp_close).
- *   TCP_STATUS_TIME_WAIT   -> TODO: 2MSL wait before freeing the socket.
- *
- * Passive close LAST_ACK is handled by tcp_state_last_ack. Until the remaining
- * states land, other teardown paths in tcp_close() may still drop queues.
+ * Peer retransmitted FIN while we wait for the app's nclose (CLOSE_WAIT).
+ * Re-ACK so the peer can retire its FIN if our first ACK-of-FIN was lost.
+ * Our own FIN is sent later from tcp_close().
+ */
+static int tcp_state_close_wait(struct nsock *sk, struct rte_tcp_hdr *hdr,
+                                struct rte_mbuf *mbuf) {
+        (void)mbuf;
+        if (sk->u.tcp.status != TCP_STATUS_CLOSE_WAIT)
+                return 0;
+
+        if (hdr->tcp_flags & RTE_TCP_FIN_FLAG) {
+                struct tcp_fragment *ack_f =
+                    tcp_make_fragment(sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
+                                      sk->u.tcp.recv_ack);
+                if (tcp_enqueue_fragment(sk, ack_f) == 0) {
+                        LOG_INFO("tcp CLOSE_WAIT re-ACK peer FIN " IP_FMT
+                                 ":%u ack=%u",
+                                 IP_ARG(sk->u.tcp.remote_ip),
+                                 rte_be_to_cpu_16(sk->u.tcp.remote_port),
+                                 sk->u.tcp.recv_ack);
+                }
+        }
+        return 0;
+}
+
+/*
+ * Fallback for states that still ignore unexpected segments:
+ *   TCP_STATUS_CLOSED  -> TODO: RST for segments to a closed port.
+ *   TCP_STATUS_LISTEN  -> real work is in tcp_state_listen via tcp_ingress.
  */
 static int tcp_state_drop(struct nsock *sk, struct rte_tcp_hdr *hdr,
                           struct rte_mbuf *mbuf) {
         (void)sk;
         (void)hdr;
         (void)mbuf;
-        return 0; /* TODO: implement the per-state handlers listed above. */
+        return 0;
 }
 
 struct tcp_state_ops {
@@ -624,12 +823,12 @@ static const struct tcp_state_ops tcp_state_ops[TCP_STATUS_MAX] = {
     [TCP_STATUS_SYN_SENT] = {tcp_state_syn_sent},
     [TCP_STATUS_SYN_RECV] = {tcp_state_syn_recv},
     [TCP_STATUS_ESTABLISHED] = {tcp_state_established},
-    [TCP_STATUS_CLOSE_WAIT] = {tcp_state_drop},
+    [TCP_STATUS_CLOSE_WAIT] = {tcp_state_close_wait},
     [TCP_STATUS_LAST_ACK] = {tcp_state_last_ack},
-    [TCP_STATUS_TIME_WAIT] = {tcp_state_drop},
-    [TCP_STATUS_CLOSING] = {tcp_state_drop},
-    [TCP_STATUS_FIN_WAIT_1] = {tcp_state_drop},
-    [TCP_STATUS_FIN_WAIT_2] = {tcp_state_drop},
+    [TCP_STATUS_TIME_WAIT] = {tcp_state_time_wait},
+    [TCP_STATUS_CLOSING] = {tcp_state_closing},
+    [TCP_STATUS_FIN_WAIT_1] = {tcp_state_fin_wait_1},
+    [TCP_STATUS_FIN_WAIT_2] = {tcp_state_fin_wait_2},
 };
 
 int tcp_ingress(struct rte_mbuf *mbuf) {
@@ -747,6 +946,9 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
         case TCP_STATUS_CLOSE_WAIT: /* ACK of peer FIN may still be queued */
         case TCP_STATUS_LAST_ACK:   /* our FIN after passive close */
         case TCP_STATUS_FIN_WAIT_1: /* our FIN after active close */
+        case TCP_STATUS_FIN_WAIT_2:
+        case TCP_STATUS_TIME_WAIT:
+        case TCP_STATUS_CLOSING:
                 break;
         default:
                 return 0;
@@ -929,8 +1131,33 @@ static void tcp_drain_recv(struct nsock *sk) {
 int tcp_close(struct nsock *sk) {
         LOG_INFO("tcp_close fd=%d status=%s", sk->fd,
                  tcp_status_str(sk->u.tcp.status));
-        /* TODO: active close (FIN_WAIT_1 -> FIN_WAIT_2 -> TIME_WAIT). Passive
-         * close is CLOSE_WAIT -> LAST_ACK -> CLOSED via tcp_state_last_ack. */
+
+        /**
+         * Active close from ESTABLISHED (or abort a half-open SYN_RECV child):
+         * enqueue FIN+ACK and enter FIN_WAIT_1. 2MSL reclaim happens after
+         * TIME_WAIT via tcp_timer_cb. syn_pending is only charged for
+         * incomplete handshakes, so decrement it solely when leaving SYN_RECV
+         * -- not on ESTABLISHED (already decremented in tcp_state_syn_recv).
+         */
+        if (sk->u.tcp.status == TCP_STATUS_SYN_RECV ||
+            sk->u.tcp.status == TCP_STATUS_ESTABLISHED) {
+                if (sk->u.tcp.status == TCP_STATUS_SYN_RECV &&
+                    sk->u.tcp.listener != NULL &&
+                    sk->u.tcp.listener->u.tcp.syn_pending > 0) {
+                        sk->u.tcp.listener->u.tcp.syn_pending--;
+                }
+
+                struct tcp_fragment *fin_f =
+                    tcp_make_fragment(sk, RTE_TCP_FIN_FLAG | RTE_TCP_ACK_FLAG,
+                                      sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
+                if (tcp_enqueue_fragment(sk, fin_f) != 0) {
+                        LOG_ERROR("tcp_close: FIN enqueue failed fd=%d",
+                                  sk->fd);
+                        return -1;
+                }
+                sk->u.tcp.sent_seq += 1;
+                tcp_stream_set_status(sk, TCP_STATUS_FIN_WAIT_1);
+        }
 
         /*
          * Reclaim policy: user-visible TCBs are freed only from tcp_close.
@@ -1034,7 +1261,12 @@ int tcp_close(struct nsock *sk) {
                 return 0;
         }
 
-        /* Active close -- TODO: send FIN and enter FIN_WAIT_1. */
+        /* Active close: FIN already sent, status == FIN_WAIT_1, wait for 2MSL
+         * timer expiry */
+        pthread_mutex_lock(&sk->mutex);
+        while (sk->u.tcp.status != TCP_STATUS_CLOSED)
+                pthread_cond_wait(&sk->cond, &sk->mutex);
+        pthread_mutex_unlock(&sk->mutex);
         tcp_drain_send(sk);
         tcp_drain_recv(sk);
         nsock_free(sk);
