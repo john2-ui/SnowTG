@@ -19,7 +19,9 @@
 
 #include <netinet/in.h>
 #include <netinet/ip.h>
+#include <pthread.h>
 #include <rte_bitops.h>
+#include <rte_cycles.h>
 #include <rte_ether.h>
 #include <rte_ip.h>
 #include <rte_lcore.h>
@@ -27,6 +29,7 @@
 #include <rte_mbuf_core.h>
 #include <rte_ring.h>
 #include <rte_tcp.h>
+#include <rte_timer.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -209,6 +212,77 @@ static struct tcp_fragment *tcp_make_fragment(struct nsock *sk, uint8_t flags,
 }
 
 /*
+ * rte_timer callbacks must run on the lcore that calls rte_timer_manage().
+ * That is the main lcore (see main.c I/O loop), not the pkt_worker.
+ */
+static unsigned int tcp_timer_lcore(void) { return rte_get_main_lcore(); }
+
+static uint64_t tcp_ms_to_cycles(uint64_t ms) {
+        return rte_get_timer_hz() * ms / 1000;
+}
+
+/*
+ * Round-robin pick an unused local TCP port in
+ * [TCP_EPHEMERAL_PORT_MIN, TCP_EPHEMERAL_PORT_MAX].
+ * Returns the port in network byte order, or 0 if the range is exhausted.
+ */
+static uint16_t tcp_alloc_ephemeral_port(void) {
+        static uint16_t next = TCP_EPHEMERAL_PORT_MIN;
+        for (int i = 0;
+             i < (TCP_EPHEMERAL_PORT_MAX - TCP_EPHEMERAL_PORT_MIN + 1); i++) {
+                uint16_t p = next++;
+                if (next < TCP_EPHEMERAL_PORT_MIN ||
+                    next > TCP_EPHEMERAL_PORT_MAX)
+                        next = TCP_EPHEMERAL_PORT_MIN;
+                uint16_t be = htons(p);
+                if (nsock_from_ip_port(g_net.local_ip, be, IPPROTO_TCP) == NULL)
+                        return be;
+        }
+        return 0;
+}
+
+static void tcp_arm_syn_timer(struct nsock *sk, uint64_t delay_ms);
+
+/*
+ * SYN_SENT RTO: retransmit the same-ISN SYN with exponential backoff
+ * (TCP_SYN_RTO_MS << (retries-1)), then CLOSED + wake tcp_connect on give-up.
+ * Does not nsock_free -- tcp_connect returns -1 and the app's nclose reclaims.
+ */
+static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
+                         void *arg) {
+        struct nsock *sk = (struct nsock *)arg;
+        if (sk->u.tcp.status == TCP_STATUS_SYN_SENT) {
+                if (sk->u.tcp.retries < TCP_SYN_MAX_RETRIES) {
+                        sk->u.tcp.retries++;
+                        struct tcp_fragment *syn_f = tcp_make_fragment(
+                            sk, RTE_TCP_SYN_FLAG, sk->u.tcp.sent_seq, 0);
+                        if (tcp_enqueue_fragment(sk, syn_f) == 0) {
+                                LOG_INFO("tcp SYN_SENT retransmit #%u fd=%d",
+                                         sk->u.tcp.retries, sk->fd);
+                        }
+                        /* Backoff: 1s, 2s, 4s, ... from TCP_SYN_RTO_MS. */
+                        uint64_t delay_ms = (uint64_t)TCP_SYN_RTO_MS
+                                            << (sk->u.tcp.retries - 1);
+                        tcp_arm_syn_timer(sk, delay_ms);
+                        return;
+                }
+
+                LOG_WARN("tcp SYN_SENT timeout fd=%d -> CLOSED", sk->fd);
+                tcp_stream_set_status(sk, TCP_STATUS_CLOSED);
+                tcp_drain_send(sk);
+                pthread_mutex_lock(&sk->mutex);
+                pthread_cond_signal(&sk->cond);
+                pthread_mutex_unlock(&sk->mutex);
+        }
+        /* TODO: SYN_RECV retransmit, TIME_WAIT expiry, data RTO. */
+}
+
+static void tcp_arm_syn_timer(struct nsock *sk, uint64_t delay_ms) {
+        rte_timer_reset(&sk->u.tcp.timer, tcp_ms_to_cycles(delay_ms), SINGLE,
+                        tcp_timer_lcore(), tcp_timer_cb, sk);
+}
+
+/*
  * Passive open step 1: new SYN for @p listener.
  * Creates a SYN_RECV child (no fd), queues SYN+ACK on the child send_buf.
  * Does NOT enqueue onto accept_queue -- that happens only after the final ACK.
@@ -271,6 +345,57 @@ static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
                  rte_be_to_cpu_16(listener->local_port), ntohl(hdr->sent_seq),
                  child->u.tcp.sent_seq, child->u.tcp.recv_ack,
                  listener->u.tcp.syn_pending);
+        return 0;
+}
+
+/*
+ * Active open step 2/3: SYN_SENT --recv SYN+ACK, send ACK--> ESTABLISHED.
+ * Validates that the peer ACK covers our ISN (sent_seq + 1), then wakes the
+ * blocking tcp_connect waiter. Timer is stopped so RTO cannot race the ACK.
+ */
+static int tcp_state_syn_sent(struct nsock *sk, struct rte_tcp_hdr *hdr,
+                              struct rte_mbuf *mbuf) {
+        (void)mbuf;
+        if (sk->u.tcp.status != TCP_STATUS_SYN_SENT)
+                return 0;
+
+        /* Only SYN+ACK advances the handshake; bare ACK/RST/data are ignored.
+         */
+        if (!(hdr->tcp_flags & RTE_TCP_SYN_FLAG) ||
+            !(hdr->tcp_flags & RTE_TCP_ACK_FLAG))
+                return 0;
+
+        uint32_t acknum = ntohl(hdr->recv_ack);
+        /* sent_seq still holds the ISN until we consume the SYN below. */
+        uint32_t expect = sk->u.tcp.sent_seq + 1;
+        if (acknum != expect) {
+                LOG_WARN(
+                    "tcp handshake ACK mismatch " IP_FMT ":%u ack=%u expect=%u",
+                    IP_ARG(sk->u.tcp.remote_ip),
+                    rte_be_to_cpu_16(sk->u.tcp.remote_port), acknum, expect);
+                return 0;
+        }
+
+        sk->u.tcp.recv_ack = ntohl(hdr->sent_seq) + 1;
+        sk->u.tcp.sent_seq += 1; /* consume our SYN in the sequence space */
+
+        struct tcp_fragment *ack_f = tcp_make_fragment(
+            sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
+        if (tcp_enqueue_fragment(sk, ack_f) != 0) {
+                /* Stay SYN_SENT; RTO may retry SYN. Do not wake connect yet. */
+                return 0;
+        }
+
+        rte_timer_stop(&sk->u.tcp.timer);
+        tcp_stream_set_status(sk, TCP_STATUS_ESTABLISHED);
+
+        LOG_INFO("tcp handshake done (active) fd=%d peer " IP_FMT ":%u", sk->fd,
+                 IP_ARG(sk->u.tcp.remote_ip),
+                 rte_be_to_cpu_16(sk->u.tcp.remote_port));
+
+        pthread_mutex_lock(&sk->mutex);
+        pthread_cond_signal(&sk->cond);
+        pthread_mutex_unlock(&sk->mutex);
         return 0;
 }
 
@@ -448,10 +573,16 @@ static int tcp_state_last_ack(struct nsock *sk, struct rte_tcp_hdr *hdr,
                 return 0;
         }
 
+        /*
+         * Do not nsock_free here. Mark CLOSED and wake tcp_close (CLOSE_WAIT
+         * path waits for this), which owns the single reclaim path.
+         */
         tcp_stream_set_status(sk, TCP_STATUS_CLOSED);
         tcp_drain_send(sk);
         tcp_drain_recv(sk);
-        nsock_free(sk);
+        pthread_mutex_lock(&sk->mutex);
+        pthread_cond_signal(&sk->cond);
+        pthread_mutex_unlock(&sk->mutex);
         return 0;
 }
 
@@ -459,9 +590,8 @@ static int tcp_state_last_ack(struct nsock *sk, struct rte_tcp_hdr *hdr,
  * Default handler for every state that is not yet implemented. Each such state
  * needs its own real handler instead of this drop stub:
  *
- *   TCP_STATUS_CLOSED      -> TODO: active open (send SYN) and RST handling.
- *   TCP_STATUS_SYN_SENT    -> TODO: client-side handshake: react to inbound
- *                             SYN+ACK by sending ACK and entering ESTABLISHED.
+ *   TCP_STATUS_CLOSED      -> TODO: RST handling for segments to a closed port.
+ *   TCP_STATUS_SYN_SENT    -> handled by tcp_state_syn_sent.
  *   TCP_STATUS_FIN_WAIT_1  -> TODO: teardown -- our FIN sent, await ACK.
  *   TCP_STATUS_FIN_WAIT_2  -> TODO: teardown -- await peer FIN, then ACK +
  *                             TIME_WAIT.
@@ -491,7 +621,7 @@ static const struct tcp_state_ops tcp_state_ops[TCP_STATUS_MAX] = {
     /* LISTEN is handled in tcp_ingress via tcp_listener_lookup +
        tcp_state_listen. */
     [TCP_STATUS_LISTEN] = {tcp_state_drop},
-    [TCP_STATUS_SYN_SENT] = {tcp_state_drop},
+    [TCP_STATUS_SYN_SENT] = {tcp_state_syn_sent},
     [TCP_STATUS_SYN_RECV] = {tcp_state_syn_recv},
     [TCP_STATUS_ESTABLISHED] = {tcp_state_established},
     [TCP_STATUS_CLOSE_WAIT] = {tcp_state_drop},
@@ -611,6 +741,7 @@ static struct rte_mbuf *tcp_build_pkt(struct rte_mempool *mp, uint32_t src_ip,
 int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
         /* States that may still have outbound segments on send_buf. */
         switch (sk->u.tcp.status) {
+        case TCP_STATUS_SYN_SENT: /* active-open SYN (+ retransmits) */
         case TCP_STATUS_SYN_RECV:
         case TCP_STATUS_ESTABLISHED:
         case TCP_STATUS_CLOSE_WAIT: /* ACK of peer FIN may still be queued */
@@ -801,11 +932,22 @@ int tcp_close(struct nsock *sk) {
         /* TODO: active close (FIN_WAIT_1 -> FIN_WAIT_2 -> TIME_WAIT). Passive
          * close is CLOSE_WAIT -> LAST_ACK -> CLOSED via tcp_state_last_ack. */
 
-        /* Already shutting down or done: keep the TCB so the worker can finish
-         * the handshake (LAST_ACK) or avoid a double free (CLOSED). */
-        if (sk->u.tcp.status == TCP_STATUS_LAST_ACK ||
-            sk->u.tcp.status == TCP_STATUS_CLOSED)
+        /*
+         * Reclaim policy: user-visible TCBs are freed only from tcp_close.
+         * Protocol paths (timer, last_ack, SYN_SENT cancel) transition to
+         * CLOSED and signal; the matching nclose (or the CLOSE_WAIT waiter
+         * below) performs nsock_free. Orphan children (fd < 0) are still
+         * freed when tearing down a listener / full accept_queue.
+         */
+        if (sk->u.tcp.status == TCP_STATUS_LAST_ACK)
+                return 0; /* CLOSE_WAIT nclose is already waiting on cond */
+
+        if (sk->u.tcp.status == TCP_STATUS_CLOSED) {
+                tcp_drain_send(sk);
+                tcp_drain_recv(sk);
+                nsock_free(sk);
                 return 0;
+        }
 
         /* Listener teardown: completed children in accept_queue + half-open. */
         if (sk->u.tcp.accept_queue != NULL) {
@@ -838,9 +980,29 @@ int tcp_close(struct nsock *sk) {
                         cur = next;
                 }
                 sk->u.tcp.syn_pending = 0;
+                tcp_drain_send(sk);
+                tcp_drain_recv(sk);
+                nsock_free(sk);
+                return 0;
         }
 
-        /* Passive close: enqueue FIN, then wait for the peer's final ACK. */
+        /*
+         * Abort active open: stop RTO, CLOSED + wake tcp_connect.
+         * Do not free here -- the connect waiter returns -1 and the app's
+         * subsequent nclose (CLOSED path above) performs nsock_free.
+         */
+        if (sk->u.tcp.status == TCP_STATUS_SYN_SENT) {
+                rte_timer_stop(&sk->u.tcp.timer);
+                tcp_stream_set_status(sk, TCP_STATUS_CLOSED);
+                tcp_drain_send(sk);
+                tcp_drain_recv(sk);
+                pthread_mutex_lock(&sk->mutex);
+                pthread_cond_signal(&sk->cond);
+                pthread_mutex_unlock(&sk->mutex);
+                return 0;
+        }
+
+        /* Passive close: FIN, wait for final ACK (CLOSED), then reclaim. */
         if (sk->u.tcp.status == TCP_STATUS_CLOSE_WAIT) {
                 struct tcp_fragment *fin_f =
                     tcp_make_fragment(sk, RTE_TCP_FIN_FLAG | RTE_TCP_ACK_FLAG,
@@ -854,6 +1016,21 @@ int tcp_close(struct nsock *sk) {
                 sk->u.tcp.sent_seq += 1;
                 tcp_stream_set_status(sk, TCP_STATUS_LAST_ACK);
                 tcp_drain_recv(sk);
+
+                pthread_mutex_lock(&sk->mutex);
+                while (sk->u.tcp.status == TCP_STATUS_LAST_ACK)
+                        pthread_cond_wait(&sk->cond, &sk->mutex);
+                pthread_mutex_unlock(&sk->mutex);
+
+                if (sk->u.tcp.status != TCP_STATUS_CLOSED) {
+                        LOG_ERROR("tcp_close: expected CLOSED after LAST_ACK "
+                                  "fd=%d status=%s",
+                                  sk->fd, tcp_status_str(sk->u.tcp.status));
+                        return -1;
+                }
+                tcp_drain_send(sk);
+                tcp_drain_recv(sk);
+                nsock_free(sk);
                 return 0;
         }
 
@@ -861,6 +1038,74 @@ int tcp_close(struct nsock *sk) {
         tcp_drain_send(sk);
         tcp_drain_recv(sk);
         nsock_free(sk);
+        return 0;
+}
+
+/*
+ * Active open: CLOSED -> SYN_SENT -> (wait) ESTABLISHED.
+ * If the socket is unbound, fill local_ip from g_net and allocate an ephemeral
+ * local_port (BSD-style implicit bind). Blocks on sk->cond until handshake
+ * succeeds, RTO gives up, or tcp_close aborts the connect.
+ */
+int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
+                __attribute__((unused)) socklen_t addrlen) {
+        if (addr == NULL)
+                return -1;
+        if (sk->u.tcp.status != TCP_STATUS_CLOSED) {
+                LOG_ERROR("tcp_connect: fd=%d status=%s", sk->fd,
+                          tcp_status_str(sk->u.tcp.status));
+                return -1;
+        }
+
+        const struct sockaddr_in *peer = (const struct sockaddr_in *)addr;
+
+        /* Implicit bind when the app skipped nbind (typical client path). */
+        if (sk->local_ip == 0) {
+                sk->local_ip = g_net.local_ip;
+        }
+        if (sk->local_port == 0) {
+                sk->local_port = tcp_alloc_ephemeral_port();
+                if (sk->local_port == 0) {
+                        LOG_ERROR(
+                            "tcp_connect: fd=%d local port allocation failed",
+                            sk->fd);
+                        return -1;
+                }
+        }
+
+        sk->u.tcp.remote_ip = peer->sin_addr.s_addr;
+        sk->u.tcp.remote_port = peer->sin_port;
+        sk->u.tcp.listener = NULL;
+        sk->u.tcp.sent_seq = tcp_next_isn();
+        sk->u.tcp.recv_ack = 0;
+        sk->u.tcp.retries = 0;
+
+        struct tcp_fragment *syn_f =
+            tcp_make_fragment(sk, RTE_TCP_SYN_FLAG, sk->u.tcp.sent_seq, 0);
+        if (tcp_enqueue_fragment(sk, syn_f) != 0) {
+                LOG_ERROR("tcp_connect: SYN enqueue failed fd=%d", sk->fd);
+                return -1;
+        }
+
+        tcp_stream_set_status(sk, TCP_STATUS_SYN_SENT);
+        tcp_arm_syn_timer(sk, TCP_SYN_RTO_MS);
+
+        LOG_INFO("tcp connect SYN_SENT fd=%d " IP_FMT ":%u -> " IP_FMT ":%u",
+                 sk->fd, IP_ARG(sk->local_ip), rte_be_to_cpu_16(sk->local_port),
+                 IP_ARG(sk->u.tcp.remote_ip),
+                 rte_be_to_cpu_16(sk->u.tcp.remote_port));
+
+        pthread_mutex_lock(&sk->mutex);
+        while (sk->u.tcp.status == TCP_STATUS_SYN_SENT)
+                pthread_cond_wait(&sk->cond, &sk->mutex);
+        int ok = (sk->u.tcp.status == TCP_STATUS_ESTABLISHED);
+        pthread_mutex_unlock(&sk->mutex);
+
+        if (!ok) {
+                LOG_ERROR("tcp_connect failed fd=%d status=%s", sk->fd,
+                          tcp_status_str(sk->u.tcp.status));
+                return -1;
+        }
         return 0;
 }
 
@@ -970,9 +1215,7 @@ const struct sock_ops tcp_ops = {
     .sendto = NULL,
     .recvfrom = NULL,
     .close = tcp_close,
-    /* TODO: implement active open (tcp_ops.connect / SYN_SENT path).
-     * Passive open (listen/accept) is implemented. */
-    .connect = NULL,
+    .connect = tcp_connect,
     .listen = tcp_listen,
     .accept = tcp_accept,
 };

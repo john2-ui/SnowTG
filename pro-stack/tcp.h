@@ -6,20 +6,23 @@
  * inside the unified @ref nsock (see socket.h) as @c nsock.u.tcp. The socket
  * itself owns the fd, rings, local address, and synchronization primitives, so
  * @ref tcp_stream only carries what is genuinely TCP-private: the peer 4-tuple,
- * the connection status, and the send/receive sequence numbers.
+ * the connection status, the send/receive sequence numbers, and the per-TCB
+ * timer / retry counters used by active-open RTO (and later teardown timers).
  *
  * The state machine is table-driven: @ref tcp_state_ops indexes one handler per
  * @ref TCP_STATUS, so adding a state or a transition is a one-line table edit
  * plus a handler function instead of touching a hand-written switch.
  *
- * Server-side passive open (LISTEN -> SYN_RECV -> ESTABLISHED) is implemented;
- * active open and teardown are stubbed (@ref tcp_state_drop) for now.
+ * Passive open (LISTEN -> SYN_RECV -> ESTABLISHED) and active open
+ * (CLOSED -> SYN_SENT -> ESTABLISHED) are implemented; several teardown
+ * states remain stubbed (@ref tcp_state_drop).
  */
 #ifndef NETARCH_TCP_H
 #define NETARCH_TCP_H
 
 #include <rte_mbuf.h>
 #include <rte_tcp.h>
+#include <rte_timer.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -78,6 +81,11 @@ struct tcp_stream {
         uint32_t recv_ack; /**< Ack number tracked for the peer (host order). */
 
         TCP_STATUS status; /**< Current connection state. */
+
+        /** Per-TCB timer: SYN RTO today; SYN_RECV / TIME_WAIT / data later. */
+        struct rte_timer timer;
+        /** Retransmit count for the currently armed @c timer purpose. */
+        uint8_t retries;
 };
 
 /**

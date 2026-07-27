@@ -80,7 +80,10 @@ struct sock_ops {
         /** Release the socket and every queued packet it still owns. */
         int (*close)(struct nsock *sk);
 
-        /** Active open (TCP). NULL for connectionless transports. */
+        /**
+         * Active open (TCP): may implicit-bind, send SYN, block until
+         * ESTABLISHED or failure. NULL for connectionless transports.
+         */
         int (*connect)(struct nsock *sk, const struct sockaddr *addr,
                        socklen_t addrlen);
 

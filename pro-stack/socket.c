@@ -20,6 +20,7 @@
 #include <rte_lcore.h>
 #include <rte_malloc.h>
 #include <rte_ring.h>
+#include <rte_timer.h>
 #include <stdatomic.h>
 #include <string.h>
 
@@ -127,6 +128,13 @@ struct nsock *nsock_alloc(int fd, uint8_t protocol) {
                 return NULL;
         }
 
+        /* TCP starts CLOSED; timer is armed later by connect / RTO paths. */
+        if (protocol == IPPROTO_TCP) {
+                sk->u.tcp.status = TCP_STATUS_CLOSED;
+                rte_timer_init(&sk->u.tcp.timer);
+                sk->u.tcp.retries = 0;
+        }
+
         rte_memcpy(sk->local_mac, g_net.local_mac, RTE_ETHER_ADDR_LEN);
 
         LL_ADD(sk, g_sock_list);
@@ -136,6 +144,10 @@ struct nsock *nsock_alloc(int fd, uint8_t protocol) {
 void nsock_free(struct nsock *sk) {
         if (sk == NULL)
                 return;
+        /* Drop any pending SYN RTO / future TIME_WAIT timer before free. */
+        if (sk->protocol == IPPROTO_TCP) {
+                rte_timer_stop(&sk->u.tcp.timer);
+        }
         LL_REMOVE(sk, g_sock_list);
         pthread_cond_destroy(&sk->cond);
         pthread_mutex_destroy(&sk->mutex);
@@ -278,8 +290,6 @@ int nconnect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
                 LOG_ERROR("nconnect: unsupported on fd=%d", sockfd);
                 return -1;
         }
-        /* TODO: TCP active open -- send SYN, enter SYN_SENT, wait for SYN+ACK,
-         * then send ACK. Requires tcp_ops.connect (currently NULL). */
         return sk->ops->connect(sk, addr, addrlen);
 }
 

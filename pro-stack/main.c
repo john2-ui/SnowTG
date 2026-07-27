@@ -19,6 +19,7 @@
 #include "tcp_app.h"
 #include "udp_app.h"
 
+#include <generic/rte_cycles.h>
 #include <netinet/in.h>
 #include <rte_cycles.h>
 #include <rte_eal.h>
@@ -27,6 +28,7 @@
 #include <rte_ip.h>
 #include <rte_launch.h>
 #include <rte_lcore.h>
+#include <rte_log.h>
 #include <rte_mbuf.h>
 #if ENABLE_PDUMP
 #include <rte_pdump.h>
@@ -179,13 +181,21 @@ int main(int argc, char *argv[]) {
         struct inout_ring *ring = ring_instance();
         arp_table_instance();
 
-#if ENABLE_ARP_SWEEP
+        /*
+         * Timers (ARP sweep + TCP SYN RTO) are always managed on this lcore.
+         * rte_timer_manage() runs in the main I/O loop below; TCP arms its
+         * SINGLE timers with rte_get_main_lcore() so callbacks land here.
+         */
         rte_timer_subsystem_init();
+        uint64_t hz = rte_get_timer_hz();
+        uint64_t timer_resolution_cycles = hz * TIMER_MANAGE_INTERVAL_MS / 1000;
+        unsigned int timer_lcore = rte_lcore_id();
+
+#if ENABLE_ARP_SWEEP
         struct rte_timer arp_timer;
         rte_timer_init(&arp_timer);
-        uint64_t hz = rte_get_timer_hz();
-        unsigned int lcore_id = rte_lcore_id();
-        rte_timer_reset(&arp_timer, hz, PERIODICAL, lcore_id, arp_sweep_cb, mp);
+        rte_timer_reset(&arp_timer, hz * 60, PERIODICAL, timer_lcore,
+                        arp_sweep_cb, mp); /* period: 60 seconds */
 #endif
 
         unsigned int main_lcore = rte_lcore_id();
@@ -279,14 +289,12 @@ int main(int argc, char *argv[]) {
                                 rte_pktmbuf_free(tx[i]);
                 }
 
-#if ENABLE_ARP_SWEEP
                 static uint64_t last_tsc = 0;
-                uint64_t cur_tsc = rte_rdtsc();
-                if (cur_tsc - last_tsc > TIMER_RESOLUTION_CYCLES) {
+                uint64_t cur_tsc = rte_get_timer_cycles();
+                if (cur_tsc - last_tsc > timer_resolution_cycles) {
                         rte_timer_manage();
                         last_tsc = cur_tsc;
                 }
-#endif
         }
 
         return 0;

@@ -3,11 +3,10 @@
  * @brief Example TCP server and client on the userspace stream socket API.
  *
  * Server path (passive open): nlisten / naccept / nrecv / nsend / nclose.
- * Client path (active open):  nconnect / nsend / nrecv / nclose.
+ * Client path (active open):  nconnect / nsend / nrecv / nclose (no nbind;
+ * tcp_connect performs implicit bind / ephemeral port allocation).
  *
- * Toggle ENABLE_TCP_SERVER / ENABLE_TCP_CLIENT in config.h. The client is the
- * app-side checklist for implementing tcp_ops.connect (CLOSED -> SYN_SENT ->
- * ESTABLISHED) and later active close from ESTABLISHED.
+ * Toggle ENABLE_TCP_SERVER / ENABLE_TCP_CLIENT in config.h.
  */
 #include "tcp_app.h"
 
@@ -111,9 +110,8 @@ int tcp_client_entry(__attribute__((unused)) void *arg) {
         peer_addr.sin_port = htons(TCP_APP_PORT);
         peer_addr.sin_addr.s_addr = TCP_CLIENT_PEER_IP;
 
-        LOG_INFO("TCP client targeting " IP_FMT ":%u (local port %u)",
-                 IP_ARG(TCP_CLIENT_PEER_IP), TCP_APP_PORT,
-                 TCP_CLIENT_LOCAL_PORT);
+        LOG_INFO("TCP client targeting " IP_FMT ":%u (implicit local bind)",
+                 IP_ARG(TCP_CLIENT_PEER_IP), TCP_APP_PORT);
 
         char buffer[TCP_APP_RECV_BUFFER_SIZE];
 
@@ -125,24 +123,9 @@ int tcp_client_entry(__attribute__((unused)) void *arg) {
                         continue;
                 }
 
-                struct sockaddr_in local_addr;
-                memset(&local_addr, 0, sizeof(local_addr));
-                local_addr.sin_family = AF_INET;
-                local_addr.sin_port = htons(TCP_CLIENT_LOCAL_PORT);
-                local_addr.sin_addr.s_addr = g_net.local_ip;
-
-                if (nbind(fd, (struct sockaddr *)&local_addr,
-                          sizeof(local_addr)) < 0) {
-                        LOG_ERROR("tcp_client: nbind failed");
-                        nclose(fd);
-                        sleep(TCP_CLIENT_RETRY_SEC);
-                        continue;
-                }
-
                 if (nconnect(fd, (struct sockaddr *)&peer_addr,
                              sizeof(peer_addr)) < 0) {
-                        LOG_ERROR("tcp_client: nconnect failed "
-                                  "(implement tcp_ops.connect)");
+                        LOG_ERROR("tcp_client: nconnect failed");
                         nclose(fd);
                         sleep(TCP_CLIENT_RETRY_SEC);
                         continue;

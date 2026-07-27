@@ -33,7 +33,7 @@
 /** Enable the packet-capture framework so dpdk-pdump can attach. */
 #define ENABLE_PDUMP 1
 /** Launch the example UDP echo application on a dedicated lcore. */
-#define ENABLE_UDP_APP 1
+#define ENABLE_UDP_APP 0
 /** Enable the TCP stack ops (required for either TCP app below). */
 #define ENABLE_TCP_APP 1
 /** Launch the TCP echo server (listen/accept/recv/send/close). */
@@ -48,9 +48,7 @@
 /** Well-known port used by the TCP echo server / client peer. */
 #define TCP_APP_PORT 8888
 /** Peer IPv4 for the TCP client (network order via MAKE_IPV4_ADDR). */
-#define TCP_CLIENT_PEER_IP MAKE_IPV4_ADDR(192, 168, 21, 1)
-/** Local ephemeral-style source port used by the TCP client after bind. */
-#define TCP_CLIENT_LOCAL_PORT 9999
+#define TCP_CLIENT_PEER_IP MAKE_IPV4_ADDR(192, 168, 21, 105)
 
 /** Number of mbufs in the packet pool. */
 #define NUM_MBUFS (4096 - 1)
@@ -60,7 +58,20 @@
 #define RING_SIZE 1024
 /** Rx/Tx descriptor ring size for the NIC queues. */
 #define NB_DESC 1024
-/** TSC cycles between periodic timer sweeps (~ tens of seconds). */
-#define TIMER_RESOLUTION_CYCLES 120000000000ULL
+
+/**
+ * How often main calls rte_timer_manage(), in milliseconds.
+ * Actual cycle threshold is computed at runtime:
+ *   rte_get_timer_hz() * TIMER_MANAGE_INTERVAL_MS / 1000
+ */
+#define TIMER_MANAGE_INTERVAL_MS 10
+
+/** First SYN retransmit timeout (ms). */
+#define TCP_SYN_RTO_MS 1000
+/** Give up after this many SYN retransmits (not counting the first SYN). */
+#define TCP_SYN_MAX_RETRIES 5
+/** Inclusive ephemeral local-port range for implicit bind in tcp_connect. */
+#define TCP_EPHEMERAL_PORT_MIN 49152
+#define TCP_EPHEMERAL_PORT_MAX 65535
 
 #endif /* NETARCH_CONFIG_H */
