@@ -115,7 +115,8 @@ flowchart LR
 - **被动打开**：LISTEN → SYN_RECV → ESTABLISHED；`tcp_listen` backlog + `accept_queue`；`tcp_accept` 分配 fd
 - **主动打开**：CLOSED → SYN_SENT → ESTABLISHED；隐式 bind + 临时端口；SYN RTO + 指数退避
 - SYN_RECV 在对端重传 SYN 时重发 SYN+ACK（无独立 SYN_RECV 定时器）
-- ESTABLISHED：按序序号校验、payload 投递 `recv_buf`、回纯 ACK；`tcp_send`（PSH+ACK）/ `tcp_recv`（短读回队）
+- ESTABLISHED：按序序号校验、payload 投递 `recv_buf`、回纯 ACK；`tcp_send` / `tcp_recv`（短读回队）
+- **发送滑动窗口**：`sndbuf` + `snd_una`/`sent_seq`；TX 后数据保留至 ACK；数据 RTO（Go-Back-N）；按 `TCP_DEFAULT_MSS` 切段
 - **被动拆除**：ESTABLISHED → CLOSE_WAIT → LAST_ACK → CLOSED
 - **主动拆除**：FIN_WAIT_1/2、CLOSING、TIME_WAIT（2MSL 定时器）
 - ISN 生成器；统一 mbuf 归属：ingress 一律消费 mbuf
@@ -135,13 +136,12 @@ flowchart LR
 
 | 功能 | 位置 | 说明 / 目标设计 |
 |------|------|-----------------|
-| 数据重传队列 + RTO | [tcp.c](pro-stack/tcp.c) ~994；timer ~289 | TX 后 fragment 立即释放。目标：unacked 队列，ACK 后释放；超时重传；SYN_RECV 亦需独立 RTO |
-| 乱序 / 重叠重组 | [tcp.c](pro-stack/tcp.c) ~544 | 仅按序投递。目标：OOO 缓冲 + 按序交付到 stream buffer |
-| 收端 / 发端流控 | [tcp.c](pro-stack/tcp.c) ~564, ~1034 | 不看对端 `rx_win`，发送无背压。目标：发送不超过通告窗口；动态本端窗口 |
-| MSS 分段 | [tcp.c](pro-stack/tcp.c) ~1038 | 超长 payload 单帧编码。目标：按协商 MSS 切段 |
-| RST 生成 / 接收 | [tcp.c](pro-stack/tcp.c) ~514, ~802, ~851, ~884, ~895 | 关闭端口、无匹配 TCB、accept 队列满等应发 RST；非法 RST 应拆除连接 |
-| FIN 段 payload | [tcp.c](pro-stack/tcp.c) ~755 | FIN 携带的数据应先交付再消费 FIN |
-| fd / 注册表线程安全 | [socket.c](pro-stack/socket.c) ~52 | `fd_alloc` 与 `g_sock_list` 无锁。目标：锁或无锁并发结构（与哈希表一并设计） |
+| SYN_RECV / FIN 控制段 RTO | [tcp.c](pro-stack/tcp.c) timer；`send_buf` TX | 数据路径已有 sndbuf + RTO。SYN+ACK / FIN 仍走 `send_buf` 且 TX 后释放；需独立定时重传 |
+| 乱序 / 重叠重组 | [tcp.c](pro-stack/tcp.c) ESTABLISHED | 仅按序投递。目标：OOO 缓冲 + 按序交付到 stream buffer |
+| 收端 / 发端流控 | [tcp.c](pro-stack/tcp.c) ESTABLISHED；`tcp_sndbuf_append` | 不看对端 `rx_win`；`sndbuf` 满时 `tcp_send` 直接 -1。目标：通告窗口限制发送；满缓冲时阻塞或 `EAGAIN` |
+| RST 生成 / 接收 | [tcp.c](pro-stack/tcp.c) | 关闭端口、无匹配 TCB、accept 队列满等应发 RST；非法 RST 应拆除连接 |
+| FIN 段 payload | [tcp.c](pro-stack/tcp.c) FIN_WAIT_2 等 | FIN 携带的数据应先交付再消费 FIN |
+| fd / 注册表线程安全 | [socket.c](pro-stack/socket.c) | `fd_alloc` 与 `g_sock_list` 无锁。目标：锁或无锁并发结构（与哈希表一并设计） |
 
 ### P1 — 完备 TCP（选项、拥塞、校验、API）
 
@@ -149,7 +149,8 @@ flowchart LR
 |------|------|-----------------|
 | TCP 选项 | [tcp.c](pro-stack/tcp.c) ~848 | 解析/协商 MSS、窗口缩放、SACK、时间戳 |
 | 拥塞控制 | — | 无 cwnd/ssthresh。目标：至少 Reno（慢启动 / 拥塞避免 / 快重传快恢复） |
-| RTT → RTO | — | 数据路径无 SRTT/RTTVAR；与重传队列一起做 |
+| 协商 MSS / 选项驱动分段 | [tcp.c](pro-stack/tcp.c) 选项 TODO | 发送已按 `TCP_DEFAULT_MSS` 切段；目标：握手协商 MSS 后按协商值切 |
+| RTT → RTO | — | 数据路径固定 RTO + 退避，无 SRTT/RTTVAR |
 | 重复 ACK / 快重传 | — | 依赖 ACK 处理与 SACK（可选） |
 | RX 校验和 | — | TX 已算；RX 应校验 TCP（及 IPv4）校验和 |
 | socket 选项 | — | `SO_REUSEADDR`、非阻塞、`TCP_NODELAY` 等 |
@@ -178,10 +179,9 @@ flowchart LR
 | 现状（低效） | 目标（高效） |
 |--------------|--------------|
 | `g_sock_list` / 4-tuple / 监听端口 / ARP 均为 O(n) 链表扫描 | 连接表、监听表、ARP 表用哈希（如 DPDK `rte_hash`），查找 O(1) 期望 |
-| worker 每轮遍历全部 socket 调 `tx_flush` | 仅冲洗有待发数据的 socket：dirty 队列，或 `send_buf` / unacked 非空时入队 |
-| TX 后立即 `rte_free` fragment | 进入 unacked 重传队列，匹配 ACK 后释放；超时按 RTO 重发 |
+| worker 每轮遍历全部 socket 调 `tx_flush` | 仅冲洗有待发数据的 socket：dirty 队列，或 `send_buf` / `sndbuf` 非空时入队 |
 | `recv_buf` 塞原始 mbuf，应用剥头 | 协议侧 stream / reassembly buffer，应用读 payload |
-| `tcp_send` 整段 `rte_malloc` + memcpy | 结合 MSS 切段与（可选）零拷贝 / mbuf 引用计数 |
+| `tcp_send` → `sndbuf` 仍 memcpy | （可选）零拷贝 / mbuf 引用计数 |
 | ARP /24 周期性广播 | 按需解析 + 缓存老化；全网扫仅作可选调试手段 |
 
 ---

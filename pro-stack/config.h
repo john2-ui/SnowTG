@@ -66,8 +66,16 @@
  */
 #define TIMER_MANAGE_INTERVAL_MS 10
 
+/** TCP send buffer (sliding window) size in bytes. */
+#define TCP_SNDBUF_SIZE (64 * 1024)
+/** Default MSS used when slicing sndbuf for TX (no option negotiation yet). */
+#define TCP_DEFAULT_MSS 1460
+/** Data-path initial RTO (ms). */
+#define TCP_DATA_RTO_MS 200
 /** First SYN retransmit timeout (ms). */
 #define TCP_SYN_RTO_MS 1000
+/** Give up after this many data RTOs. */
+#define TCP_DATA_MAX_RETRIES 5
 /** Give up after this many SYN retransmits (not counting the first SYN). */
 #define TCP_SYN_MAX_RETRIES 5
 /** Inclusive ephemeral local-port range for implicit bind in tcp_connect. */

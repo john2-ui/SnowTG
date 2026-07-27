@@ -7,7 +7,6 @@
  * Outbound: tcp_tx_flush -> arp resolve -> out ring -> NIC
  */
 #include "tcp.h"
-
 #include "arp.h"
 #include "config.h"
 #include "log.h"
@@ -30,9 +29,92 @@
 #include <rte_tcp.h>
 #include <rte_timer.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+/* Sequence comparisons (mod 2^32). */
+static inline int tcp_seq_lt(uint32_t a, uint32_t b) {
+        return (int32_t)(a - b) < 0;
+}
+static inline int tcp_seq_leq(uint32_t a, uint32_t b) {
+        return (int32_t)(a - b) <= 0;
+}
+static inline int tcp_seq_between_open(uint32_t seq, uint32_t lo, uint32_t hi) {
+        /* lo < seq <= hi (mod 2^32), for ACK validity */
+        return tcp_seq_lt(lo, seq) && tcp_seq_leq(seq, hi);
+}
+
+int tcp_sndbuf_init(struct tcp_sndbuf *sb, uint32_t isn) {
+        sb->data = rte_malloc("tcp_sndbuf", TCP_SNDBUF_SIZE, 0);
+        if (sb->data == NULL) {
+                LOG_ERROR("tcp_sndbuf_init: rte_malloc failed");
+                return -1;
+        }
+        sb->size = TCP_SNDBUF_SIZE;
+        sb->head_off = 0;
+        sb->len = 0;
+        sb->head_seq = isn;
+        return 0;
+}
+
+void tcp_sndbuf_free(struct tcp_sndbuf *sb) {
+        if (sb->data) {
+                rte_free(sb->data);
+                sb->data = NULL;
+        }
+        sb->len = sb->head_off = sb->size = 0;
+}
+
+static void tcp_sndbuf_reset(struct tcp_sndbuf *sb, uint32_t seq) {
+        sb->head_off = 0;
+        sb->len = 0;
+        sb->head_seq = seq;
+}
+
+/* Append app data. Returns bytes accepted, or -1 if full/error. */
+static ssize_t tcp_sndbuf_append(struct tcp_sndbuf *sb, const uint8_t *data,
+                                 size_t len) {
+        if (sb->data == NULL || len == 0)
+                return 0;
+        size_t space = sb->size - sb->len;
+        if (space == 0) {
+                /* TODO: sndbuf-full backpressure. Today tcp_send just returns
+                 * -1 (and a short write if only partially full). Goal: block
+                 * the sender (mutex/cond) until ACK frees space, or honor
+                 * non-blocking sockets with EAGAIN / short writes only. */
+                return -1;
+        }
+        size_t to_put = len < space ? len : space;
+
+        /* Compact to base if needed so the write is contiguous. */
+        if (sb->head_off + sb->len + to_put > sb->size) {
+                if (sb->head_off > 0) {
+                        memmove(sb->data, sb->data + sb->head_off, sb->len);
+                        sb->head_off = 0;
+                }
+                if (sb->head_off + sb->len + to_put > sb->size) {
+                        to_put = sb->size - sb->len;
+                }
+        }
+        rte_memcpy(sb->data + sb->head_off + sb->len, data, to_put);
+        sb->len += (uint32_t)to_put;
+        return (ssize_t)to_put;
+}
+
+/* Drop @p len bytes from the head (ACK advancement). */
+static void tcp_sndbuf_remove(struct tcp_sndbuf *sb, uint32_t len) {
+        if (len == 0)
+                return;
+        if (len > sb->len)
+                len = sb->len;
+        sb->head_off += len;
+        sb->len -= len;
+        sb->head_seq += len;
+        if (sb->len == 0)
+                sb->head_off = 0;
+}
 
 static const char *tcp_status_str(TCP_STATUS s) {
         switch (s) {
@@ -141,6 +223,9 @@ struct nsock *tcp_stream_create(uint32_t remote_ip, uint32_t local_ip,
         sk->u.tcp.status = TCP_STATUS_SYN_RECV;
         sk->u.tcp.listener = NULL;
         sk->u.tcp.sent_seq = tcp_next_isn();
+        sk->u.tcp.snd_una = sk->u.tcp.sent_seq;
+        /* sndbuf already allocated in nsock_alloc; only reset sequence base. */
+        tcp_sndbuf_reset(&sk->u.tcp.sndbuf, sk->u.tcp.sent_seq);
         sk->u.tcp.recv_ack = 0;
 
         LOG_INFO("tcp stream create " IP_FMT ":%u -> " IP_FMT
@@ -241,6 +326,7 @@ static uint16_t tcp_alloc_ephemeral_port(void) {
 }
 
 static void tcp_arm_syn_timer(struct nsock *sk, uint64_t delay_ms);
+static void tcp_arm_data_rto(struct nsock *sk, uint64_t delay_ms);
 
 /*
  * SYN_SENT RTO: retransmit the same-ISN SYN with exponential backoff
@@ -285,8 +371,66 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                         pthread_cond_signal(&sk->cond);
                         pthread_mutex_unlock(&sk->mutex);
                 }
+        } else if (sk->u.tcp.status == TCP_STATUS_ESTABLISHED ||
+                   sk->u.tcp.status == TCP_STATUS_FIN_WAIT_1 ||
+                   sk->u.tcp.status == TCP_STATUS_CLOSE_WAIT ||
+                   sk->u.tcp.status == TCP_STATUS_CLOSING ||
+                   sk->u.tcp.status == TCP_STATUS_LAST_ACK) {
+                if (sk->u.tcp.snd_una == sk->u.tcp.sent_seq) {
+                        return; /* nothing in flight: ignore */
+                }
+                if (sk->u.tcp.retries >= TCP_DATA_MAX_RETRIES) {
+                        LOG_WARN("tcp data RTO give up fd=%d una=%u nxt=%u",
+                                 sk->fd, sk->u.tcp.snd_una, sk->u.tcp.sent_seq);
+                        /* Optional: RST / CLOSED; minimal: stop retrying */
+                        return;
+                }
+                sk->u.tcp.retries++;
+                /* Go-Back-N: retransmit from snd_una on next flush. */
+                sk->u.tcp.sent_seq = sk->u.tcp.snd_una;
+                LOG_INFO("tcp data RTO retransmit #%u fd=%d from seq=%u",
+                         sk->u.tcp.retries, sk->fd, sk->u.tcp.snd_una);
+                uint64_t delay_ms = (uint64_t)TCP_DATA_RTO_MS
+                                    << (sk->u.tcp.retries - 1);
+                tcp_arm_data_rto(sk, delay_ms);
         }
-        /* TODO: SYN_RECV retransmit, data RTO. */
+        /* TODO: SYN_RECV independent RTO; FIN control-segment retransmit. */
+}
+
+static void tcp_arm_data_rto(struct nsock *sk, uint64_t delay_ms) {
+        rte_timer_reset(&sk->u.tcp.timer, tcp_ms_to_cycles(delay_ms), SINGLE,
+                        tcp_timer_lcore(), tcp_timer_cb, sk);
+}
+
+/*
+ * Process peer ACK: advance snd_una and free acked bytes from sndbuf.
+ * Safe to call from ESTABLISHED / FIN_WAIT_* / CLOSE_WAIT / etc.
+ */
+static void tcp_process_peer_ack(struct nsock *sk, uint32_t ack) {
+        /* Accept only ACKs that newly acknowledge something in-flight. */
+        if (!tcp_seq_between_open(ack, sk->u.tcp.snd_una, sk->u.tcp.sent_seq))
+                return;
+
+        uint32_t acked = ack - sk->u.tcp.snd_una; /* mod 2^32 arithmetic */
+        if (acked > sk->u.tcp.sndbuf.len)
+                acked = sk->u.tcp.sndbuf.len;
+
+        tcp_sndbuf_remove(&sk->u.tcp.sndbuf, acked);
+        sk->u.tcp.snd_una = ack;
+
+        if (sk->u.tcp.snd_una == sk->u.tcp.sent_seq) {
+                /* Nothing in flight: stop data RTO (do not touch TIME_WAIT).
+                 * These states clearly have their own timers.*/
+                if (sk->u.tcp.status != TCP_STATUS_TIME_WAIT &&
+                    sk->u.tcp.status != TCP_STATUS_SYN_SENT &&
+                    sk->u.tcp.status != TCP_STATUS_SYN_RECV)
+                        rte_timer_stop(&sk->u.tcp.timer);
+                sk->u.tcp.retries = 0;
+        } else {
+                /* New oldest unacked: restart RTO. */
+                sk->u.tcp.retries = 0;
+                tcp_arm_data_rto(sk, TCP_DATA_RTO_MS);
+        }
 }
 
 static void tcp_arm_syn_timer(struct nsock *sk, uint64_t delay_ms) {
@@ -398,6 +542,10 @@ static int tcp_state_syn_sent(struct nsock *sk, struct rte_tcp_hdr *hdr,
         sk->u.tcp.recv_ack = ntohl(hdr->sent_seq) + 1;
         sk->u.tcp.sent_seq += 1; /* consume our SYN in the sequence space */
 
+        /* Reset sndbuf and snd_una after handshake completion. */
+        sk->u.tcp.snd_una = sk->u.tcp.sent_seq;
+        tcp_sndbuf_reset(&sk->u.tcp.sndbuf, sk->u.tcp.sent_seq);
+
         struct tcp_fragment *ack_f = tcp_make_fragment(
             sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
         if (tcp_enqueue_fragment(sk, ack_f) != 0) {
@@ -489,6 +637,10 @@ static int tcp_state_syn_recv(struct nsock *sk, struct rte_tcp_hdr *hdr,
                  rte_be_to_cpu_16(sk->local_port), acknum);
 
         sk->u.tcp.sent_seq += 1; /* the SYN consumes one sequence number */
+
+        sk->u.tcp.snd_una = sk->u.tcp.sent_seq;
+        tcp_sndbuf_reset(&sk->u.tcp.sndbuf, sk->u.tcp.sent_seq);
+
         tcp_stream_set_status(sk, TCP_STATUS_ESTABLISHED);
 
         /*
@@ -534,6 +686,9 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
 
         int has_fin = !!(hdr->tcp_flags & RTE_TCP_FIN_FLAG);
 
+        if (hdr->tcp_flags & RTE_TCP_ACK_FLAG)
+                tcp_process_peer_ack(sk, ntohl(hdr->recv_ack));
+
         if (payload_len == 0 && !has_fin)
                 return 0; /* pure ACK: caller frees mbuf */
 
@@ -548,6 +703,11 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
                 LOG_DEBUG(
                     "tcp ESTABLISHED drop ooo/dup seq=%u expect=%u len=%u", seq,
                     sk->u.tcp.recv_ack, payload_len);
+                /* Optional: re-ACK to trigger peer retransmit */
+                struct tcp_fragment *ack_f =
+                    tcp_make_fragment(sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
+                                      sk->u.tcp.recv_ack);
+                (void)tcp_enqueue_fragment(sk, ack_f);
                 return 0;
         }
 
@@ -567,6 +727,11 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
 
         if (has_fin) {
                 tcp_stream_set_status(sk, TCP_STATUS_CLOSE_WAIT);
+        }
+
+        if (payload_len == 0 && has_fin) {
+                /* FIN-only: no payload to deliver; caller frees mbuf */
+                return 0;
         }
 
         if (rte_ring_sp_enqueue(sk->recv_buf, mbuf) != 0) {
@@ -604,6 +769,9 @@ static int tcp_state_last_ack(struct nsock *sk, struct rte_tcp_hdr *hdr,
                 return 0;
 
         uint32_t acknum = ntohl(hdr->recv_ack);
+        /* Retire any still-unacked data (and FIN seq) before the final check.
+         */
+        tcp_process_peer_ack(sk, acknum);
 
         if (acknum != sk->u.tcp.sent_seq) {
                 LOG_DEBUG(
@@ -674,6 +842,8 @@ static int tcp_state_closing(struct nsock *sk, struct rte_tcp_hdr *hdr,
                 return 0;
 
         uint32_t acknum = ntohl(hdr->recv_ack);
+        tcp_process_peer_ack(sk, acknum);
+
         if (acknum != sk->u.tcp.sent_seq) {
                 LOG_DEBUG(
                     "tcp CLOSING ignore ack=%u expect=%u from " IP_FMT ":%u",
@@ -691,7 +861,13 @@ static int tcp_state_fin_wait_1(struct nsock *sk, struct rte_tcp_hdr *hdr,
                                 struct rte_mbuf *mbuf) {
         int has_fin = !!(hdr->tcp_flags & RTE_TCP_FIN_FLAG);
         int has_ack = !!(hdr->tcp_flags & RTE_TCP_ACK_FLAG);
-        int ack_ok = has_ack && (ntohl(hdr->recv_ack) == sk->u.tcp.sent_seq);
+        uint32_t acknum = has_ack ? ntohl(hdr->recv_ack) : 0;
+
+        /* Retire unacked sndbuf data (and FIN) before state transitions. */
+        if (has_ack)
+                tcp_process_peer_ack(sk, acknum);
+
+        int ack_ok = has_ack && (acknum == sk->u.tcp.sent_seq);
         uint32_t seq = ntohl(hdr->sent_seq);
 
         if (seq != sk->u.tcp.recv_ack) {
@@ -741,7 +917,11 @@ static int tcp_state_fin_wait_2(struct nsock *sk, struct rte_tcp_hdr *hdr,
         if (sk->u.tcp.status != TCP_STATUS_FIN_WAIT_2)
                 return 0;
 
-        /* Only peer FIN advances us; pure ACKs are ignored. */
+        /* Harmless if already fully ACKed; covers late/dup data ACKs. */
+        if (hdr->tcp_flags & RTE_TCP_ACK_FLAG)
+                tcp_process_peer_ack(sk, ntohl(hdr->recv_ack));
+
+        /* Only peer FIN advances us. */
         if (!(hdr->tcp_flags & RTE_TCP_FIN_FLAG))
                 return 0;
 
@@ -781,6 +961,10 @@ static int tcp_state_close_wait(struct nsock *sk, struct rte_tcp_hdr *hdr,
         (void)mbuf;
         if (sk->u.tcp.status != TCP_STATUS_CLOSE_WAIT)
                 return 0;
+
+        /* App may still have unacked data sent before peer FIN. */
+        if (hdr->tcp_flags & RTE_TCP_ACK_FLAG)
+                tcp_process_peer_ack(sk, ntohl(hdr->recv_ack));
 
         if (hdr->tcp_flags & RTE_TCP_FIN_FLAG) {
                 struct tcp_fragment *ack_f =
@@ -937,6 +1121,82 @@ static struct rte_mbuf *tcp_build_pkt(struct rte_mempool *mp, uint32_t src_ip,
         return mbuf;
 }
 
+static int tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
+        if (sk->u.tcp.status != TCP_STATUS_ESTABLISHED &&
+            sk->u.tcp.status != TCP_STATUS_CLOSE_WAIT &&
+            sk->u.tcp.status != TCP_STATUS_FIN_WAIT_1 &&
+            sk->u.tcp.status != TCP_STATUS_CLOSING &&
+            sk->u.tcp.status != TCP_STATUS_LAST_ACK)
+                return 0;
+
+        struct tcp_sndbuf *sb = &sk->u.tcp.sndbuf;
+        if (sb->data == NULL || sb->len == 0)
+                return 0;
+
+        /* Bytes not yet transmitted: [sent_seq, head_seq + len) */
+        uint32_t buf_end = sb->head_seq + sb->len;
+        if (!tcp_seq_lt(sk->u.tcp.sent_seq, buf_end))
+                return 0;
+
+        uint32_t off = sk->u.tcp.sent_seq - sb->head_seq; /* into buffer */
+        uint32_t unsent = buf_end - sk->u.tcp.sent_seq;
+        uint32_t seglen = unsent;
+        if (seglen > TCP_DEFAULT_MSS)
+                seglen = TCP_DEFAULT_MSS;
+
+        uint8_t *dst_mac = arp_lookup(sk->u.tcp.remote_ip);
+        if (dst_mac == NULL) {
+                /* Trigger ARP; try again next flush. */
+                struct rte_mbuf *arp =
+                    arp_build_pkt(mp, RTE_ARP_OP_REQUEST, g_broadcast_mac,
+                                  g_net.local_ip, sk->u.tcp.remote_ip);
+                if (arp) {
+                        struct inout_ring *ring = ring_instance();
+                        rte_ring_mp_enqueue_burst(ring->out, (void **)&arp, 1,
+                                                  NULL);
+                }
+                return 0;
+        }
+
+        /* Build a stack temporary fragment that points into sndbuf (no free).
+         */
+        struct tcp_fragment f;
+        memset(&f, 0, sizeof(f));
+        f.src_port = sk->local_port;
+        f.dst_port = sk->u.tcp.remote_port;
+        f.sent_seq = sk->u.tcp.sent_seq;
+        f.recv_ack = sk->u.tcp.recv_ack;
+        f.tcp_flags = RTE_TCP_ACK_FLAG | RTE_TCP_PSH_FLAG;
+        f.data_off = (5 << 4);
+        f.rx_win = TCP_INITIAL_WINDOW_SIZE;
+        f.payload = sb->data + sb->head_off + off;
+        f.payload_len = seglen;
+
+        struct rte_mbuf *tcp_buf =
+            tcp_build_pkt(mp, g_net.local_ip, sk->u.tcp.remote_ip, dst_mac, &f);
+        if (tcp_buf == NULL)
+                return 0;
+
+        struct inout_ring *ring = ring_instance();
+        rte_ring_mp_enqueue_burst(ring->out, (void **)&tcp_buf, 1, NULL);
+
+        LOG_INFO("tcp tx data " IP_FMT ":%u -> " IP_FMT
+                 ":%u seq=%u ack=%u len=%u (una=%u)",
+                 IP_ARG(g_net.local_ip), rte_be_to_cpu_16(sk->local_port),
+                 IP_ARG(sk->u.tcp.remote_ip),
+                 rte_be_to_cpu_16(sk->u.tcp.remote_port), f.sent_seq,
+                 f.recv_ack, seglen, sk->u.tcp.snd_una);
+
+        int was_idle = (sk->u.tcp.snd_una == sk->u.tcp.sent_seq);
+        sk->u.tcp.sent_seq += seglen;
+        /* Data stays in sndbuf until ACK. */
+        if (was_idle) {
+                sk->u.tcp.retries = 0;
+                tcp_arm_data_rto(sk, TCP_DATA_RTO_MS);
+        }
+        return 1;
+}
+
 int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
         /* States that may still have outbound segments on send_buf. */
         switch (sk->u.tcp.status) {
@@ -958,7 +1218,7 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
         for (;;) {
                 struct tcp_fragment *f = NULL;
                 if (rte_ring_sc_dequeue(sk->send_buf, (void **)&f) < 0)
-                        return 0;
+                        break;
 
                 uint32_t peer_ip = sk->u.tcp.remote_ip;
                 uint8_t *dst_mac = arp_lookup(peer_ip);
@@ -991,11 +1251,10 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
                 struct inout_ring *ring = ring_instance();
                 rte_ring_mp_enqueue_burst(ring->out, (void **)&tcp_buf, 1,
                                           NULL);
-                /* TODO: keep the just-sent fragment on a retransmission queue
-                 * with an RTO timer until the matching ACK arrives; on timeout,
-                 * resend it. Today the fragment is freed immediately and never
-                 * retransmitted, so a lost SYN+ACK or data segment stalls the
-                 * connection forever. */
+                /* App data uses sndbuf + data RTO (tcp_tx_flush_sndbuf).
+                 * Control segments on send_buf (SYN/SYN+ACK/FIN) are still
+                 * freed here; SYN_SENT has its own RTO, SYN_RECV/FIN RTO TODO.
+                 */
 
                 if ((f->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG)) ==
                     (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG)) {
@@ -1019,6 +1278,10 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
                         rte_free(f->payload);
                 rte_free(f);
         }
+
+        while (tcp_tx_flush_sndbuf(sk, mp) > 0)
+                ;
+        return 0;
 }
 
 ssize_t tcp_send(struct nsock *sk, const void *buf, size_t len,
@@ -1031,45 +1294,49 @@ ssize_t tcp_send(struct nsock *sk, const void *buf, size_t len,
         if (len == 0)
                 return 0;
 
-        /* TODO: implement send-side flow control: do not enqueue more than the
-         * peer's advertised window allows, and respect a per-socket send
-         * buffer limit. Today tcp_send queues unbounded data regardless of the
-         * peer window, and there is no backpressure toward the app. */
-        /* TODO: split payloads larger than the negotiated MSS into multiple
-         * segments; a single oversized fragment is currently encoded as one
-         * frame. */
-        struct tcp_fragment *f = tcp_fragment_alloc();
-        f->src_port = sk->local_port;
-        f->dst_port = sk->u.tcp.remote_port;
-        f->sent_seq = sk->u.tcp.sent_seq;
-        f->recv_ack = sk->u.tcp.recv_ack;
-        f->tcp_flags = RTE_TCP_ACK_FLAG | RTE_TCP_PSH_FLAG;
-        f->data_off = (5 << 4);
-        f->rx_win = TCP_INITIAL_WINDOW_SIZE;
-        f->payload_len = len;
-        f->payload = rte_malloc("tcp_payload", len, 0);
-        if (f->payload == NULL) {
-                rte_free(f);
-                LOG_ERROR("tcp_send: payload alloc failed");
+        ssize_t n =
+            tcp_sndbuf_append(&sk->u.tcp.sndbuf, (const uint8_t *)buf, len);
+        if (n < 0) {
+                LOG_ERROR("tcp_send: sndbuf full fd=%d", sk->fd);
                 return -1;
         }
-        rte_memcpy(f->payload, buf, len);
 
-        if (rte_ring_mp_enqueue(sk->send_buf, f) != 0) {
-                LOG_ERROR("tcp_send: send_buf full for fd=%d", sk->fd);
-                rte_free(f->payload);
-                rte_free(f);
-                return -1;
-        }
-        sk->u.tcp.sent_seq += (uint32_t)len;
+        /* TODO: honor peer advertised rx_win before accepting more into
+         * sndbuf (send-side flow control). sndbuf-full backpressure itself
+         * is tracked at tcp_sndbuf_append. */
+        /* MSS slicing is done in tcp_tx_flush_sndbuf (TCP_DEFAULT_MSS);
+         * negotiated MSS still depends on TCP option parsing. */
+        // struct tcp_fragment *f = tcp_fragment_alloc();
+        // f->src_port = sk->local_port;
+        // f->dst_port = sk->u.tcp.remote_port;
+        // f->sent_seq = sk->u.tcp.sent_seq;
+        // f->recv_ack = sk->u.tcp.recv_ack;
+        // f->tcp_flags = RTE_TCP_ACK_FLAG | RTE_TCP_PSH_FLAG;
+        // f->data_off = (5 << 4);
+        // f->rx_win = TCP_INITIAL_WINDOW_SIZE;
+        // f->payload_len = len;
+        // f->payload = rte_malloc("tcp_payload", len, 0);
+        // if (f->payload == NULL) {
+        //         rte_free(f);
+        //         LOG_ERROR("tcp_send: payload alloc failed");
+        //         return -1;
+        // }
+        // rte_memcpy(f->payload, buf, len);
 
-        LOG_INFO("tcp_send fd=%d " IP_FMT ":%u -> " IP_FMT
-                 ":%u len=%zu data=%.*s",
-                 sk->fd, IP_ARG(sk->local_ip), rte_be_to_cpu_16(sk->local_port),
-                 IP_ARG(sk->u.tcp.remote_ip),
-                 rte_be_to_cpu_16(sk->u.tcp.remote_port), len, (int)len,
-                 (const char *)buf);
-        return (ssize_t)len;
+        // if (rte_ring_mp_enqueue(sk->send_buf, f) != 0) {
+        //         LOG_ERROR("tcp_send: send_buf full for fd=%d", sk->fd);
+        //         rte_free(f->payload);
+        //         rte_free(f);
+        //         return -1;
+        // }
+        // sk->u.tcp.sent_seq += (uint32_t)len;
+
+        LOG_INFO(
+            "tcp_send fd=%d queued %zd bytes (sndbuf_len=%u una=%u nxt=%u)",
+            sk->fd, n, sk->u.tcp.sndbuf.len, sk->u.tcp.snd_una,
+            sk->u.tcp.sent_seq);
+        /* Worker tcp_tx_flush will slice MSS and transmit. */
+        return n;
 }
 
 ssize_t tcp_recv(struct nsock *sk, void *buf, size_t len,
@@ -1120,6 +1387,8 @@ static void tcp_drain_send(struct nsock *sk) {
                         rte_free(f->payload);
                 rte_free(f);
         }
+        tcp_sndbuf_reset(&sk->u.tcp.sndbuf, sk->u.tcp.sent_seq);
+        sk->u.tcp.snd_una = sk->u.tcp.sent_seq;
 }
 
 static void tcp_drain_recv(struct nsock *sk) {
@@ -1309,6 +1578,9 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
         sk->u.tcp.remote_port = peer->sin_port;
         sk->u.tcp.listener = NULL;
         sk->u.tcp.sent_seq = tcp_next_isn();
+        sk->u.tcp.snd_una = sk->u.tcp.sent_seq;
+        tcp_sndbuf_reset(&sk->u.tcp.sndbuf, sk->u.tcp.sent_seq);
+
         sk->u.tcp.recv_ack = 0;
         sk->u.tcp.retries = 0;
 

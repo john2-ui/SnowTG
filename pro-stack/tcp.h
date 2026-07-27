@@ -54,6 +54,29 @@ typedef enum _TCP_STATUS {
         TCP_STATUS_MAX,
 } TCP_STATUS;
 
+struct tcp_sndbuf {
+        uint8_t *data;     /**< Contiguous payload storage. */
+        uint32_t size;     /**< Capacity (TCP_SNDBUF_SIZE). */
+        uint32_t head_off; /**< Offset of first buffered byte. */
+        uint32_t len;      /**< Bytes currently buffered (unacked+unsent). */
+        uint32_t head_seq; /**< Seq of data[head_off]; tracks snd_una. */
+};
+
+/**
+ * @brief Allocate and initialize a TCP send buffer.
+ *
+ * @param sb  Send buffer to initialize.
+ * @param isn Initial sequence number for @c head_seq.
+ * @return 0 on success, -1 on allocation failure.
+ */
+int tcp_sndbuf_init(struct tcp_sndbuf *sb, uint32_t isn);
+/**
+ * @brief Deallocate a TCP send buffer.
+ *
+ * @param sb Send buffer to deallocate.
+ */
+void tcp_sndbuf_free(struct tcp_sndbuf *sb);
+
 /**
  * @brief TCP-private connection state, embedded in @ref nsock.u.tcp.
  *
@@ -79,8 +102,15 @@ struct tcp_stream {
         /** Parent listener; set on passive-open children, NULL otherwise. */
         struct nsock *listener;
 
-        uint32_t sent_seq; /**< Next sequence number to send (host order). */
-        uint32_t recv_ack; /**< Ack number tracked for the peer (host order). */
+        uint32_t sent_seq; /**< snd_nxt: next seq to send (host order). */
+        uint32_t snd_una;  /**< Oldest unacknowledged seq (host order). */
+        uint32_t recv_ack; /**< Next expected peer seq / our ACK field. */
+
+        /**
+         * Sliding-window buffer for @c nsend() payload.
+         * Control segments (SYN/ACK/FIN) go on @c nsock.send_buf instead.
+         */
+        struct tcp_sndbuf sndbuf;
 
         TCP_STATUS status; /**< Current connection state. */
 

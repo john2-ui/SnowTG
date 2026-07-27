@@ -14,6 +14,7 @@
 #include "list.h"
 #include "log.h"
 #include "net_context.h"
+#include "tcp.h"
 
 #include <netinet/in.h>
 #include <pthread.h>
@@ -130,6 +131,18 @@ struct nsock *nsock_alloc(int fd, uint8_t protocol) {
 
         /* TCP starts CLOSED; timer is armed later by connect / RTO paths. */
         if (protocol == IPPROTO_TCP) {
+                if (tcp_sndbuf_init(&sk->u.tcp.sndbuf, 0) != 0) {
+                        LOG_ERROR("nsock_alloc: tcp_sndbuf_init failed");
+                        rte_ring_free(sk->recv_buf);
+                        rte_ring_free(sk->send_buf);
+                        pthread_mutex_destroy(&sk->mutex);
+                        pthread_cond_destroy(&sk->cond);
+                        rte_free(sk);
+                        if (fd >= 0)
+                                fd_release(fd);
+                        return NULL;
+                }
+                sk->u.tcp.snd_una = 0;
                 sk->u.tcp.status = TCP_STATUS_CLOSED;
                 rte_timer_init(&sk->u.tcp.timer);
                 sk->u.tcp.retries = 0;
@@ -146,6 +159,7 @@ void nsock_free(struct nsock *sk) {
                 return;
         /* Drop any pending SYN RTO / future TIME_WAIT timer before free. */
         if (sk->protocol == IPPROTO_TCP) {
+                tcp_sndbuf_free(&sk->u.tcp.sndbuf);
                 rte_timer_stop(&sk->u.tcp.timer);
         }
         LL_REMOVE(sk, g_sock_list);
