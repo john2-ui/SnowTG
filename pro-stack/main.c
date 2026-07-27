@@ -6,7 +6,7 @@
  * Data flow:
  *   main lcore: NIC RX -> in ring; out ring -> NIC TX
  *   worker:    in ring -> protocol handlers; socket send rings -> out ring
- *   UDP/TCP app: socket receive ring -> echo application -> socket send ring
+ *   UDP/TCP apps: socket rings <-> echo server and/or active-open client
  */
 #include "arp.h"
 #include "config.h"
@@ -213,20 +213,35 @@ int main(int argc, char *argv[]) {
         LOG_INFO("udp_server scheduled on lcore %u", next_app_lcore);
 #endif
 
-#if ENABLE_TCP_APP
+#if ENABLE_TCP_APP && ENABLE_TCP_SERVER
         next_app_lcore = rte_get_next_lcore(next_app_lcore, 1, 0);
         if (next_app_lcore == RTE_MAX_LCORE)
                 rte_exit(EXIT_FAILURE,
-                         "ENABLE_TCP_APP needs an extra lcore after worker/UDP "
-                         "app (e.g. -l 0-3 when both apps are on), "
-                         "main=%u worker=%u\n",
+                         "ENABLE_TCP_SERVER needs an extra lcore after "
+                         "worker/UDP app (e.g. -l 0-3), main=%u worker=%u\n",
                          main_lcore, worker_lcore);
 
-        if (rte_eal_remote_launch(tcp_app_entry, mp, next_app_lcore) < 0)
+        if (rte_eal_remote_launch(tcp_server_entry, mp, next_app_lcore) < 0)
                 rte_exit(EXIT_FAILURE,
                          "failed to launch tcp_server on lcore %u\n",
                          next_app_lcore);
         LOG_INFO("tcp_server scheduled on lcore %u", next_app_lcore);
+#endif
+
+#if ENABLE_TCP_APP && ENABLE_TCP_CLIENT
+        next_app_lcore = rte_get_next_lcore(next_app_lcore, 1, 0);
+        if (next_app_lcore == RTE_MAX_LCORE)
+                rte_exit(EXIT_FAILURE,
+                         "ENABLE_TCP_CLIENT needs an extra lcore after "
+                         "worker/UDP/TCP server (e.g. -l 0-4), main=%u "
+                         "worker=%u\n",
+                         main_lcore, worker_lcore);
+
+        if (rte_eal_remote_launch(tcp_client_entry, mp, next_app_lcore) < 0)
+                rte_exit(EXIT_FAILURE,
+                         "failed to launch tcp_client on lcore %u\n",
+                         next_app_lcore);
+        LOG_INFO("tcp_client scheduled on lcore %u", next_app_lcore);
 #endif
 
         if (rte_eal_remote_launch(pkt_worker, mp, worker_lcore) < 0)

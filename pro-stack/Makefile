@@ -2,7 +2,7 @@
 # Copyright(c) 2010-2014 Intel Corporation
 
 # binary name
-APP = dpdk_tcp
+APP = pro-stack
 
 # all source are stored in SRCS-y
 SRCS-y := main.c net_context.c ring.c arp.c udp.c icmp.c port.c \
