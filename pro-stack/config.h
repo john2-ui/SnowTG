@@ -78,6 +78,9 @@
 #define TCP_DATA_MAX_RETRIES 5
 /** Give up after this many SYN retransmits (not counting the first SYN). */
 #define TCP_SYN_MAX_RETRIES 5
+/** Aliases for handshake control-segment RTO (SYN / SYN+ACK share SYN_*). */
+#define TCP_CTRL_RTO_MS TCP_SYN_RTO_MS
+#define TCP_CTRL_MAX_RETRIES TCP_SYN_MAX_RETRIES
 /** Inclusive ephemeral local-port range for implicit bind in tcp_connect. */
 #define TCP_EPHEMERAL_PORT_MIN 49152
 #define TCP_EPHEMERAL_PORT_MAX 65535

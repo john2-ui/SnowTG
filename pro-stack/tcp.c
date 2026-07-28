@@ -329,14 +329,25 @@ static void tcp_arm_syn_timer(struct nsock *sk, uint64_t delay_ms);
 static void tcp_arm_data_rto(struct nsock *sk, uint64_t delay_ms);
 
 /*
- * SYN_SENT RTO: retransmit the same-ISN SYN with exponential backoff
- * (TCP_SYN_RTO_MS << (retries-1)), then CLOSED + wake tcp_connect on give-up.
- * Does not nsock_free -- tcp_connect returns -1 and the app's nclose reclaims.
+ * Per-TCB timer callback. One rte_timer is multiplexed by @c status:
+ *
+ *   SYN_SENT      -- retransmit SYN (same ISN); give up -> CLOSED + wake
+ * connect SYN_RECV      -- retransmit SYN+ACK (same ISN/ack); give up -> free
+ * child ESTABLISHED / CLOSE_WAIT    -- data Go-Back-N: rewind sent_seq to
+ * snd_una FIN_WAIT_1 / LAST_ACK / CLOSING       -- FIN RTO (see branch); may
+ * GBN unacked data first TIME_WAIT     -- 2MSL expiry -> CLOSED (+ signal or
+ * free orphan)
+ *
+ * Control segments (SYN / SYN+ACK / FIN) live on send_buf and are freed after
+ * TX, so RTO rebuilds them via tcp_make_fragment + tcp_enqueue_fragment.
+ * App data stays in sndbuf until ACK; data RTO only rewinds the send cursor.
  */
 static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                          void *arg) {
         struct nsock *sk = (struct nsock *)arg;
         if (sk->u.tcp.status == TCP_STATUS_SYN_SENT) {
+                /* Active-open SYN RTO. Does not nsock_free: tcp_connect
+                 * returns -1 and the app's nclose reclaims. */
                 if (sk->u.tcp.retries < TCP_SYN_MAX_RETRIES) {
                         sk->u.tcp.retries++;
                         struct tcp_fragment *syn_f = tcp_make_fragment(
@@ -372,10 +383,9 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                         pthread_mutex_unlock(&sk->mutex);
                 }
         } else if (sk->u.tcp.status == TCP_STATUS_ESTABLISHED ||
-                   sk->u.tcp.status == TCP_STATUS_FIN_WAIT_1 ||
-                   sk->u.tcp.status == TCP_STATUS_CLOSE_WAIT ||
-                   sk->u.tcp.status == TCP_STATUS_CLOSING ||
-                   sk->u.tcp.status == TCP_STATUS_LAST_ACK) {
+                   sk->u.tcp.status == TCP_STATUS_CLOSE_WAIT) {
+                /* Data-only RTO. FIN states are handled below so a FIN in
+                 * flight is not lost by a bare sent_seq rewind. */
                 if (sk->u.tcp.snd_una == sk->u.tcp.sent_seq) {
                         return; /* nothing in flight: ignore */
                 }
@@ -386,15 +396,97 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                         return;
                 }
                 sk->u.tcp.retries++;
-                /* Go-Back-N: retransmit from snd_una on next flush. */
+                /* Go-Back-N: rewind cursor; tcp_tx_flush_sndbuf resends. */
                 sk->u.tcp.sent_seq = sk->u.tcp.snd_una;
                 LOG_INFO("tcp data RTO retransmit #%u fd=%d from seq=%u",
                          sk->u.tcp.retries, sk->fd, sk->u.tcp.snd_una);
                 uint64_t delay_ms = (uint64_t)TCP_DATA_RTO_MS
                                     << (sk->u.tcp.retries - 1);
                 tcp_arm_data_rto(sk, delay_ms);
+        } else if (sk->u.tcp.status == TCP_STATUS_SYN_RECV) {
+                /*
+                 * Passive-open SYN+ACK RTO. Mirror of SYN_SENT: the first
+                 * SYN+ACK was freed after TX, so rebuild with the same ISN
+                 * (sent_seq) and ack (recv_ack). Exponential backoff.
+                 */
+                if (sk->u.tcp.retries < TCP_SYN_MAX_RETRIES) {
+                        sk->u.tcp.retries++;
+                        struct tcp_fragment *syn_ack_f = tcp_make_fragment(
+                            sk, RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG,
+                            sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
+                        if (tcp_enqueue_fragment(sk, syn_ack_f) == 0) {
+                                LOG_INFO(
+                                    "tcp SYN_RECV retransmit #%u seq=%u ack=%u",
+                                    sk->u.tcp.retries, sk->u.tcp.sent_seq,
+                                    sk->u.tcp.recv_ack);
+                        }
+                        uint64_t delay_ms = (uint64_t)TCP_SYN_RTO_MS
+                                            << (sk->u.tcp.retries - 1);
+                        tcp_arm_syn_timer(sk, delay_ms);
+                        return;
+                }
+                /* Give up: release half-open child and backlog credit. */
+                LOG_WARN("tcp SYN_RECV timeout peer " IP_FMT ":%u",
+                         IP_ARG(sk->u.tcp.remote_ip),
+                         rte_be_to_cpu_16(sk->u.tcp.remote_port));
+                if (sk->u.tcp.listener != NULL &&
+                    sk->u.tcp.listener->u.tcp.syn_pending > 0) {
+                        sk->u.tcp.listener->u.tcp.syn_pending--;
+                }
+                rte_timer_stop(&sk->u.tcp.timer);
+                tcp_drain_recv(sk);
+                tcp_drain_send(sk);
+                nsock_free(sk);
+        } else if (sk->u.tcp.status == TCP_STATUS_FIN_WAIT_1 ||
+                   sk->u.tcp.status == TCP_STATUS_LAST_ACK ||
+                   sk->u.tcp.status == TCP_STATUS_CLOSING) {
+                /*
+                 * FIN control-segment RTO.
+                 *
+                 * After tcp_close, invariant is usually:
+                 *   snd_una ..[sndbuf unacked data].. fin_seq .. sent_seq
+                 * with sent_seq == fin_seq + 1. FIN itself is not in sndbuf.
+                 *
+                 * Two cases:
+                 *   1) sndbuf.len > 0: only Go-Back-N (sent_seq = snd_una).
+                 *      Do NOT enqueue FIN here and do NOT set sent_seq to
+                 *      fin_seq+1 -- that would skip the data range and let
+                 *      FIN leave send_buf ahead of retransmitted data.
+                 *      tcp_tx_flush resends data, then re-queues FIN once
+                 *      sent_seq catches up to snd_una + sndbuf.len.
+                 *   2) sndbuf.len == 0: FIN-only in flight. Re-queue FIN at
+                 *      snd_una; leave sent_seq as una+1.
+                 */
+                if (sk->u.tcp.snd_una == sk->u.tcp.sent_seq) {
+                        return; /* FIN (and data) already ACKed */
+                }
+
+                if (sk->u.tcp.retries >= TCP_DATA_MAX_RETRIES) {
+                        LOG_WARN("tcp FIN RTO give up fd=%d una=%u nxt=%u",
+                                 sk->fd, sk->u.tcp.snd_una, sk->u.tcp.sent_seq);
+                        return;
+                }
+                sk->u.tcp.retries++;
+
+                if (sk->u.tcp.sndbuf.len > 0) {
+                        sk->u.tcp.sent_seq = sk->u.tcp.snd_una;
+                        LOG_INFO("tcp FIN-state data GBN #%u fd=%d from seq=%u",
+                                 sk->u.tcp.retries, sk->fd, sk->u.tcp.snd_una);
+                } else {
+                        struct tcp_fragment *fin_f = tcp_make_fragment(
+                            sk, RTE_TCP_FIN_FLAG | RTE_TCP_ACK_FLAG,
+                            sk->u.tcp.snd_una, sk->u.tcp.recv_ack);
+                        if (tcp_enqueue_fragment(sk, fin_f) == 0) {
+                                LOG_INFO("tcp FIN retransmit #%u fd=%d seq=%u",
+                                         sk->u.tcp.retries, sk->fd,
+                                         sk->u.tcp.snd_una);
+                        }
+                }
+
+                uint64_t delay_ms = (uint64_t)TCP_DATA_RTO_MS
+                                    << (sk->u.tcp.retries - 1);
+                tcp_arm_data_rto(sk, delay_ms);
         }
-        /* TODO: SYN_RECV independent RTO; FIN control-segment retransmit. */
 }
 
 static void tcp_arm_data_rto(struct nsock *sk, uint64_t delay_ms) {
@@ -419,15 +511,16 @@ static void tcp_process_peer_ack(struct nsock *sk, uint32_t ack) {
         sk->u.tcp.snd_una = ack;
 
         if (sk->u.tcp.snd_una == sk->u.tcp.sent_seq) {
-                /* Nothing in flight: stop data RTO (do not touch TIME_WAIT).
-                 * These states clearly have their own timers.*/
+                /* Nothing in flight (data and/or FIN ACKed): stop RTO.
+                 * Do not touch timers owned by other states. */
                 if (sk->u.tcp.status != TCP_STATUS_TIME_WAIT &&
                     sk->u.tcp.status != TCP_STATUS_SYN_SENT &&
                     sk->u.tcp.status != TCP_STATUS_SYN_RECV)
                         rte_timer_stop(&sk->u.tcp.timer);
                 sk->u.tcp.retries = 0;
         } else {
-                /* New oldest unacked: restart RTO. */
+                /* Partial ACK advanced una; restart RTO for remaining flight.
+                 */
                 sk->u.tcp.retries = 0;
                 tcp_arm_data_rto(sk, TCP_DATA_RTO_MS);
         }
@@ -447,7 +540,9 @@ static void tcp_enter_time_wait(struct nsock *sk) {
 
 /*
  * Passive open step 1: new SYN for @p listener.
- * Creates a SYN_RECV child (no fd), queues SYN+ACK on the child send_buf.
+ * Creates a SYN_RECV child (no fd), queues SYN+ACK on the child send_buf,
+ * and arms the SYN_RECV RTO (same timer as active-open SYN). The SYN+ACK
+ * fragment is freed after TX; on timeout tcp_timer_cb rebuilds it.
  * Does NOT enqueue onto accept_queue -- that happens only after the final ACK.
  */
 static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
@@ -500,6 +595,9 @@ static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
         f->rx_win = TCP_INITIAL_WINDOW_SIZE;
         child->u.tcp.recv_ack = f->recv_ack;
         rte_ring_mp_enqueue(child->send_buf, f);
+        /* Independent SYN+ACK RTO; stopped when the final ACK arrives. */
+        child->u.tcp.retries = 0;
+        tcp_arm_syn_timer(child, TCP_SYN_RTO_MS);
 
         LOG_INFO("tcp handshake [1/3] SYN rx " IP_FMT ":%u -> " IP_FMT
                  ":%u seq=%u; reply SYN+ACK seq=%u ack=%u syn_pending=%u",
@@ -596,7 +694,8 @@ static int tcp_state_syn_recv(struct nsock *sk, struct rte_tcp_hdr *hdr,
         /*
          * Peer lost our SYN+ACK and retransmitted SYN: resend SYN+ACK with the
          * same ISN / ack. Do not allocate another child (4-tuple already maps
-         * here via tcp_stream_search).
+         * here via tcp_stream_search). Reset retries and re-arm RTO so a
+         * late peer SYN does not keep the previous exponential backoff.
          */
         if ((hdr->tcp_flags & RTE_TCP_SYN_FLAG) &&
             !(hdr->tcp_flags & RTE_TCP_ACK_FLAG)) {
@@ -609,6 +708,9 @@ static int tcp_state_syn_recv(struct nsock *sk, struct rte_tcp_hdr *hdr,
                                  IP_ARG(sk->u.tcp.remote_ip),
                                  rte_be_to_cpu_16(sk->u.tcp.remote_port),
                                  sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
+
+                sk->u.tcp.retries = 0;
+                tcp_arm_syn_timer(sk, TCP_SYN_RTO_MS);
                 return 0;
         }
 
@@ -640,6 +742,11 @@ static int tcp_state_syn_recv(struct nsock *sk, struct rte_tcp_hdr *hdr,
 
         sk->u.tcp.snd_una = sk->u.tcp.sent_seq;
         tcp_sndbuf_reset(&sk->u.tcp.sndbuf, sk->u.tcp.sent_seq);
+
+        /* Handshake done: stop SYN+ACK RTO before ESTABLISHED / accept_queue.
+         */
+        rte_timer_stop(&sk->u.tcp.timer);
+        sk->u.tcp.retries = 0;
 
         tcp_stream_set_status(sk, TCP_STATUS_ESTABLISHED);
 
@@ -1251,9 +1358,11 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
                 struct inout_ring *ring = ring_instance();
                 rte_ring_mp_enqueue_burst(ring->out, (void **)&tcp_buf, 1,
                                           NULL);
-                /* App data uses sndbuf + data RTO (tcp_tx_flush_sndbuf).
-                 * Control segments on send_buf (SYN/SYN+ACK/FIN) are still
-                 * freed here; SYN_SENT has its own RTO, SYN_RECV/FIN RTO TODO.
+                /*
+                 * App data uses sndbuf + data RTO (kept until ACK).
+                 * Control segments on send_buf (SYN / SYN+ACK / FIN) are
+                 * freed here after TX; independent RTOs re-queue them:
+                 * SYN_SENT, SYN_RECV, and FIN_WAIT_1 / LAST_ACK / CLOSING.
                  */
 
                 if ((f->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG)) ==
@@ -1281,6 +1390,30 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
 
         while (tcp_tx_flush_sndbuf(sk, mp) > 0)
                 ;
+
+        /*
+         * FIN re-queue after data Go-Back-N.
+         *
+         * tcp_close leaves sent_seq == snd_una + sndbuf.len + 1 (FIN counted).
+         * A FIN-state RTO with unacked data only rewinds sent_seq to snd_una;
+         * flush then advances it through sndbuf. When the cursor reaches
+         * una+len, the FIN sequence slot is still missing -- enqueue FIN and
+         * bump sent_seq. Right after tcp_close the equality fails
+         * (already +1), so this does not double-send on the first close.
+         */
+        if ((sk->u.tcp.status == TCP_STATUS_FIN_WAIT_1 ||
+             sk->u.tcp.status == TCP_STATUS_LAST_ACK ||
+             sk->u.tcp.status == TCP_STATUS_CLOSING) &&
+            sk->u.tcp.sent_seq == sk->u.tcp.snd_una + sk->u.tcp.sndbuf.len) {
+                struct tcp_fragment *fin_f =
+                    tcp_make_fragment(sk, RTE_TCP_FIN_FLAG | RTE_TCP_ACK_FLAG,
+                                      sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
+                if (tcp_enqueue_fragment(sk, fin_f) == 0) {
+                        sk->u.tcp.sent_seq += 1;
+                        LOG_INFO("tcp FIN re-queue after data GBN fd=%d seq=%u",
+                                 sk->fd, sk->u.tcp.sent_seq - 1);
+                }
+        }
         return 0;
 }
 
@@ -1424,7 +1557,11 @@ int tcp_close(struct nsock *sk) {
                                   sk->fd);
                         return -1;
                 }
+                /* FIN consumes one seq; arm FIN RTO (send_buf frees after TX).
+                 */
                 sk->u.tcp.sent_seq += 1;
+                sk->u.tcp.retries = 0;
+                tcp_arm_data_rto(sk, TCP_DATA_RTO_MS);
                 tcp_stream_set_status(sk, TCP_STATUS_FIN_WAIT_1);
         }
 
@@ -1509,7 +1646,10 @@ int tcp_close(struct nsock *sk) {
                                   sk->fd);
                         return -1;
                 }
+                /* FIN consumes one seq; arm FIN RTO until final ACK. */
                 sk->u.tcp.sent_seq += 1;
+                sk->u.tcp.retries = 0;
+                tcp_arm_data_rto(sk, TCP_DATA_RTO_MS);
                 tcp_stream_set_status(sk, TCP_STATUS_LAST_ACK);
                 tcp_drain_recv(sk);
 

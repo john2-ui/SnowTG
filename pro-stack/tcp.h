@@ -7,7 +7,7 @@
  * itself owns the fd, rings, local address, and synchronization primitives, so
  * @ref tcp_stream only carries what is genuinely TCP-private: the peer 4-tuple,
  * the connection status, the send/receive sequence numbers, and the per-TCB
- * timer / retry counters used by active-open RTO (and later teardown timers).
+ * timer / retry counters (SYN / SYN+ACK / data / FIN RTO and TIME_WAIT 2MSL).
  *
  * The state machine is table-driven: @ref tcp_state_ops indexes one handler per
  * @ref TCP_STATUS, so adding a state or a transition is a one-line table edit
@@ -107,14 +107,18 @@ struct tcp_stream {
         uint32_t recv_ack; /**< Next expected peer seq / our ACK field. */
 
         /**
-         * Sliding-window buffer for @c nsend() payload.
-         * Control segments (SYN/ACK/FIN) go on @c nsock.send_buf instead.
+         * Sliding-window buffer for @c nsend() payload (kept until ACK).
+         * Control segments (SYN / SYN+ACK / FIN) go on @c nsock.send_buf and
+         * are freed after TX; their RTO rebuilds them onto send_buf.
          */
         struct tcp_sndbuf sndbuf;
 
         TCP_STATUS status; /**< Current connection state. */
 
-        /** Per-TCB timer: SYN RTO today; SYN_RECV / TIME_WAIT / data later. */
+        /**
+         * Per-TCB timer, multiplexed by @c status: SYN_SENT / SYN_RECV RTO,
+         * data RTO, FIN RTO (FIN_WAIT_1 / LAST_ACK / CLOSING), TIME_WAIT 2MSL.
+         */
         struct rte_timer timer;
         /** Retransmit count for the currently armed @c timer purpose. */
         uint8_t retries;
