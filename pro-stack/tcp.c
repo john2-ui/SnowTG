@@ -35,21 +35,44 @@
 #include <string.h>
 #include <time.h>
 
-/* Sequence comparisons (mod 2^32). */
+/** @brief Test whether @p a precedes @p b in the TCP serial number space.
+ * @param a First sequence number.
+ * @param b Second sequence number.
+ * @return Non-zero when @p a is before @p b modulo 2^32.
+ */
 static inline int tcp_seq_lt(uint32_t a, uint32_t b) {
         return (int32_t)(a - b) < 0;
 }
+/** @brief Test whether @p a is not after @p b in the TCP serial number space.
+ * @param a First sequence number.
+ * @param b Second sequence number.
+ * @return Non-zero when @p a is before or equal to @p b modulo 2^32.
+ */
 static inline int tcp_seq_leq(uint32_t a, uint32_t b) {
         return (int32_t)(a - b) <= 0;
 }
+/** @brief Test whether @p a follows @p b in the TCP serial number space.
+ * @param a First sequence number.
+ * @param b Second sequence number.
+ * @return Non-zero when @p a is after @p b modulo 2^32.
+ */
 static inline int tcp_seq_gt(uint32_t a, uint32_t b) {
         return (int32_t)(a - b) > 0;
 }
+/** @brief Validate an ACK in the open interval (@p lo, @p hi].
+ * @param seq ACK number to validate.
+ * @param lo Oldest unacknowledged sequence number.
+ * @param hi Next sequence number after data in flight.
+ * @return Non-zero when @p seq newly acknowledges in-flight data.
+ */
 static inline int tcp_seq_between_open(uint32_t seq, uint32_t lo, uint32_t hi) {
         /* lo < seq <= hi (mod 2^32), for ACK validity */
         return tcp_seq_lt(lo, seq) && tcp_seq_leq(seq, hi);
 }
 
+/** @brief Release an out-of-order segment and its payload copy.
+ * @param s Segment to release; NULL is accepted.
+ */
 static void tcp_ofo_seg_free(struct tcp_ofo_seg *s) {
         if (s == NULL)
                 return;
@@ -58,6 +81,9 @@ static void tcp_ofo_seg_free(struct tcp_ofo_seg *s) {
         rte_free(s);
 }
 
+/** @brief Discard every buffered out-of-order segment of a TCP socket.
+ * @param sk Socket whose ofo queue is reset.
+ */
 static void tcp_ofo_purge(struct nsock *sk) {
         struct tcp_ofo_seg *s = sk->u.tcp.ofo;
         while (s != NULL) {
@@ -69,7 +95,12 @@ static void tcp_ofo_purge(struct nsock *sk) {
         sk->u.tcp.ofo_count = 0;
 }
 
-/* Deliver contiguous payload to the app via recv_buf as tcp_rx_blob*. */
+/** @brief Copy contiguous TCP payload into the application receive queue.
+ * @param sk Destination TCP socket.
+ * @param data Payload bytes to copy.
+ * @param len Number of payload bytes.
+ * @return 0 on successful queueing, or -1 on allocation or queue failure.
+ */
 static int tcp_deliver_payload(struct nsock *sk, const uint8_t *data,
                                uint32_t len) {
         if (len == 0)
@@ -100,8 +131,8 @@ static int tcp_deliver_payload(struct nsock *sk, const uint8_t *data,
         return 0;
 }
 
-/*
- * Link one already-trimmed segment into the sorted ofo list.
+/**
+ * @brief Link an already-trimmed segment into the sorted ofo list.
  * @p before is the first existing node with seq >= new seq (NULL = append).
  *
  * TODO: replace this O(n) sorted doubly-linked list with a Linux-style
@@ -109,6 +140,13 @@ static int tcp_deliver_payload(struct nsock *sk, const uint8_t *data,
  * a doubly-linked list in seq order for O(1) drain from rcv_nxt (see
  * tcp_data_queue / sk_buff ofo in the kernel). Cap / reclaim under memory
  * pressure (ofo full / possible DoS) should live next to that structure.
+ * @param sk Socket owning the ofo list.
+ * @param seq Sequence number of the first payload byte.
+ * @param data Payload bytes to copy.
+ * @param len Number of payload bytes.
+ * @param has_fin Whether FIN follows the payload.
+ * @param before Node before which to insert, or NULL to append.
+ * @return 0 on insertion, or -1 when allocation or capacity fails.
  */
 static int tcp_ofo_link(struct nsock *sk, uint32_t seq, const uint8_t *data,
                         uint32_t len, int has_fin, struct tcp_ofo_seg *before) {
@@ -163,7 +201,9 @@ static int tcp_ofo_link(struct nsock *sk, uint32_t seq, const uint8_t *data,
         return 0;
 }
 
-/*
+/**
+ * @brief Insert a segment into the ofo queue after trimming duplicates.
+ *
  * Insert [seq, seq+len) into ofo; trim against recv_ack and existing segs.
  * Existing ofo bytes win on overlap. Covers three overlap shapes:
  *   - new left overhang only: insert [seq, cur_seq), done
@@ -171,6 +211,12 @@ static int tcp_ofo_link(struct nsock *sk, uint32_t seq, const uint8_t *data,
  *   - new covers cur (seq < cur_seq && cur_end < seg_end): insert left
  *     overhang, skip over cur, continue with right remainder (do not break)
  * has_fin is kept only if the original segment end survives trimming.
+ * @param sk Socket receiving the segment.
+ * @param seq First sequence number of the received payload.
+ * @param data Received payload bytes.
+ * @param len Number of payload bytes.
+ * @param has_fin Whether the received segment carries FIN.
+ * @return 0 when discarded or buffered successfully, or -1 on buffer failure.
  */
 static int tcp_ofo_insert(struct nsock *sk, uint32_t seq, const uint8_t *data,
                           uint32_t len, int has_fin) {
@@ -256,7 +302,12 @@ static int tcp_ofo_insert(struct nsock *sk, uint32_t seq, const uint8_t *data,
         return tcp_ofo_link(sk, seq, data, len, has_fin, cur);
 }
 
-/* Pull contiguous ofo segments into the app and advance recv_ack. */
+/** @brief Deliver contiguous ofo segments and advance the receive boundary.
+ * @param sk Socket whose sorted ofo queue is drained.
+ *
+ * Stops at the first sequence hole or when application delivery cannot accept
+ * the next contiguous payload.
+ */
 static void tcp_ofo_drain(struct nsock *sk) {
         while (sk->u.tcp.ofo != NULL) {
                 struct tcp_ofo_seg *s = sk->u.tcp.ofo;
@@ -301,6 +352,11 @@ static void tcp_ofo_drain(struct nsock *sk) {
         }
 }
 
+/** @brief Allocate and initialize a TCP send buffer.
+ * @param sb Send buffer to initialize.
+ * @param isn Initial sequence number for the buffer head.
+ * @return 0 on success, or -1 if allocation fails.
+ */
 int tcp_sndbuf_init(struct tcp_sndbuf *sb, uint32_t isn) {
         sb->data = rte_malloc("tcp_sndbuf", TCP_SNDBUF_SIZE, 0);
         if (sb->data == NULL) {
@@ -314,6 +370,9 @@ int tcp_sndbuf_init(struct tcp_sndbuf *sb, uint32_t isn) {
         return 0;
 }
 
+/** @brief Release storage owned by a TCP send buffer.
+ * @param sb Send buffer to release.
+ */
 void tcp_sndbuf_free(struct tcp_sndbuf *sb) {
         if (sb->data) {
                 rte_free(sb->data);
@@ -322,13 +381,22 @@ void tcp_sndbuf_free(struct tcp_sndbuf *sb) {
         sb->len = sb->head_off = sb->size = 0;
 }
 
+/** @brief Empty a send buffer and assign its new sequence base.
+ * @param sb Send buffer to reset.
+ * @param seq Sequence number for the new buffer head.
+ */
 static void tcp_sndbuf_reset(struct tcp_sndbuf *sb, uint32_t seq) {
         sb->head_off = 0;
         sb->len = 0;
         sb->head_seq = seq;
 }
 
-/* Append app data. Returns bytes accepted, or -1 if full/error. */
+/** @brief Append application bytes to the TCP send buffer.
+ * @param sb Destination send buffer.
+ * @param data Source bytes.
+ * @param len Requested byte count.
+ * @return Accepted byte count (possibly short), or -1 if full or invalid.
+ */
 static ssize_t tcp_sndbuf_append(struct tcp_sndbuf *sb, const uint8_t *data,
                                  size_t len) {
         if (sb->data == NULL || len == 0)
@@ -358,7 +426,10 @@ static ssize_t tcp_sndbuf_append(struct tcp_sndbuf *sb, const uint8_t *data,
         return (ssize_t)to_put;
 }
 
-/* Drop @p len bytes from the head (ACK advancement). */
+/** @brief Remove acknowledged bytes from the head of a send buffer.
+ * @param sb Send buffer to advance.
+ * @param len Requested number of bytes to remove; clamped to buffered bytes.
+ */
 static void tcp_sndbuf_remove(struct tcp_sndbuf *sb, uint32_t len) {
         if (len == 0)
                 return;
@@ -371,6 +442,10 @@ static void tcp_sndbuf_remove(struct tcp_sndbuf *sb, uint32_t len) {
                 sb->head_off = 0;
 }
 
+/** @brief Return a printable TCP state name.
+ * @param s TCP state to format.
+ * @return Static state-name string.
+ */
 static const char *tcp_status_str(TCP_STATUS s) {
         switch (s) {
         case TCP_STATUS_CLOSED:
@@ -400,6 +475,10 @@ static const char *tcp_status_str(TCP_STATUS s) {
         }
 }
 
+/** @brief Format TCP flags for logging.
+ * @param flags TCP header flag bitmap.
+ * @return Pointer to a static buffer overwritten by the next call.
+ */
 static const char *tcp_flags_str(uint8_t flags) {
         static char buf[64];
         int n = 0;
@@ -421,6 +500,11 @@ static const char *tcp_flags_str(uint8_t flags) {
         return buf;
 }
 
+/** @brief Find a TCP listener bound to an exact local endpoint.
+ * @param local_ip Local IPv4 address in network byte order.
+ * @param local_port Local TCP port in network byte order.
+ * @return Matching LISTEN socket, or NULL if none exists.
+ */
 static struct nsock *tcp_listener_lookup(uint32_t local_ip,
                                          uint16_t local_port) {
         struct nsock *sk;
@@ -435,6 +519,13 @@ static struct nsock *tcp_listener_lookup(uint32_t local_ip,
         return NULL;
 }
 
+/** @brief Look up a TCP stream by its complete four-tuple.
+ * @param remote_ip Peer IPv4 address in network byte order.
+ * @param local_ip Local IPv4 address in network byte order.
+ * @param remote_port Peer TCP port in network byte order.
+ * @param local_port Local TCP port in network byte order.
+ * @return Matching TCP socket, or NULL if absent.
+ */
 struct nsock *tcp_stream_search(uint32_t remote_ip, uint32_t local_ip,
                                 uint16_t remote_port, uint16_t local_port) {
         return nsock_from_4tuple(remote_ip, local_ip, remote_port, local_port,
@@ -449,6 +540,9 @@ struct nsock *tcp_stream_search(uint32_t remote_ip, uint32_t local_ip,
  */
 static uint32_t tcp_isn_state;
 static int tcp_isn_inited;
+/** @brief Produce the next process-local initial sequence number.
+ * @return Newly generated ISN in host byte order.
+ */
 static uint32_t tcp_next_isn(void) {
         if (!tcp_isn_inited) {
                 tcp_isn_state = (uint32_t)time(NULL);
@@ -458,10 +552,17 @@ static uint32_t tcp_next_isn(void) {
         return tcp_isn_state;
 }
 
-/*
- * Create a passive-open child TCB. No fd yet: the peer can flood SYNs and we
+/**
+ * @brief Create a passive-open child TCP control block without an fd.
+ *
+ * No fd yet: the peer can flood SYNs and we
  * still need TCBs + rings, but userspace fds are only handed out in tcp_accept
  * after the 3WHS completes.
+ * @param remote_ip Peer IPv4 address in network byte order.
+ * @param local_ip Local IPv4 address in network byte order.
+ * @param remote_port Peer TCP port in network byte order.
+ * @param local_port Local TCP port in network byte order.
+ * @return Newly allocated SYN_RECV child, or NULL on allocation failure.
  */
 struct nsock *tcp_stream_create(uint32_t remote_ip, uint32_t local_ip,
                                 uint16_t remote_port, uint16_t local_port) {
@@ -491,6 +592,10 @@ struct nsock *tcp_stream_create(uint32_t remote_ip, uint32_t local_ip,
         return sk;
 }
 
+/** @brief Transition a stream to a new TCP state and log the change.
+ * @param sk Stream whose state changes.
+ * @param new_status Destination TCP state.
+ */
 void tcp_stream_set_status(struct nsock *sk, TCP_STATUS new_status) {
         TCP_STATUS old = sk->u.tcp.status;
         sk->u.tcp.status = new_status;
@@ -501,12 +606,19 @@ void tcp_stream_set_status(struct nsock *sk, TCP_STATUS new_status) {
                  rte_be_to_cpu_16(sk->local_port));
 }
 
+/** @brief Locate the IPv4 header in an Ethernet mbuf.
+ * @param mbuf Packet containing Ethernet followed by IPv4.
+ * @return Pointer to the packet's IPv4 header.
+ */
 static struct rte_ipv4_hdr *tcp_ipv4_header(struct rte_mbuf *mbuf) {
         struct rte_ether_hdr *eth =
             rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
         return (struct rte_ipv4_hdr *)(eth + 1);
 }
 
+/** @brief Allocate a zero-initialized outbound TCP fragment descriptor.
+ * @return Allocated fragment; terminates the process if allocation fails.
+ */
 static struct tcp_fragment *tcp_fragment_alloc(void) {
         struct tcp_fragment *f =
             rte_malloc("tcp_fragment", sizeof(struct tcp_fragment), 0);
@@ -519,6 +631,11 @@ static struct tcp_fragment *tcp_fragment_alloc(void) {
 static void tcp_drain_send(struct nsock *sk);
 static void tcp_drain_recv(struct nsock *sk);
 
+/** @brief Queue an outbound TCP fragment and release it on failure.
+ * @param sk Socket owning the outbound queue.
+ * @param f Fragment to enqueue; consumed in both success and failure paths.
+ * @return 0 on success, or -1 if send_buf is full.
+ */
 static int tcp_enqueue_fragment(struct nsock *sk, struct tcp_fragment *f) {
         if (rte_ring_mp_enqueue(sk->send_buf, f) != 0) {
                 LOG_ERROR("tcp send_buf full for fd=%d flags=0x%02x", sk->fd,
@@ -531,10 +648,16 @@ static int tcp_enqueue_fragment(struct nsock *sk, struct tcp_fragment *f) {
         return 0;
 }
 
-/*
- * Build a header-only (or payload-bearing) outbound fragment for @p sk.
+/**
+ * @brief Build a header-only or payload-bearing outbound fragment descriptor.
+ *
  * Ports and sequence numbers follow tcp_fragment conventions: ports network
  * order, sent_seq/recv_ack/rx_win host order.
+ * @param sk Stream supplying local and peer ports.
+ * @param flags TCP flags for the fragment.
+ * @param sent_seq Segment sequence number in host byte order.
+ * @param recv_ack ACK number in host byte order.
+ * @return Newly allocated fragment descriptor.
  */
 static struct tcp_fragment *tcp_make_fragment(struct nsock *sk, uint8_t flags,
                                               uint32_t sent_seq,
@@ -550,20 +673,30 @@ static struct tcp_fragment *tcp_make_fragment(struct nsock *sk, uint8_t flags,
         return f;
 }
 
-/*
+/**
+ * @brief Return the lcore responsible for TCP timers.
+ *
  * rte_timer callbacks must run on the lcore that calls rte_timer_manage().
  * That is the main lcore (see main.c I/O loop), not the pkt_worker.
+ * @return Main lcore identifier.
  */
 static unsigned int tcp_timer_lcore(void) { return rte_get_main_lcore(); }
 
+/** @brief Convert milliseconds to the DPDK timer cycle domain.
+ * @param ms Duration in milliseconds.
+ * @return Equivalent duration in timer cycles.
+ */
 static uint64_t tcp_ms_to_cycles(uint64_t ms) {
         return rte_get_timer_hz() * ms / 1000;
 }
 
-/*
+/**
+ * @brief Choose an unused local TCP port from the ephemeral range.
+ *
  * Round-robin pick an unused local TCP port in
  * [TCP_EPHEMERAL_PORT_MIN, TCP_EPHEMERAL_PORT_MAX].
  * Returns the port in network byte order, or 0 if the range is exhausted.
+ * @return Available port in network byte order, or 0 when exhausted.
  */
 static uint16_t tcp_alloc_ephemeral_port(void) {
         static uint16_t next = TCP_EPHEMERAL_PORT_MIN;
@@ -583,8 +716,10 @@ static uint16_t tcp_alloc_ephemeral_port(void) {
 static void tcp_arm_syn_timer(struct nsock *sk, uint64_t delay_ms);
 static void tcp_arm_data_rto(struct nsock *sk, uint64_t delay_ms);
 
-/*
- * Per-TCB timer callback. One rte_timer is multiplexed by @c status:
+/**
+ * @brief Handle a per-TCB retransmission or TIME_WAIT timer expiry.
+ *
+ * One rte_timer is multiplexed by @c status:
  *
  *   SYN_SENT      -- retransmit SYN (same ISN); give up -> CLOSED + wake
  * connect SYN_RECV      -- retransmit SYN+ACK (same ISN/ack); give up -> free
@@ -596,6 +731,8 @@ static void tcp_arm_data_rto(struct nsock *sk, uint64_t delay_ms);
  * Control segments (SYN / SYN+ACK / FIN) live on send_buf and are freed after
  * TX, so RTO rebuilds them via tcp_make_fragment + tcp_enqueue_fragment.
  * App data stays in sndbuf until ACK; data RTO only rewinds the send cursor.
+ * @param timer Expired DPDK timer (unused).
+ * @param arg Owning @ref nsock.
  */
 static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                          void *arg) {
@@ -744,14 +881,22 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
         }
 }
 
+/** @brief Arm the data or FIN retransmission timer.
+ * @param sk Stream whose timer is armed.
+ * @param delay_ms Expiry delay in milliseconds.
+ */
 static void tcp_arm_data_rto(struct nsock *sk, uint64_t delay_ms) {
         rte_timer_reset(&sk->u.tcp.timer, tcp_ms_to_cycles(delay_ms), SINGLE,
                         tcp_timer_lcore(), tcp_timer_cb, sk);
 }
 
-/*
- * Process peer ACK: advance snd_una and free acked bytes from sndbuf.
+/**
+ * @brief Process a peer ACK and retire acknowledged transmit state.
+ *
+ * Advance snd_una and free acked bytes from sndbuf.
  * Safe to call from ESTABLISHED / FIN_WAIT_* / CLOSE_WAIT / etc.
+ * @param sk Stream whose send state is acknowledged.
+ * @param ack ACK number in host byte order.
  */
 static void tcp_process_peer_ack(struct nsock *sk, uint32_t ack) {
         /* Accept only ACKs that newly acknowledge something in-flight. */
@@ -781,11 +926,18 @@ static void tcp_process_peer_ack(struct nsock *sk, uint32_t ack) {
         }
 }
 
+/** @brief Arm the SYN or SYN+ACK retransmission timer.
+ * @param sk Stream whose timer is armed.
+ * @param delay_ms Expiry delay in milliseconds.
+ */
 static void tcp_arm_syn_timer(struct nsock *sk, uint64_t delay_ms) {
         rte_timer_reset(&sk->u.tcp.timer, tcp_ms_to_cycles(delay_ms), SINGLE,
                         tcp_timer_lcore(), tcp_timer_cb, sk);
 }
 
+/** @brief Enter TIME_WAIT and arm the 2MSL expiry timer.
+ * @param sk Stream that completed active close processing.
+ */
 static void tcp_enter_time_wait(struct nsock *sk) {
         tcp_stream_set_status(sk, TCP_STATUS_TIME_WAIT);
         sk->u.tcp.retries = 0;
@@ -793,12 +945,19 @@ static void tcp_enter_time_wait(struct nsock *sk) {
                         tcp_timer_lcore(), tcp_timer_cb, sk);
 }
 
-/*
+/**
+ * @brief Handle a bare SYN received by a listening socket.
+ *
  * Passive open step 1: new SYN for @p listener.
  * Creates a SYN_RECV child (no fd), queues SYN+ACK on the child send_buf,
  * and arms the SYN_RECV RTO (same timer as active-open SYN). The SYN+ACK
  * fragment is freed after TX; on timeout tcp_timer_cb rebuilds it.
  * Does NOT enqueue onto accept_queue -- that happens only after the final ACK.
+ * @param listener Listening socket.
+ * @param hdr Inbound TCP header.
+ * @param remote_ip Peer IPv4 address in network byte order.
+ * @param remote_port Peer TCP port in network byte order.
+ * @return 0; ingress retains ownership of the packet mbuf.
  */
 static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
                             uint32_t remote_ip, uint16_t remote_port) {
@@ -864,10 +1023,16 @@ static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
         return 0;
 }
 
-/*
+/**
+ * @brief Handle a SYN+ACK during active open.
+ *
  * Active open step 2/3: SYN_SENT --recv SYN+ACK, send ACK--> ESTABLISHED.
  * Validates that the peer ACK covers our ISN (sent_seq + 1), then wakes the
  * blocking tcp_connect waiter. Timer is stopped so RTO cannot race the ACK.
+ * @param sk SYN_SENT stream.
+ * @param hdr Inbound TCP header.
+ * @param mbuf Inbound packet; not retained.
+ * @return 0; ingress frees @p mbuf.
  */
 static int tcp_state_syn_sent(struct nsock *sk, struct rte_tcp_hdr *hdr,
                               struct rte_mbuf *mbuf) {
@@ -919,6 +1084,12 @@ static int tcp_state_syn_sent(struct nsock *sk, struct rte_tcp_hdr *hdr,
         return 0;
 }
 
+/** @brief Handle SYN retransmissions, RST, or final ACK in SYN_RECV.
+ * @param sk Passive-open child stream.
+ * @param hdr Inbound TCP header.
+ * @param mbuf Inbound packet; not retained.
+ * @return 0; ingress frees @p mbuf.
+ */
 static int tcp_state_syn_recv(struct nsock *sk, struct rte_tcp_hdr *hdr,
                               struct rte_mbuf *mbuf) {
         (void)mbuf;
@@ -1039,6 +1210,12 @@ static int tcp_state_syn_recv(struct nsock *sk, struct rte_tcp_hdr *hdr,
         return 0;
 }
 
+/** @brief Process data, ACK, FIN, and out-of-order payload in ESTABLISHED.
+ * @param sk Established stream.
+ * @param hdr Inbound TCP header.
+ * @param mbuf Inbound packet containing the TCP payload.
+ * @return 0; payload is copied to TCP-owned storage and ingress frees mbuf.
+ */
 static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
                                  struct rte_mbuf *mbuf) {
         uint8_t hdrlen = (hdr->data_off >> 4) * 4;
@@ -1115,6 +1292,12 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
         return 0;
 }
 
+/** @brief Complete passive close after receiving the ACK for the local FIN.
+ * @param sk LAST_ACK stream.
+ * @param hdr Inbound TCP header.
+ * @param mbuf Inbound packet; not retained.
+ * @return 0; ingress frees @p mbuf.
+ */
 static int tcp_state_last_ack(struct nsock *sk, struct rte_tcp_hdr *hdr,
                               struct rte_mbuf *mbuf) {
         // Passive close final step
@@ -1165,13 +1348,19 @@ static int tcp_state_last_ack(struct nsock *sk, struct rte_tcp_hdr *hdr,
         return 0;
 }
 
+/** @brief Re-ACK a retransmitted peer FIN while in TIME_WAIT.
+ * @param sk TIME_WAIT stream.
+ * @param hdr Inbound TCP header.
+ * @param mbuf Inbound packet; not retained.
+ * @return 0; ingress frees @p mbuf.
+ */
 static int tcp_state_time_wait(struct nsock *sk, struct rte_tcp_hdr *hdr,
                                struct rte_mbuf *mbuf) {
         (void)mbuf;
         if (sk->u.tcp.status != TCP_STATUS_TIME_WAIT)
                 return 0;
 
-        /**peer retransmitted FIN (our ACK-of-FIN was lost): re-ACK. */
+        /* Peer retransmitted FIN (our ACK-of-FIN was lost): re-ACK. */
         if (hdr->tcp_flags & RTE_TCP_FIN_FLAG) {
                 struct tcp_fragment *ack_f =
                     tcp_make_fragment(sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
@@ -1187,6 +1376,12 @@ static int tcp_state_time_wait(struct nsock *sk, struct rte_tcp_hdr *hdr,
         return 0;
 }
 
+/** @brief Finish simultaneous close after the peer acknowledges the local FIN.
+ * @param sk CLOSING stream.
+ * @param hdr Inbound TCP header.
+ * @param mbuf Inbound packet; not retained.
+ * @return 0; ingress frees @p mbuf.
+ */
 static int tcp_state_closing(struct nsock *sk, struct rte_tcp_hdr *hdr,
                              struct rte_mbuf *mbuf) {
 
@@ -1195,7 +1390,7 @@ static int tcp_state_closing(struct nsock *sk, struct rte_tcp_hdr *hdr,
                 return 0;
         }
 
-        /** Peer retransmitted FIN (our ACK-of-FIN was lost): re-ACK. */
+        /* Peer retransmitted FIN (our ACK-of-FIN was lost): re-ACK. */
         if (hdr->tcp_flags & RTE_TCP_FIN_FLAG) {
                 struct tcp_fragment *ack_f =
                     tcp_make_fragment(sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
@@ -1228,6 +1423,12 @@ static int tcp_state_closing(struct nsock *sk, struct rte_tcp_hdr *hdr,
         return 0;
 }
 
+/** @brief Process ACK and FIN combinations while waiting for local FIN ACK.
+ * @param sk FIN_WAIT_1 stream.
+ * @param hdr Inbound TCP header.
+ * @param mbuf Inbound packet used for diagnostic payload length.
+ * @return 0; ingress frees @p mbuf.
+ */
 static int tcp_state_fin_wait_1(struct nsock *sk, struct rte_tcp_hdr *hdr,
                                 struct rte_mbuf *mbuf) {
         int has_fin = !!(hdr->tcp_flags & RTE_TCP_FIN_FLAG);
@@ -1282,6 +1483,12 @@ static int tcp_state_fin_wait_1(struct nsock *sk, struct rte_tcp_hdr *hdr,
         return 0; /* caller frees mbuf */
 }
 
+/** @brief Process the peer FIN after the local FIN has been acknowledged.
+ * @param sk FIN_WAIT_2 stream.
+ * @param hdr Inbound TCP header.
+ * @param mbuf Inbound packet; not retained.
+ * @return 0; ingress frees @p mbuf.
+ */
 static int tcp_state_fin_wait_2(struct nsock *sk, struct rte_tcp_hdr *hdr,
                                 struct rte_mbuf *mbuf) {
         (void)mbuf;
@@ -1322,10 +1529,17 @@ static int tcp_state_fin_wait_2(struct nsock *sk, struct rte_tcp_hdr *hdr,
         return 0;
 }
 
-/*
+/**
+ * @brief Re-ACK a retransmitted peer FIN while the application is in
+ * CLOSE_WAIT.
+ *
  * Peer retransmitted FIN while we wait for the app's nclose (CLOSE_WAIT).
  * Re-ACK so the peer can retire its FIN if our first ACK-of-FIN was lost.
  * Our own FIN is sent later from tcp_close().
+ * @param sk CLOSE_WAIT stream.
+ * @param hdr Inbound TCP header.
+ * @param mbuf Inbound packet; not retained.
+ * @return 0; ingress frees @p mbuf.
  */
 static int tcp_state_close_wait(struct nsock *sk, struct rte_tcp_hdr *hdr,
                                 struct rte_mbuf *mbuf) {
@@ -1352,10 +1566,16 @@ static int tcp_state_close_wait(struct nsock *sk, struct rte_tcp_hdr *hdr,
         return 0;
 }
 
-/*
+/**
+ * @brief Drop a segment received in a state without a dedicated handler.
+ *
  * Fallback for states that still ignore unexpected segments:
  *   TCP_STATUS_CLOSED  -> TODO: RST for segments to a closed port.
  *   TCP_STATUS_LISTEN  -> real work is in tcp_state_listen via tcp_ingress.
+ * @param sk Socket selected by ingress.
+ * @param hdr Inbound TCP header.
+ * @param mbuf Inbound packet; not retained.
+ * @return 0; ingress frees @p mbuf.
  */
 static int tcp_state_drop(struct nsock *sk, struct rte_tcp_hdr *hdr,
                           struct rte_mbuf *mbuf) {
@@ -1386,6 +1606,14 @@ static const struct tcp_state_ops tcp_state_ops[TCP_STATUS_MAX] = {
     [TCP_STATUS_FIN_WAIT_2] = {tcp_state_fin_wait_2},
 };
 
+/**
+ * @brief Parse and dispatch one inbound IPv4/TCP packet.
+ * @param mbuf Packet received from the worker input ring.
+ * @return Always 0; this function always consumes @p mbuf.
+ *
+ * Learns the peer MAC, selects an existing stream or listener, and delegates
+ * state handling. A handler may retain the mbuf only by returning non-zero.
+ */
 int tcp_ingress(struct rte_mbuf *mbuf) {
         struct rte_ether_hdr *eth =
             rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
@@ -1456,6 +1684,14 @@ int tcp_ingress(struct rte_mbuf *mbuf) {
         return 0;
 }
 
+/** @brief Build an Ethernet/IPv4/TCP packet from a fragment descriptor.
+ * @param mp Mempool from which to allocate the packet mbuf.
+ * @param src_ip Source IPv4 address in network byte order.
+ * @param dst_ip Destination IPv4 address in network byte order.
+ * @param dst_mac Destination Ethernet address.
+ * @param f Fragment describing TCP header fields and optional payload.
+ * @return Newly built packet mbuf, or NULL on allocation failure.
+ */
 static struct rte_mbuf *tcp_build_pkt(struct rte_mempool *mp, uint32_t src_ip,
                                       uint32_t dst_ip, uint8_t *dst_mac,
                                       struct tcp_fragment *f) {
@@ -1492,6 +1728,15 @@ static struct rte_mbuf *tcp_build_pkt(struct rte_mempool *mp, uint32_t src_ip,
         return mbuf;
 }
 
+/**
+ * @brief Transmit one MSS-limited unsent range from a stream send buffer.
+ * @param sk Stream whose sndbuf is flushed.
+ * @param mp Mempool used to create IPv4/TCP packets and ARP requests.
+ * @return 1 when a data segment was queued for NIC output, otherwise 0.
+ *
+ * Buffered bytes remain in sndbuf until acknowledged; this helper advances
+ * sent_seq and arms the data RTO only after successful packet construction.
+ */
 static int tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
         if (sk->u.tcp.status != TCP_STATUS_ESTABLISHED &&
             sk->u.tcp.status != TCP_STATUS_CLOSE_WAIT &&
@@ -1568,6 +1813,15 @@ static int tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
         return 1;
 }
 
+/**
+ * @brief Flush pending control fragments and buffered stream data for a socket.
+ * @param sk TCP socket to flush.
+ * @param mp Mempool used to create outbound packets and ARP requests.
+ * @return 0 after flushing eligible pending work.
+ *
+ * Control fragments are dequeued from send_buf and freed after TX; application
+ * payload is sent from sndbuf and remains retained for ACK/RTO handling.
+ */
 int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
         /* States that may still have outbound segments on send_buf. */
         switch (sk->u.tcp.status) {
@@ -1681,6 +1935,16 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
         return 0;
 }
 
+/**
+ * @brief Queue application bytes for reliable TCP transmission.
+ * @param sk Established TCP socket.
+ * @param buf Source application buffer.
+ * @param len Requested byte count.
+ * @param flags Reserved send flags; currently ignored.
+ * @return Accepted byte count, 0 for an empty request, or -1 on failure.
+ *
+ * The worker later segments buffered bytes by MSS and transmits them.
+ */
 ssize_t tcp_send(struct nsock *sk, const void *buf, size_t len,
                  __attribute__((unused)) int flags) {
         if (sk->u.tcp.status != TCP_STATUS_ESTABLISHED) {
@@ -1736,6 +2000,16 @@ ssize_t tcp_send(struct nsock *sk, const void *buf, size_t len,
         return n;
 }
 
+/**
+ * @brief Receive contiguous TCP payload bytes for an application.
+ * @param sk TCP socket whose receive queue is consumed.
+ * @param buf Destination application buffer.
+ * @param len Destination capacity.
+ * @param flags Reserved receive flags; currently ignored.
+ * @return Number of bytes copied after blocking for a queued payload blob.
+ *
+ * Short reads retain the unread suffix by requeueing the blob.
+ */
 ssize_t tcp_recv(struct nsock *sk, void *buf, size_t len,
                  __attribute__((unused)) int flags) {
         struct tcp_rx_blob *b;
@@ -1763,6 +2037,9 @@ ssize_t tcp_recv(struct nsock *sk, void *buf, size_t len,
         return (ssize_t)n;
 }
 
+/** @brief Discard pending control fragments and buffered transmit data.
+ * @param sk Socket whose transmit-side state is reset.
+ */
 static void tcp_drain_send(struct nsock *sk) {
         struct tcp_fragment *f;
         while (rte_ring_sc_dequeue(sk->send_buf, (void **)&f) == 0) {
@@ -1774,6 +2051,9 @@ static void tcp_drain_send(struct nsock *sk) {
         sk->u.tcp.snd_una = sk->u.tcp.sent_seq;
 }
 
+/** @brief Release queued application payload and all out-of-order data.
+ * @param sk Socket whose receive-side state is discarded.
+ */
 static void tcp_drain_recv(struct nsock *sk) {
         struct tcp_rx_blob *b;
         while (rte_ring_sc_dequeue(sk->recv_buf, (void **)&b) == 0) {
@@ -1783,11 +2063,20 @@ static void tcp_drain_recv(struct nsock *sk) {
         tcp_ofo_purge(sk);
 }
 
+/**
+ * @brief Close a TCP socket according to its current protocol state.
+ * @param sk Socket to close.
+ * @return 0 after orderly or immediate cleanup, or -1 when FIN queueing or
+ *         the closing state fails.
+ *
+ * Starts active/passive close when needed and owns final resource reclamation
+ * for application-visible TCP control blocks.
+ */
 int tcp_close(struct nsock *sk) {
         LOG_INFO("tcp_close fd=%d status=%s", sk->fd,
                  tcp_status_str(sk->u.tcp.status));
 
-        /**
+        /*
          * Active close from ESTABLISHED (or abort a half-open SYN_RECV child):
          * enqueue FIN+ACK and enter FIN_WAIT_1. 2MSL reclaim happens after
          * TIME_WAIT via tcp_timer_cb. syn_pending is only charged for
@@ -1935,11 +2224,18 @@ int tcp_close(struct nsock *sk) {
         return 0;
 }
 
-/*
+/**
+ * @brief Perform a blocking active TCP open.
+ *
  * Active open: CLOSED -> SYN_SENT -> (wait) ESTABLISHED.
  * If the socket is unbound, fill local_ip from g_net and allocate an ephemeral
  * local_port (BSD-style implicit bind). Blocks on sk->cond until handshake
  * succeeds, RTO gives up, or tcp_close aborts the connect.
+ * @param sk CLOSED TCP socket to connect.
+ * @param addr Peer IPv4 socket address.
+ * @param addrlen Address length; currently ignored.
+ * @return 0 after reaching ESTABLISHED, or -1 on validation, setup, or
+ *         handshake failure.
  */
 int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
                 __attribute__((unused)) socklen_t addrlen) {
@@ -2006,6 +2302,12 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
         return 0;
 }
 
+/**
+ * @brief Put a bound TCP socket into LISTEN state.
+ * @param sk Socket to configure as a listener.
+ * @param backlog Maximum incomplete plus completed pending connections.
+ * @return 0 on success, or -1 if the accept queue cannot be allocated.
+ */
 int tcp_listen(struct nsock *sk, int backlog) {
         /* Listener has no peer; children carry the remote 4-tuple half. */
         sk->u.tcp.status = TCP_STATUS_LISTEN;
@@ -2042,6 +2344,15 @@ int tcp_listen(struct nsock *sk, int backlog) {
         return 0;
 }
 
+/**
+ * @brief Block until an established passive-open child can be accepted.
+ * @param sk Listening socket.
+ * @param addr Optional output buffer for the peer IPv4 address and port.
+ * @param addrlen Address length pointer; currently ignored.
+ * @return Newly assigned child fd, or -1 on invalid listener or fd exhaustion.
+ *
+ * The child receives an fd only after the three-way handshake completed.
+ */
 int tcp_accept(struct nsock *sk, struct sockaddr *addr,
                __attribute__((unused)) socklen_t *addrlen) {
         if (sk->u.tcp.status != TCP_STATUS_LISTEN) {
