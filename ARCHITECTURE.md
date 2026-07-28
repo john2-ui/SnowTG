@@ -60,12 +60,12 @@ flowchart LR
 
 ### 接收交付模型（长期目标）
 
-**当前（过渡）**：TCP/UDP 的 `recv_buf` 挂整包 `mbuf`，应用侧 `nrecv` / `tcp_recv` 自己剥 eth/ip/tcp（或 udp）头再拷 payload。
+**当前**：UDP 仍在 `recv_buf` 挂整包 `mbuf`；TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`tcp_recv` 不再剥 L2–L4。
 
 **目标（高效）**：
 
 - **协议层**：校验、按序/乱序重组、更新 ack、回 ACK、重传与窗口；完成后把**已就绪字节流**交给应用。
-- **交付给应用**：payload 视图（指针 + 长度）或 stream buffer，而不是带 L2/L3/L4 头的线包。
+- **交付给应用**：统一 stream buffer / payload 视图（含拆除态）；ofo 结构升级为红黑树 + 链表（见效率表）。
 - **不必**把 RX 数据再包装成发送侧的 `tcp_fragment`——那是 TX 描述符。
 
 极致零拷贝时仍可把底层 buffer 指针交给应用，但应用看到的应是 **payload / 字节流**，而不是自己去解析三层头。
@@ -114,8 +114,8 @@ flowchart LR
 - **表驱动状态机**覆盖经典状态（CLOSED … FIN_WAIT_2）
 - **被动打开**：LISTEN → SYN_RECV → ESTABLISHED；`tcp_listen` backlog + `accept_queue`；`tcp_accept` 分配 fd
 - **主动打开**：CLOSED → SYN_SENT → ESTABLISHED；隐式 bind + 临时端口；SYN RTO + 指数退避
-- SYN_RECV 在对端重传 SYN 时重发 SYN+ACK（无独立 SYN_RECV 定时器）
-- ESTABLISHED：按序序号校验、payload 投递 `recv_buf`、回纯 ACK；`tcp_send` / `tcp_recv`（短读回队）
+- **控制段 RTO**：SYN_SENT / SYN_RECV（SYN+ACK）与 FIN（FIN_WAIT_1 / LAST_ACK / CLOSING）独立定时重传
+- ESTABLISHED：累计 ACK、`tcp_rx_blob` 按序交付；OOO 入 `ofo` 链表（重叠裁剪后 drain）；`tcp_send` / `tcp_recv`
 - **发送滑动窗口**：`sndbuf` + `snd_una`/`sent_seq`；TX 后数据保留至 ACK；数据 RTO（Go-Back-N）；按 `TCP_DEFAULT_MSS` 切段
 - **被动拆除**：ESTABLISHED → CLOSE_WAIT → LAST_ACK → CLOSED
 - **主动拆除**：FIN_WAIT_1/2、CLOSING、TIME_WAIT（2MSL 定时器）
@@ -136,8 +136,6 @@ flowchart LR
 
 | 功能 | 位置 | 说明 / 目标设计 |
 |------|------|-----------------|
-| SYN_RECV / FIN 控制段 RTO | [tcp.c](pro-stack/tcp.c) timer；`send_buf` TX | 数据路径已有 sndbuf + RTO。SYN+ACK / FIN 仍走 `send_buf` 且 TX 后释放；需独立定时重传 |
-| 乱序 / 重叠重组 | [tcp.c](pro-stack/tcp.c) ESTABLISHED | 仅按序投递。目标：OOO 缓冲 + 按序交付到 stream buffer |
 | 收端 / 发端流控 | [tcp.c](pro-stack/tcp.c) ESTABLISHED；`tcp_sndbuf_append` | 不看对端 `rx_win`；`sndbuf` 满时 `tcp_send` 直接 -1。目标：通告窗口限制发送；满缓冲时阻塞或 `EAGAIN` |
 | RST 生成 / 接收 | [tcp.c](pro-stack/tcp.c) | 关闭端口、无匹配 TCB、accept 队列满等应发 RST；非法 RST 应拆除连接 |
 | FIN 段 payload | [tcp.c](pro-stack/tcp.c) FIN_WAIT_2 等 | FIN 携带的数据应先交付再消费 FIN |
@@ -154,7 +152,7 @@ flowchart LR
 | 重复 ACK / 快重传 | — | 依赖 ACK 处理与 SACK（可选） |
 | RX 校验和 | — | TX 已算；RX 应校验 TCP（及 IPv4）校验和 |
 | socket 选项 | — | `SO_REUSEADDR`、非阻塞、`TCP_NODELAY` 等 |
-| 接收交付抽象 | 见上文 | stream buffer / payload 视图，应用不再剥 L2–L4 |
+| 接收交付抽象 | 见上文 | ESTABLISHED 已用 `tcp_rx_blob`；目标：统一 stream buffer，FIN_* 等状态同样走重组交付 |
 
 ### P2 — ARP / ICMP / 网络层
 
@@ -180,7 +178,7 @@ flowchart LR
 |--------------|--------------|
 | `g_sock_list` / 4-tuple / 监听端口 / ARP 均为 O(n) 链表扫描 | 连接表、监听表、ARP 表用哈希（如 DPDK `rte_hash`），查找 O(1) 期望 |
 | worker 每轮遍历全部 socket 调 `tx_flush` | 仅冲洗有待发数据的 socket：dirty 队列，或 `send_buf` / `sndbuf` 非空时入队 |
-| `recv_buf` 塞原始 mbuf，应用剥头 | 协议侧 stream / reassembly buffer，应用读 payload |
+| TCP ofo 为 O(n) 排序双向链表 | 仿 Linux：红黑树（按 seq）+ 双向链表，插入 O(log n)、从 `recv_ack` drain O(1)；满队列/压力回收防 DoS（见 `tcp_ofo_link` TODO） |
 | `tcp_send` → `sndbuf` 仍 memcpy | （可选）零拷贝 / mbuf 引用计数 |
 | ARP /24 周期性广播 | 按需解析 + 缓存老化；全网扫仅作可选调试手段 |
 

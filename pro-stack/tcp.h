@@ -22,6 +22,8 @@
 #ifndef NETARCH_TCP_H
 #define NETARCH_TCP_H
 
+#include "list.h"
+
 #include <rte_mbuf.h>
 #include <rte_tcp.h>
 #include <rte_timer.h>
@@ -53,6 +55,29 @@ typedef enum _TCP_STATUS {
         TCP_STATUS_FIN_WAIT_2,
         TCP_STATUS_MAX,
 } TCP_STATUS;
+
+/** App-facing RX payload (no L2/L3/L4 headers). */
+struct tcp_rx_blob {
+        unsigned char *data;
+        size_t len;
+        size_t off; /**< bytes already consumed by short recv */
+};
+
+/**
+ * One buffered out-of-order segment (payload copy).
+ *
+ * Chained as a seq-sorted doubly-linked list today (@c prev/@c next).
+ * TODO: add an rb-tree node (Linux ofo style) for O(log n) insert while
+ * keeping the list for in-order drain from @c recv_ack.
+ */
+struct tcp_ofo_seg {
+        uint32_t seq;
+        uint32_t len;
+        uint8_t has_fin;
+        unsigned char *data;
+        struct tcp_ofo_seg *prev;
+        struct tcp_ofo_seg *next;
+};
 
 struct tcp_sndbuf {
         uint8_t *data;     /**< Contiguous payload storage. */
@@ -122,6 +147,13 @@ struct tcp_stream {
         struct rte_timer timer;
         /** Retransmit count for the currently armed @c timer purpose. */
         uint8_t retries;
+
+        /**
+         * Out-of-order reassembly queue (seq-sorted DLL head).
+         * TODO: pair with an rb-tree index like the Linux TCP ofo cache.
+         */
+        struct tcp_ofo_seg *ofo;
+        uint16_t ofo_count; /**< Cap: TCP_OFO_MAX_SEGS (DoS / memory bound). */
 };
 
 /**

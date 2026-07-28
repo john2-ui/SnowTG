@@ -9,6 +9,7 @@
 #include "tcp.h"
 #include "arp.h"
 #include "config.h"
+#include "list.h"
 #include "log.h"
 #include "net_context.h"
 #include "pkt_frame.h"
@@ -41,9 +42,263 @@ static inline int tcp_seq_lt(uint32_t a, uint32_t b) {
 static inline int tcp_seq_leq(uint32_t a, uint32_t b) {
         return (int32_t)(a - b) <= 0;
 }
+static inline int tcp_seq_gt(uint32_t a, uint32_t b) {
+        return (int32_t)(a - b) > 0;
+}
 static inline int tcp_seq_between_open(uint32_t seq, uint32_t lo, uint32_t hi) {
         /* lo < seq <= hi (mod 2^32), for ACK validity */
         return tcp_seq_lt(lo, seq) && tcp_seq_leq(seq, hi);
+}
+
+static void tcp_ofo_seg_free(struct tcp_ofo_seg *s) {
+        if (s == NULL)
+                return;
+        if (s->data)
+                rte_free(s->data);
+        rte_free(s);
+}
+
+static void tcp_ofo_purge(struct nsock *sk) {
+        struct tcp_ofo_seg *s = sk->u.tcp.ofo;
+        while (s != NULL) {
+                struct tcp_ofo_seg *next = s->next;
+                tcp_ofo_seg_free(s);
+                s = next;
+        }
+        sk->u.tcp.ofo = NULL;
+        sk->u.tcp.ofo_count = 0;
+}
+
+/* Deliver contiguous payload to the app via recv_buf as tcp_rx_blob*. */
+static int tcp_deliver_payload(struct nsock *sk, const uint8_t *data,
+                               uint32_t len) {
+        if (len == 0)
+                return 0;
+        struct tcp_rx_blob *b =
+            rte_malloc("tcp_rx_blob", sizeof(struct tcp_rx_blob), 0);
+        if (b == NULL)
+                return -1;
+        b->data = rte_malloc("tcp_rx_data", len, 0);
+        if (b->data == NULL) {
+                rte_free(b);
+                return -1;
+        }
+        rte_memcpy(b->data, data, len);
+        b->len = len;
+        b->off = 0;
+
+        if (rte_ring_sp_enqueue(sk->recv_buf, b) != 0) {
+                LOG_ERROR("tcp recv_buf full fd=%d, dropping %u bytes", sk->fd,
+                          len);
+                rte_free(b->data);
+                rte_free(b);
+                return -1;
+        }
+        pthread_mutex_lock(&sk->mutex);
+        pthread_cond_signal(&sk->cond);
+        pthread_mutex_unlock(&sk->mutex);
+        return 0;
+}
+
+/*
+ * Link one already-trimmed segment into the sorted ofo list.
+ * @p before is the first existing node with seq >= new seq (NULL = append).
+ *
+ * TODO: replace this O(n) sorted doubly-linked list with a Linux-style
+ * out-of-order cache: rb-tree keyed by seq for O(log n) insert/lookup, plus
+ * a doubly-linked list in seq order for O(1) drain from rcv_nxt (see
+ * tcp_data_queue / sk_buff ofo in the kernel). Cap / reclaim under memory
+ * pressure (ofo full / possible DoS) should live next to that structure.
+ */
+static int tcp_ofo_link(struct nsock *sk, uint32_t seq, const uint8_t *data,
+                        uint32_t len, int has_fin, struct tcp_ofo_seg *before) {
+        if (len == 0 && !has_fin)
+                return 0;
+
+        if (sk->u.tcp.ofo_count >= TCP_OFO_MAX_SEGS) {
+                LOG_WARN("tcp ofo full fd=%d, drop seq=%u len=%u", sk->fd, seq,
+                         len);
+                return -1;
+        }
+
+        struct tcp_ofo_seg *s =
+            rte_malloc("tcp_ofo_seg", sizeof(struct tcp_ofo_seg), 0);
+        if (s == NULL)
+                return -1;
+        s->data = NULL;
+        s->seq = seq;
+        s->len = len;
+        s->has_fin = has_fin ? 1 : 0;
+        if (len > 0) {
+                s->data = rte_malloc("tcp_ofo_data", len, 0);
+                if (s->data == NULL) {
+                        rte_free(s);
+                        return -1;
+                }
+                rte_memcpy(s->data, data, len);
+        }
+
+        if (sk->u.tcp.ofo == NULL) {
+                s->prev = s->next = NULL;
+                sk->u.tcp.ofo = s;
+        } else if (before == sk->u.tcp.ofo) {
+                LL_ADD(s, sk->u.tcp.ofo);
+        } else if (before == NULL) {
+                struct tcp_ofo_seg *t = sk->u.tcp.ofo;
+                while (t->next)
+                        t = t->next;
+                s->next = NULL;
+                s->prev = t;
+                t->next = s;
+        } else {
+                s->next = before;
+                s->prev = before->prev;
+                if (before->prev)
+                        before->prev->next = s;
+                else
+                        sk->u.tcp.ofo = s;
+                before->prev = s;
+        }
+        sk->u.tcp.ofo_count++;
+        return 0;
+}
+
+/*
+ * Insert [seq, seq+len) into ofo; trim against recv_ack and existing segs.
+ * Existing ofo bytes win on overlap. Covers three overlap shapes:
+ *   - new left overhang only: insert [seq, cur_seq), done
+ *   - new starts inside cur:  skip to cur_end, keep walking
+ *   - new covers cur (seq < cur_seq && cur_end < seg_end): insert left
+ *     overhang, skip over cur, continue with right remainder (do not break)
+ * has_fin is kept only if the original segment end survives trimming.
+ */
+static int tcp_ofo_insert(struct nsock *sk, uint32_t seq, const uint8_t *data,
+                          uint32_t len, int has_fin) {
+        uint32_t rcv_nxt = sk->u.tcp.recv_ack;
+        uint32_t wnd_end = rcv_nxt + TCP_INITIAL_WINDOW_SIZE;
+
+        /* Trim already-acked left edge. */
+        if (tcp_seq_lt(seq, rcv_nxt)) {
+                uint32_t skip = rcv_nxt - seq;
+                if (skip >= len)
+                        return 0; /* fully duplicate */
+
+                data += skip;
+                len -= skip;
+                seq = rcv_nxt;
+        }
+        /* Drop if entirely past window. */
+        if (!tcp_seq_lt(seq, wnd_end))
+                return 0;
+        if (tcp_seq_gt(seq + len, wnd_end)) {
+                len = wnd_end - seq;
+                has_fin = 0; /* trimmed off FIN */
+        }
+        if (len == 0 && !has_fin)
+                return 0;
+
+        /*
+         * Walk sorted list; trim new segment against overlaps.
+         * Prefer existing buffered bytes; only store non-overlapping pieces.
+         */
+        struct tcp_ofo_seg *cur = sk->u.tcp.ofo;
+        while (cur != NULL && len > 0) {
+                uint32_t cur_end = cur->seq + cur->len;
+                uint32_t seg_end = seq + len;
+
+                /* cur entirely left of new segment */
+                if (tcp_seq_leq(cur_end, seq)) {
+                        cur = cur->next;
+                        continue;
+                }
+
+                /* cur entirely right of new segment → insert before cur */
+                if (tcp_seq_leq(seg_end, cur->seq))
+                        break;
+
+                /* Overlap with cur. Keep cur's bytes. */
+                if (tcp_seq_lt(seq, cur->seq)) {
+                        /*
+                         * Left overhang [seq, cur->seq). Always insert it.
+                         * If also cur_end < seg_end (new covers cur), advance
+                         * past cur and continue so the right overhang is kept.
+                         */
+                        uint32_t left = cur->seq - seq;
+                        if (tcp_ofo_link(sk, seq, data, left, 0, cur) != 0)
+                                return -1;
+
+                        uint32_t skip = cur_end - seq; /* left + cur->len */
+                        if (skip >= len)
+                                return 0; /* ended inside / at cur_end */
+
+                        data += skip;
+                        len -= skip;
+                        seq = cur_end;
+                        /* has_fin still applies to the surviving right end */
+                        cur = cur->next;
+                        continue;
+                }
+
+                /* seq inside [cur->seq, cur_end): drop overlap, keep right */
+                {
+                        uint32_t skip = cur_end - seq;
+                        if (skip >= len)
+                                return 0; /* fully covered by existing */
+
+                        data += skip;
+                        len -= skip;
+                        seq = cur_end;
+                        cur = cur->next;
+                        continue;
+                }
+        }
+
+        return tcp_ofo_link(sk, seq, data, len, has_fin, cur);
+}
+
+/* Pull contiguous ofo segments into the app and advance recv_ack. */
+static void tcp_ofo_drain(struct nsock *sk) {
+        while (sk->u.tcp.ofo != NULL) {
+                struct tcp_ofo_seg *s = sk->u.tcp.ofo;
+
+                if (tcp_seq_gt(s->seq, sk->u.tcp.recv_ack))
+                        break; /* hole remains */
+
+                /* Overlap with already-acked: trim left. */
+                if (tcp_seq_lt(s->seq, sk->u.tcp.recv_ack)) {
+                        uint32_t skip = sk->u.tcp.recv_ack - s->seq;
+                        if (skip >= s->len) {
+                                LL_REMOVE(s, sk->u.tcp.ofo);
+                                sk->u.tcp.ofo_count--;
+                                tcp_ofo_seg_free(s);
+                                continue;
+                        }
+                        memmove(s->data, s->data + skip, s->len - skip);
+                        s->len -= skip;
+                        s->seq += skip;
+                }
+
+                /*
+                 * Do not ACK bytes that could not be handed to the
+                 * application. Keep this node at the head so a later packet
+                 * (or the peer's RTO retransmission) can retry delivery.
+                 */
+                if (s->len > 0 && tcp_deliver_payload(sk, s->data, s->len) != 0)
+                        return;
+
+                sk->u.tcp.recv_ack += s->len;
+                int fin = s->has_fin;
+                LL_REMOVE(s, sk->u.tcp.ofo);
+                sk->u.tcp.ofo_count--;
+                tcp_ofo_seg_free(s);
+
+                if (fin) {
+                        sk->u.tcp.recv_ack += 1;
+                        if (sk->u.tcp.status == TCP_STATUS_ESTABLISHED)
+                                tcp_stream_set_status(sk,
+                                                      TCP_STATUS_CLOSE_WAIT);
+                }
+        }
 }
 
 int tcp_sndbuf_init(struct tcp_sndbuf *sb, uint32_t isn) {
@@ -803,25 +1058,51 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
         if (hdr->tcp_flags & RTE_TCP_SYN_FLAG)
                 return 0;
 
-        /* In-order only for now. TODO: buffer/reassemble out-of-order and
-         * overlapping segments (receive window / reassembly queue). */
         uint32_t seq = ntohl(hdr->sent_seq);
-        if (seq != sk->u.tcp.recv_ack) {
-                LOG_DEBUG(
-                    "tcp ESTABLISHED drop ooo/dup seq=%u expect=%u len=%u", seq,
-                    sk->u.tcp.recv_ack, payload_len);
-                /* Optional: re-ACK to trigger peer retransmit */
+        uint32_t seg_end = seq + payload_len + (has_fin ? 1 : 0);
+        uint32_t rcv_nxt = sk->u.tcp.recv_ack;
+        uint32_t wnd_end = rcv_nxt + TCP_INITIAL_WINDOW_SIZE;
+
+        /* RFC793-ish: acceptable if any octet in window. */
+        int in_window =
+            tcp_seq_lt(seq, wnd_end) && tcp_seq_gt(seg_end, rcv_nxt);
+        if (!in_window) {
                 struct tcp_fragment *ack_f =
                     tcp_make_fragment(sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
                                       sk->u.tcp.recv_ack);
                 (void)tcp_enqueue_fragment(sk, ack_f);
-                return 0;
+                return 0; /* caller frees mbuf */
         }
 
-        /* In-order data: advance the next expected peer sequence number. */
-        sk->u.tcp.recv_ack += payload_len;
-        if (has_fin)
-                sk->u.tcp.recv_ack += 1; // fin consumes one sequence number
+        uint8_t *payload = (uint8_t *)hdr + hdrlen;
+
+        if (seq == rcv_nxt) {
+                /*
+                 * recv_ack is a delivery boundary, not merely an RX boundary:
+                 * if the app queue/allocation is full, retain the segment in
+                 * ofo and leave the cumulative ACK unchanged. The peer will
+                 * retransmit if no later input lets tcp_ofo_drain retry it.
+                 */
+                if (payload_len > 0 &&
+                    tcp_deliver_payload(sk, payload, payload_len) != 0) {
+                        (void)tcp_ofo_insert(sk, seq, payload, payload_len,
+                                             has_fin);
+                } else {
+                        sk->u.tcp.recv_ack += payload_len;
+                        if (has_fin) {
+                                sk->u.tcp.recv_ack += 1;
+                                tcp_stream_set_status(sk,
+                                                      TCP_STATUS_CLOSE_WAIT);
+                        }
+                        tcp_ofo_drain(sk);
+                }
+        } else {
+                /* OOO (or partial left-trim happened inside insert). */
+                (void)tcp_ofo_insert(sk, seq, payload, payload_len, has_fin);
+                /* Do not advance recv_ack; drain is no-op unless trim made it
+                 * in-order. */
+                tcp_ofo_drain(sk);
+        }
 
         /* Pure ACK so the peer can retire its in-flight bytes. */
         struct tcp_fragment *ack_f = tcp_make_fragment(
@@ -831,24 +1112,7 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
         /* TODO: honor the peer's advertised rx_win (hdr->rx_win) before letting
          * tcp_send enqueue more data -- there is no flow control / sliding
          * window yet. */
-
-        if (has_fin) {
-                tcp_stream_set_status(sk, TCP_STATUS_CLOSE_WAIT);
-        }
-
-        if (payload_len == 0 && has_fin) {
-                /* FIN-only: no payload to deliver; caller frees mbuf */
-                return 0;
-        }
-
-        if (rte_ring_sp_enqueue(sk->recv_buf, mbuf) != 0) {
-                LOG_ERROR("tcp recv_buf full for fd=%d, dropping", sk->fd);
-                return 0; /* caller frees mbuf */
-        }
-        pthread_mutex_lock(&sk->mutex);
-        pthread_cond_signal(&sk->cond);
-        pthread_mutex_unlock(&sk->mutex);
-        return 1; /* mbuf ownership transferred to recv_buf */
+        return 0;
 }
 
 static int tcp_state_last_ack(struct nsock *sk, struct rte_tcp_hdr *hdr,
@@ -1474,42 +1738,28 @@ ssize_t tcp_send(struct nsock *sk, const void *buf, size_t len,
 
 ssize_t tcp_recv(struct nsock *sk, void *buf, size_t len,
                  __attribute__((unused)) int flags) {
-        struct rte_mbuf *mbuf;
+        struct tcp_rx_blob *b;
         int nb = -1;
         pthread_mutex_lock(&sk->mutex);
-        while ((nb = rte_ring_sc_dequeue(sk->recv_buf, (void **)&mbuf)) != 0)
+        while ((nb = rte_ring_sc_dequeue(sk->recv_buf, (void **)&b)) != 0)
                 pthread_cond_wait(&sk->cond, &sk->mutex);
         pthread_mutex_unlock(&sk->mutex);
 
-        struct rte_ether_hdr *eth =
-            rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
-        struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *)(eth + 1);
-        struct rte_tcp_hdr *tcp = (struct rte_tcp_hdr *)(ip + 1);
+        size_t avail = b->len - b->off;
+        size_t n = len < avail ? len : avail;
+        rte_memcpy(buf, b->data + b->off, n);
+        b->off += n;
 
-        uint8_t hdrlen = (tcp->data_off >> 4) * 4;
-        size_t payload_len = rte_be_to_cpu_16(ip->total_length) -
-                             sizeof(struct rte_ipv4_hdr) - hdrlen;
-        uint8_t *data = (uint8_t *)tcp + hdrlen;
-
-        size_t n = len < payload_len ? len : payload_len;
-        rte_memcpy(buf, data, n);
-
-        if (n < payload_len && n > 0) {
-                /* Keep the unread tail so the next recv continues the stream.
-                 */
-                memmove(data, data + n, payload_len - n);
-                ip->total_length =
-                    rte_cpu_to_be_16((uint16_t)(sizeof(struct rte_ipv4_hdr) +
-                                                hdrlen + (payload_len - n)));
-                if (rte_ring_mp_enqueue(sk->recv_buf, mbuf) != 0) {
-                        LOG_ERROR("tcp_recv: recv_buf full while truncating, "
-                                  "dropping remainder");
-                        rte_pktmbuf_free(mbuf);
+        if (b->off < b->len) {
+                if (rte_ring_mp_enqueue(sk->recv_buf, b) != 0) {
+                        LOG_ERROR("tcp_recv: recv_buf full, drop remainder");
+                        rte_free(b->data);
+                        rte_free(b);
                 }
                 return (ssize_t)n;
         }
-
-        rte_pktmbuf_free(mbuf);
+        rte_free(b->data);
+        rte_free(b);
         return (ssize_t)n;
 }
 
@@ -1525,9 +1775,12 @@ static void tcp_drain_send(struct nsock *sk) {
 }
 
 static void tcp_drain_recv(struct nsock *sk) {
-        struct rte_mbuf *m;
-        while (rte_ring_sc_dequeue(sk->recv_buf, (void **)&m) == 0)
-                rte_pktmbuf_free(m);
+        struct tcp_rx_blob *b;
+        while (rte_ring_sc_dequeue(sk->recv_buf, (void **)&b) == 0) {
+                rte_free(b->data);
+                rte_free(b);
+        }
+        tcp_ofo_purge(sk);
 }
 
 int tcp_close(struct nsock *sk) {

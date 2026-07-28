@@ -37,13 +37,13 @@
 /** Enable the TCP stack ops (required for either TCP app below). */
 #define ENABLE_TCP_APP 1
 /** Launch the TCP echo server (listen/accept/recv/send/close). */
-#define ENABLE_TCP_SERVER 0
+#define ENABLE_TCP_SERVER 1
 /**
  * Launch the TCP client (connect/send/recv/close). Off by default so a single
  * host can run the server; flip on (and usually turn ENABLE_TCP_SERVER off)
  * when driving active-open against a peer.
  */
-#define ENABLE_TCP_CLIENT 1
+#define ENABLE_TCP_CLIENT 0
 
 /** Well-known port used by the TCP echo server / client peer. */
 #define TCP_APP_PORT 8888
@@ -84,6 +84,9 @@
 /** Inclusive ephemeral local-port range for implicit bind in tcp_connect. */
 #define TCP_EPHEMERAL_PORT_MIN 49152
 #define TCP_EPHEMERAL_PORT_MAX 65535
+/** Max out-of-order segments buffered per TCB (DLL today; see ofo rb-tree
+ * TODO). */
+#define TCP_OFO_MAX_SEGS 32
 
 #define TCP_MSL_MS 1000
 #define TCP_2MSL_MS (2 * TCP_MSL_MS)
