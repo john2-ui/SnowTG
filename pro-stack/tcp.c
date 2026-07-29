@@ -1915,7 +1915,7 @@ static int tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
  */
 static void tcp_process_rx_consumed(struct nsock *sk) {
         uint32_t consumed = atomic_exchange_explicit(&sk->u.tcp.rx_consumed, 0,
-                                                     memory_order_acquire);
+                                                     memory_order_acq_rel);
 
         if (consumed == 0)
                 return;
@@ -1935,6 +1935,71 @@ static void tcp_process_rx_consumed(struct nsock *sk) {
         struct tcp_fragment *ack_f = tcp_make_fragment(
             sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
         (void)tcp_enqueue_fragment(sk, ack_f);
+}
+
+/**
+ * @brief Consume one coalesced app receive-progress notification.
+ * @param sk TCP socket named by the notification.
+ *
+ * The pending bit prevents one event per short read. If an app read races with
+ * the worker clearing that bit, either the app queues a later event or this
+ * worker invocation claims the bit and performs another local pass.
+ */
+static void tcp_process_rx_event(struct nsock *sk) {
+        for (;;) {
+                tcp_process_rx_consumed(sk);
+
+                atomic_store_explicit(&sk->u.tcp.rx_event_pending, false,
+                                      memory_order_release);
+                if (atomic_load_explicit(&sk->u.tcp.rx_consumed,
+                                         memory_order_acquire) == 0)
+                        return;
+
+                if (atomic_exchange_explicit(&sk->u.tcp.rx_event_pending, true,
+                                             memory_order_acq_rel))
+                        return; /* app owns a queued follow-up event */
+        }
+}
+
+/**
+ * @brief Drain application receive-progress notifications on the worker.
+ *
+ * The event ring is MPSC because more than one app lcore may read TCP sockets;
+ * the packet worker remains its sole consumer and the sole TCP-state owner.
+ */
+void tcp_process_app_events(void) {
+        struct inout_ring *ring = ring_instance();
+        struct nsock *sockets[BURST_SIZE];
+        unsigned int n;
+
+        do {
+                n = rte_ring_sc_dequeue_burst(
+                    ring->tcp_rx_events, (void **)sockets, BURST_SIZE, NULL);
+                for (unsigned int i = 0; i < n; i++)
+                        tcp_process_rx_event(sockets[i]);
+        } while (n == BURST_SIZE);
+}
+
+/**
+ * @brief Notify the worker that an application consumed TCP payload.
+ * @param sk TCP socket whose @c rx_consumed counter was incremented.
+ */
+static void tcp_queue_rx_event(struct nsock *sk) {
+        if (atomic_exchange_explicit(&sk->u.tcp.rx_event_pending, true,
+                                     memory_order_acq_rel))
+                return; /* an event already names this socket */
+
+        struct inout_ring *ring = ring_instance();
+        if (rte_ring_mp_enqueue(ring->tcp_rx_events, sk) != 0) {
+                /*
+                 * This should be unreachable: TCP_EVENT_RING_SIZE exceeds the
+                 * maximum count of application-visible fds and events are
+                 * coalesced per socket. Keep the counter intact for retry.
+                 */
+                atomic_store_explicit(&sk->u.tcp.rx_event_pending, false,
+                                      memory_order_release);
+                LOG_ERROR("tcp rx event ring full fd=%d", sk->fd);
+        }
 }
 
 /**
@@ -1962,8 +2027,6 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
         default:
                 return 0;
         }
-
-        tcp_process_rx_consumed(sk);
 
         /* Drain send_buf so ACK-of-FIN + our FIN leave in the same pass. */
         for (;;) {
@@ -2162,6 +2225,7 @@ ssize_t tcp_recv(struct nsock *sk, void *buf, size_t len,
 
         atomic_fetch_add_explicit(&sk->u.tcp.rx_consumed, (unsigned int)n,
                                   memory_order_release);
+        tcp_queue_rx_event(sk);
 
         if (b->off < b->len)
                 return (ssize_t)n;

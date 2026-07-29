@@ -28,6 +28,7 @@
 #include <rte_tcp.h>
 #include <rte_timer.h>
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -147,6 +148,7 @@ struct tcp_stream {
         uint32_t rcvbuf_size;
         uint32_t rcvbuf_used;
         atomic_uint rx_consumed;
+        atomic_bool rx_event_pending;
         struct tcp_rx_blob *rx_current; /**< App-owned short-read blob. */
 
         /* Send-side flow control: most recently accepted peer advertised
@@ -248,6 +250,15 @@ void tcp_stream_set_status(struct nsock *sk, TCP_STATUS new_status);
  * @return 0.
  */
 int tcp_ingress(struct rte_mbuf *mbuf);
+
+/**
+ * @brief Process application receive-progress notifications on the worker.
+ *
+ * Applications enqueue one coalesced notification after consuming payload.
+ * This function is called only by the packet worker and is the sole path that
+ * updates TCP receive accounting, drains OFO data, and sends window updates.
+ */
+void tcp_process_app_events(void);
 
 /**
  * @brief Drain pending outbound fragments from one TCP socket to the NIC.

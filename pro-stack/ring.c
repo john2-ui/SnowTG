@@ -21,8 +21,12 @@ struct inout_ring *ring_instance(void) {
             rte_ring_create("in_ring", RING_SIZE, rte_socket_id(), 0);
         r_instance->out =
             rte_ring_create("out_ring", RING_SIZE, rte_socket_id(), 0);
+        r_instance->tcp_rx_events =
+            rte_ring_create("tcp_rx_events", TCP_EVENT_RING_SIZE,
+                            rte_socket_id(), RING_F_SC_DEQ);
 
-        if (r_instance->in == NULL || r_instance->out == NULL)
+        if (r_instance->in == NULL || r_instance->out == NULL ||
+            r_instance->tcp_rx_events == NULL)
                 rte_exit(EXIT_FAILURE, "rte_ring_create() failed\n");
 
         LOG_INFO("rx/tx rings created (size=%d)", RING_SIZE);

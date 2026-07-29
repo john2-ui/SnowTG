@@ -17,6 +17,12 @@
 struct inout_ring {
         struct rte_ring *in;  /**< NIC -> worker queue. */
         struct rte_ring *out; /**< worker -> NIC queue. */
+        /**
+         * TCP application -> worker notifications that receive bytes were
+         * consumed. Multiple app lcores may produce; the packet worker is the
+         * sole consumer. Entries are @c struct nsock pointers.
+         */
+        struct rte_ring *tcp_rx_events;
 };
 
 /**

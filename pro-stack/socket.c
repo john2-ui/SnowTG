@@ -149,6 +149,7 @@ struct nsock *nsock_alloc(int fd, uint8_t protocol) {
                 sk->u.tcp.rcvbuf_size = TCP_RCVBUF_SIZE;
                 sk->u.tcp.rcvbuf_used = 0;
                 atomic_init(&sk->u.tcp.rx_consumed, 0);
+                atomic_init(&sk->u.tcp.rx_event_pending, false);
                 sk->u.tcp.rx_current = NULL;
                 sk->u.tcp.snd_wnd = 0;
                 sk->u.tcp.snd_wl1 = 0;

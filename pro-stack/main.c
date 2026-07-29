@@ -100,11 +100,20 @@ static int pkt_worker(void *arg) {
 
         while (1) {
                 struct rte_mbuf *mbufs[BURST_SIZE];
+                /*
+                 * Apply app receive progress before packet handling, so newly
+                 * freed buffer space can drain OFO data and advertise an
+                 * updated TCP receive window without waiting for inbound I/O.
+                 */
+                tcp_process_app_events();
                 unsigned int nb_rx = rte_ring_mc_dequeue_burst(
                     ring->in, (void **)mbufs, BURST_SIZE, NULL);
 
                 for (unsigned int i = 0; i < nb_rx; i++)
                         dispatch_packet(mp, mbufs[i], ring->out);
+
+                /* Handle app reads that raced with packet dispatch. */
+                tcp_process_app_events();
 
                 /*
                  * Drain each socket's send ring toward the NIC. Iterating the
