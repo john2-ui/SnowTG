@@ -27,6 +27,7 @@
 #include <rte_mbuf.h>
 #include <rte_tcp.h>
 #include <rte_timer.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -137,6 +138,22 @@ struct tcp_stream {
          * are freed after TX; their RTO rebuilds them onto send_buf.
          */
         struct tcp_sndbuf sndbuf;
+
+        /*
+         * Receive-side flow control. Only the packet worker modifies
+         * rcvbuf_used; the application accumulates consumed bytes for the
+         * worker in rx_consumed.
+         */
+        uint32_t rcvbuf_size;
+        uint32_t rcvbuf_used;
+        atomic_uint rx_consumed;
+        struct tcp_rx_blob *rx_current; /**< App-owned short-read blob. */
+
+        /* Send-side flow control: most recently accepted peer advertised
+         * window. */
+        uint32_t snd_wnd;
+        uint32_t snd_wl1; /* SEG.SEQ of last accepted window update */
+        uint32_t snd_wl2; /* SEG.ACK of last accepted window update */
 
         TCP_STATUS status; /**< Current connection state. */
 

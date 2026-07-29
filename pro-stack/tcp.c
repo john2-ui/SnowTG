@@ -35,6 +35,24 @@
 #include <string.h>
 #include <time.h>
 
+/**
+ * @brief Return the currently advertisable receive window.
+ * @param sk TCP stream whose receive-buffer accounting is queried.
+ * @return Available receive-buffer space, clamped to the TCP header field.
+ *
+ * This helper is called only by the packet worker, which exclusively owns
+ * @c rcvbuf_used. Applications report consumption through @c rx_consumed.
+ */
+static uint16_t tcp_rcv_wnd(const struct nsock *sk) {
+        uint32_t free;
+
+        if (sk->u.tcp.rcvbuf_used >= sk->u.tcp.rcvbuf_size)
+                return 0;
+
+        free = sk->u.tcp.rcvbuf_size - sk->u.tcp.rcvbuf_used;
+        return (uint16_t)(free > UINT16_MAX ? UINT16_MAX : free);
+}
+
 /** @brief Test whether @p a precedes @p b in the TCP serial number space.
  * @param a First sequence number.
  * @param b Second sequence number.
@@ -153,6 +171,12 @@ static int tcp_ofo_link(struct nsock *sk, uint32_t seq, const uint8_t *data,
         if (len == 0 && !has_fin)
                 return 0;
 
+        if (len > tcp_rcv_wnd(sk)) {
+                LOG_WARN("tcp ofo no rcvbuf space fd=%d, drop seq=%u len=%u",
+                         sk->fd, seq, len);
+                return -1;
+        }
+
         if (sk->u.tcp.ofo_count >= TCP_OFO_MAX_SEGS) {
                 LOG_WARN("tcp ofo full fd=%d, drop seq=%u len=%u", sk->fd, seq,
                          len);
@@ -198,6 +222,7 @@ static int tcp_ofo_link(struct nsock *sk, uint32_t seq, const uint8_t *data,
                 before->prev = s;
         }
         sk->u.tcp.ofo_count++;
+        sk->u.tcp.rcvbuf_used += len;
         return 0;
 }
 
@@ -221,7 +246,7 @@ static int tcp_ofo_link(struct nsock *sk, uint32_t seq, const uint8_t *data,
 static int tcp_ofo_insert(struct nsock *sk, uint32_t seq, const uint8_t *data,
                           uint32_t len, int has_fin) {
         uint32_t rcv_nxt = sk->u.tcp.recv_ack;
-        uint32_t wnd_end = rcv_nxt + TCP_INITIAL_WINDOW_SIZE;
+        uint32_t wnd_end = rcv_nxt + tcp_rcv_wnd(sk);
 
         /* Trim already-acked left edge. */
         if (tcp_seq_lt(seq, rcv_nxt)) {
@@ -319,12 +344,21 @@ static void tcp_ofo_drain(struct nsock *sk) {
                 if (tcp_seq_lt(s->seq, sk->u.tcp.recv_ack)) {
                         uint32_t skip = sk->u.tcp.recv_ack - s->seq;
                         if (skip >= s->len) {
+                                if (s->len > sk->u.tcp.rcvbuf_used) {
+                                        sk->u.tcp.rcvbuf_used = 0;
+                                } else {
+                                        sk->u.tcp.rcvbuf_used -= s->len;
+                                }
                                 LL_REMOVE(s, sk->u.tcp.ofo);
                                 sk->u.tcp.ofo_count--;
                                 tcp_ofo_seg_free(s);
                                 continue;
                         }
                         memmove(s->data, s->data + skip, s->len - skip);
+                        if (skip > sk->u.tcp.rcvbuf_used)
+                                sk->u.tcp.rcvbuf_used = 0;
+                        else
+                                sk->u.tcp.rcvbuf_used -= skip;
                         s->len -= skip;
                         s->seq += skip;
                 }
@@ -669,7 +703,7 @@ static struct tcp_fragment *tcp_make_fragment(struct nsock *sk, uint8_t flags,
         f->recv_ack = recv_ack;
         f->tcp_flags = flags;
         f->data_off = (5 << 4);
-        f->rx_win = TCP_INITIAL_WINDOW_SIZE;
+        f->rx_win = tcp_rcv_wnd(sk);
         return f;
 }
 
@@ -926,6 +960,22 @@ static void tcp_process_peer_ack(struct nsock *sk, uint32_t ack) {
         }
 }
 
+static void tcp_update_snd_wnd(struct nsock *sk, uint32_t seg_seq,
+                               uint32_t seg_ack, uint16_t seg_wnd) {
+        struct tcp_stream *tp = &sk->u.tcp;
+
+        /*
+         * RFC 793 window-update ordering: an older segment cannot overwrite
+         * the newest accepted advertised window.
+         */
+        if (tcp_seq_lt(tp->snd_wl1, seg_seq) ||
+            (tp->snd_wl1 == seg_seq && tcp_seq_leq(tp->snd_wl2, seg_ack))) {
+                tp->snd_wnd = seg_wnd;
+                tp->snd_wl1 = seg_seq;
+                tp->snd_wl2 = seg_ack;
+        }
+}
+
 /** @brief Arm the SYN or SYN+ACK retransmission timer.
  * @param sk Stream whose timer is armed.
  * @param delay_ms Expiry delay in milliseconds.
@@ -1006,7 +1056,7 @@ static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
         f->recv_ack = ntohl(hdr->sent_seq) + 1;
         f->tcp_flags = RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG;
         f->data_off = (5 << 4);
-        f->rx_win = TCP_INITIAL_WINDOW_SIZE;
+        f->rx_win = tcp_rcv_wnd(child);
         child->u.tcp.recv_ack = f->recv_ack;
         rte_ring_mp_enqueue(child->send_buf, f);
         /* Independent SYN+ACK RTO; stopped when the final ACK arrives. */
@@ -1072,6 +1122,8 @@ static int tcp_state_syn_sent(struct nsock *sk, struct rte_tcp_hdr *hdr,
         }
 
         rte_timer_stop(&sk->u.tcp.timer);
+        tcp_update_snd_wnd(sk, ntohl(hdr->sent_seq), ntohl(hdr->recv_ack),
+                           ntohs(hdr->rx_win));
         tcp_stream_set_status(sk, TCP_STATUS_ESTABLISHED);
 
         LOG_INFO("tcp handshake done (active) fd=%d peer " IP_FMT ":%u", sk->fd,
@@ -1174,6 +1226,8 @@ static int tcp_state_syn_recv(struct nsock *sk, struct rte_tcp_hdr *hdr,
         rte_timer_stop(&sk->u.tcp.timer);
         sk->u.tcp.retries = 0;
 
+        tcp_update_snd_wnd(sk, ntohl(hdr->sent_seq), ntohl(hdr->recv_ack),
+                           ntohs(hdr->rx_win));
         tcp_stream_set_status(sk, TCP_STATUS_ESTABLISHED);
 
         /*
@@ -1225,8 +1279,14 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
 
         int has_fin = !!(hdr->tcp_flags & RTE_TCP_FIN_FLAG);
 
+        uint32_t seg_seq = ntohl(hdr->sent_seq);
+        uint32_t seg_ack = ntohl(hdr->recv_ack);
+
         if (hdr->tcp_flags & RTE_TCP_ACK_FLAG)
-                tcp_process_peer_ack(sk, ntohl(hdr->recv_ack));
+                tcp_process_peer_ack(sk, seg_ack);
+
+        /* Update the send window based on the peer's advertised rx_win. */
+        tcp_update_snd_wnd(sk, seg_seq, seg_ack, ntohs(hdr->rx_win));
 
         if (payload_len == 0 && !has_fin)
                 return 0; /* pure ACK: caller frees mbuf */
@@ -1238,17 +1298,38 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
         uint32_t seq = ntohl(hdr->sent_seq);
         uint32_t seg_end = seq + payload_len + (has_fin ? 1 : 0);
         uint32_t rcv_nxt = sk->u.tcp.recv_ack;
-        uint32_t wnd_end = rcv_nxt + TCP_INITIAL_WINDOW_SIZE;
+        uint32_t rcv_wnd = tcp_rcv_wnd(sk);
+        uint32_t wnd_end = rcv_nxt + rcv_wnd;
 
         /* RFC793-ish: acceptable if any octet in window. */
-        int in_window =
-            tcp_seq_lt(seq, wnd_end) && tcp_seq_gt(seg_end, rcv_nxt);
+        int in_window;
+        if (rcv_wnd == 0)
+                in_window = (payload_len == 0 && !has_fin && seq == rcv_nxt);
+        else
+                in_window =
+                    tcp_seq_lt(seq, wnd_end) && tcp_seq_gt(seg_end, rcv_nxt);
         if (!in_window) {
                 struct tcp_fragment *ack_f =
                     tcp_make_fragment(sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
                                       sk->u.tcp.recv_ack);
                 (void)tcp_enqueue_fragment(sk, ack_f);
                 return 0; /* caller frees mbuf */
+        }
+
+        /*
+         * The segment may only partially fall within the receive window; retain
+         * only the payload that lies within the window. The FIN flag also
+         * consumes a sequence number; if it falls beyond the right edge of the
+         * window, it cannot be consumed.
+         */
+        uint32_t data_end = seq + payload_len;
+
+        if (tcp_seq_gt(data_end, wnd_end)) {
+                payload_len = wnd_end - seq;
+                has_fin = 0;
+        } else if (has_fin && !tcp_seq_lt(data_end, wnd_end)) {
+                /** sequence of fin >= right edge of the windows */
+                has_fin = 0;
         }
 
         uint8_t *payload = (uint8_t *)hdr + hdrlen;
@@ -1266,6 +1347,7 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
                                              has_fin);
                 } else {
                         sk->u.tcp.recv_ack += payload_len;
+                        sk->u.tcp.rcvbuf_used += payload_len;
                         if (has_fin) {
                                 sk->u.tcp.recv_ack += 1;
                                 tcp_stream_set_status(sk,
@@ -1286,9 +1368,6 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
             sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
         (void)tcp_enqueue_fragment(sk, ack_f);
 
-        /* TODO: honor the peer's advertised rx_win (hdr->rx_win) before letting
-         * tcp_send enqueue more data -- there is no flow control / sliding
-         * window yet. */
         return 0;
 }
 
@@ -1756,9 +1835,21 @@ static int tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
 
         uint32_t off = sk->u.tcp.sent_seq - sb->head_seq; /* into buffer */
         uint32_t unsent = buf_end - sk->u.tcp.sent_seq;
+
+        uint32_t in_flight = sk->u.tcp.sent_seq - sk->u.tcp.snd_una;
+
+        if (in_flight >= sk->u.tcp.snd_wnd)
+                return 0;
+
+        uint32_t credit = sk->u.tcp.snd_wnd - in_flight;
         uint32_t seglen = unsent;
+
         if (seglen > TCP_DEFAULT_MSS)
                 seglen = TCP_DEFAULT_MSS;
+        if (seglen > credit)
+                seglen = credit;
+        if (seglen == 0)
+                return 0;
 
         uint8_t *dst_mac = arp_lookup(sk->u.tcp.remote_ip);
         if (dst_mac == NULL) {
@@ -1784,7 +1875,7 @@ static int tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
         f.recv_ack = sk->u.tcp.recv_ack;
         f.tcp_flags = RTE_TCP_ACK_FLAG | RTE_TCP_PSH_FLAG;
         f.data_off = (5 << 4);
-        f.rx_win = TCP_INITIAL_WINDOW_SIZE;
+        f.rx_win = tcp_rcv_wnd(sk);
         f.payload = sb->data + sb->head_off + off;
         f.payload_len = seglen;
 
@@ -1814,6 +1905,39 @@ static int tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
 }
 
 /**
+ * @brief Apply application receive progress on the packet-worker lcore.
+ * @param sk TCP stream whose application has consumed queued payload.
+ *
+ * The application must not modify TCP receive state directly because the
+ * worker concurrently owns reassembly and the receive-ring producer role.
+ * Processing its atomic consumption counter here serializes receive accounting,
+ * OFO draining, and the window-update ACK on the worker.
+ */
+static void tcp_process_rx_consumed(struct nsock *sk) {
+        uint32_t consumed = atomic_exchange_explicit(&sk->u.tcp.rx_consumed, 0,
+                                                     memory_order_acquire);
+
+        if (consumed == 0)
+                return;
+
+        if (consumed > sk->u.tcp.rcvbuf_used)
+                sk->u.tcp.rcvbuf_used = 0;
+        else
+                sk->u.tcp.rcvbuf_used -= consumed;
+
+        tcp_ofo_drain(sk);
+
+        /*
+         * Send an update for every observed application read. This avoids
+         * stalling a peer after a zero-window advertisement; coalescing can be
+         * added later once the last advertised window is tracked explicitly.
+         */
+        struct tcp_fragment *ack_f = tcp_make_fragment(
+            sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
+        (void)tcp_enqueue_fragment(sk, ack_f);
+}
+
+/**
  * @brief Flush pending control fragments and buffered stream data for a socket.
  * @param sk TCP socket to flush.
  * @param mp Mempool used to create outbound packets and ARP requests.
@@ -1838,6 +1962,8 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
         default:
                 return 0;
         }
+
+        tcp_process_rx_consumed(sk);
 
         /* Drain send_buf so ACK-of-FIN + our FIN leave in the same pass. */
         for (;;) {
@@ -2008,32 +2134,41 @@ ssize_t tcp_send(struct nsock *sk, const void *buf, size_t len,
  * @param flags Reserved receive flags; currently ignored.
  * @return Number of bytes copied after blocking for a queued payload blob.
  *
- * Short reads retain the unread suffix by requeueing the blob.
+ * Short reads retain the unread suffix in app-owned @c rx_current so the next
+ * read preserves TCP byte-stream order without creating a second producer for
+ * @c recv_buf.
  */
 ssize_t tcp_recv(struct nsock *sk, void *buf, size_t len,
                  __attribute__((unused)) int flags) {
-        struct tcp_rx_blob *b;
+        struct tcp_rx_blob *b = sk->u.tcp.rx_current;
         int nb = -1;
-        pthread_mutex_lock(&sk->mutex);
-        while ((nb = rte_ring_sc_dequeue(sk->recv_buf, (void **)&b)) != 0)
-                pthread_cond_wait(&sk->cond, &sk->mutex);
-        pthread_mutex_unlock(&sk->mutex);
+
+        if (len == 0)
+                return 0;
+
+        if (b == NULL) {
+                pthread_mutex_lock(&sk->mutex);
+                while ((nb = rte_ring_sc_dequeue(sk->recv_buf, (void **)&b)) !=
+                       0)
+                        pthread_cond_wait(&sk->cond, &sk->mutex);
+                pthread_mutex_unlock(&sk->mutex);
+                sk->u.tcp.rx_current = b;
+        }
 
         size_t avail = b->len - b->off;
         size_t n = len < avail ? len : avail;
         rte_memcpy(buf, b->data + b->off, n);
         b->off += n;
 
-        if (b->off < b->len) {
-                if (rte_ring_mp_enqueue(sk->recv_buf, b) != 0) {
-                        LOG_ERROR("tcp_recv: recv_buf full, drop remainder");
-                        rte_free(b->data);
-                        rte_free(b);
-                }
+        atomic_fetch_add_explicit(&sk->u.tcp.rx_consumed, (unsigned int)n,
+                                  memory_order_release);
+
+        if (b->off < b->len)
                 return (ssize_t)n;
-        }
+
         rte_free(b->data);
         rte_free(b);
+        sk->u.tcp.rx_current = NULL;
         return (ssize_t)n;
 }
 
@@ -2060,7 +2195,15 @@ static void tcp_drain_recv(struct nsock *sk) {
                 rte_free(b->data);
                 rte_free(b);
         }
+        b = sk->u.tcp.rx_current;
+        if (b != NULL) {
+                rte_free(b->data);
+                rte_free(b);
+                sk->u.tcp.rx_current = NULL;
+        }
         tcp_ofo_purge(sk);
+        sk->u.tcp.rcvbuf_used = 0;
+        atomic_store_explicit(&sk->u.tcp.rx_consumed, 0, memory_order_release);
 }
 
 /**

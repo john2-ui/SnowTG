@@ -146,6 +146,13 @@ struct nsock *nsock_alloc(int fd, uint8_t protocol) {
                 sk->u.tcp.status = TCP_STATUS_CLOSED;
                 rte_timer_init(&sk->u.tcp.timer);
                 sk->u.tcp.retries = 0;
+                sk->u.tcp.rcvbuf_size = TCP_RCVBUF_SIZE;
+                sk->u.tcp.rcvbuf_used = 0;
+                atomic_init(&sk->u.tcp.rx_consumed, 0);
+                sk->u.tcp.rx_current = NULL;
+                sk->u.tcp.snd_wnd = 0;
+                sk->u.tcp.snd_wl1 = 0;
+                sk->u.tcp.snd_wl2 = 0;
         }
 
         rte_memcpy(sk->local_mac, g_net.local_mac, RTE_ETHER_ADDR_LEN);

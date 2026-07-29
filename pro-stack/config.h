@@ -91,4 +91,7 @@
 #define TCP_MSL_MS 1000
 #define TCP_2MSL_MS (2 * TCP_MSL_MS)
 
+/** Default receive buffer size (bytes). */
+#define TCP_RCVBUF_SIZE 65535U
+
 #endif /* NETARCH_CONFIG_H */
