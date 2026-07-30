@@ -71,10 +71,12 @@ int udp_ingress(struct rte_mbuf *mbuf) {
 
         uint16_t payload_len =
             rte_be_to_cpu_16(udp->dgram_len) - sizeof(struct rte_udp_hdr);
+#if ENABLE_UDP_DEBUG
         LOG_INFO("udp rx " IP_FMT ":%u -> " IP_FMT ":%u payload=%u",
                  IP_ARG(ip->src_addr), rte_be_to_cpu_16(udp->src_port),
                  IP_ARG(ip->dst_addr), rte_be_to_cpu_16(udp->dst_port),
                  payload_len);
+#endif
         /* TODO: validate udp->dgram_cksum (and the IPv4 header checksum) on
          * receive; a bad checksum should drop the datagram. Both are currently
          * trusted unconditionally. */
@@ -82,10 +84,12 @@ int udp_ingress(struct rte_mbuf *mbuf) {
         struct nsock *sk =
             nsock_from_ip_port(ip->dst_addr, udp->dst_port, ip->next_proto_id);
         if (sk == NULL) {
+#if ENABLE_UDP_DEBUG
                 LOG_WARN("no socket for " IP_FMT ":%u proto=%u",
                          IP_ARG(ip->dst_addr), rte_be_to_cpu_16(udp->dst_port),
                          ip->next_proto_id);
                 rte_pktmbuf_free(mbuf);
+#endif
                 return -1;
         }
 

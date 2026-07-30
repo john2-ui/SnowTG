@@ -16,8 +16,8 @@
  * Passive open (LISTEN -> SYN_RECV -> ESTABLISHED), active open
  * (CLOSED -> SYN_SENT -> ESTABLISHED), and teardown (active FIN_WAIT_* /
  * TIME_WAIT / CLOSING, passive CLOSE_WAIT / LAST_ACK) are implemented.
- * CLOSED / LISTEN still use a drop stub for unexpected segments; RST
- * generation for closed ports remains TODO.
+ * tcp_ingress generates RFC 793 RST replies for unmatched non-RST segments
+ * and validates received RSTs before tearing down a matching stream.
  */
 #ifndef NETARCH_TCP_H
 #define NETARCH_TCP_H

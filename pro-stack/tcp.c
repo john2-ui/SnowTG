@@ -20,6 +20,7 @@
 #include <netinet/ip.h>
 #include <pthread.h>
 #include <rte_bitops.h>
+#include <rte_byteorder.h>
 #include <rte_cycles.h>
 #include <rte_ether.h>
 #include <rte_ip.h>
@@ -34,6 +35,24 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+static void tcp_drain_send(struct nsock *sk);
+static void tcp_drain_recv(struct nsock *sk);
+
+static struct rte_mbuf *tcp_build_pkt(struct rte_mempool *mp, uint32_t src_ip,
+                                      uint32_t dst_ip, const uint8_t *dst_mac,
+                                      const struct tcp_fragment *f);
+static void tcp_emit_fragment(uint32_t src_ip, uint32_t dst_ip,
+                              const uint8_t *dst_mac,
+                              const struct tcp_fragment *f);
+static void tcp_send_reset_reply(const struct rte_ether_hdr *eth,
+                                 const struct rte_ipv4_hdr *iphdr,
+                                 const struct rte_tcp_hdr *tcp_hdr);
+static void tcp_send_reset_for_stream(const struct nsock *sk,
+                                      const uint8_t *dst_mac);
+static int tcp_rst_acceptable(const struct nsock *sk,
+                              const struct rte_tcp_hdr *hdr);
+static void tcp_abort_on_rst(struct nsock *sk);
 
 /**
  * @brief Return the currently advertisable receive window.
@@ -662,9 +681,6 @@ static struct tcp_fragment *tcp_fragment_alloc(void) {
         return f;
 }
 
-static void tcp_drain_send(struct nsock *sk);
-static void tcp_drain_recv(struct nsock *sk);
-
 /** @brief Queue an outbound TCP fragment and release it on failure.
  * @param sk Socket owning the outbound queue.
  * @param f Fragment to enqueue; consumed in both success and failure paths.
@@ -1005,11 +1021,15 @@ static void tcp_enter_time_wait(struct nsock *sk) {
  * Does NOT enqueue onto accept_queue -- that happens only after the final ACK.
  * @param listener Listening socket.
  * @param hdr Inbound TCP header.
+ * @param eth Ethernet header; its source MAC is used for a direct RST reply.
+ * @param iphdr IPv4 header; provides the tuple and SEG.LEN for an RST reply.
  * @param remote_ip Peer IPv4 address in network byte order.
  * @param remote_port Peer TCP port in network byte order.
  * @return 0; ingress retains ownership of the packet mbuf.
  */
 static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
+                            const struct rte_ether_hdr *eth,
+                            const struct rte_ipv4_hdr *iphdr,
                             uint32_t remote_ip, uint16_t remote_port) {
         if (!(hdr->tcp_flags & RTE_TCP_SYN_FLAG))
                 return 0;
@@ -1028,6 +1048,7 @@ static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
          */
         unsigned int accepted = rte_ring_count(listener->u.tcp.accept_queue);
         if (listener->u.tcp.syn_pending + accepted >= listener->u.tcp.backlog) {
+                tcp_send_reset_reply(eth, iphdr, hdr);
                 LOG_WARN("tcp backlog full listen_fd=%d syn_pending=%u "
                          "accepted=%u backlog=%u; drop SYN from " IP_FMT ":%u",
                          listener->fd, listener->u.tcp.syn_pending, accepted,
@@ -1039,6 +1060,7 @@ static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
         struct nsock *child = tcp_stream_create(
             remote_ip, listener->local_ip, remote_port, listener->local_port);
         if (child == NULL) {
+                tcp_send_reset_reply(eth, iphdr, hdr);
                 LOG_ERROR("tcp stream create failed listen_fd=%d peer " IP_FMT
                           ":%u",
                           listener->fd, IP_ARG(remote_ip),
@@ -1090,7 +1112,9 @@ static int tcp_state_syn_sent(struct nsock *sk, struct rte_tcp_hdr *hdr,
         if (sk->u.tcp.status != TCP_STATUS_SYN_SENT)
                 return 0;
 
-        /* Only SYN+ACK advances the handshake; bare ACK/RST/data are ignored.
+        /*
+         * Only SYN+ACK advances the handshake. tcp_ingress validates and
+         * handles RST before dispatching to this state handler.
          */
         if (!(hdr->tcp_flags & RTE_TCP_SYN_FLAG) ||
             !(hdr->tcp_flags & RTE_TCP_ACK_FLAG))
@@ -1136,7 +1160,9 @@ static int tcp_state_syn_sent(struct nsock *sk, struct rte_tcp_hdr *hdr,
         return 0;
 }
 
-/** @brief Handle SYN retransmissions, RST, or final ACK in SYN_RECV.
+/** @brief Handle SYN retransmissions or the final ACK in SYN_RECV.
+ *
+ * RST validation and teardown are centralized in tcp_ingress.
  * @param sk Passive-open child stream.
  * @param hdr Inbound TCP header.
  * @param mbuf Inbound packet; not retained.
@@ -1144,30 +1170,8 @@ static int tcp_state_syn_sent(struct nsock *sk, struct rte_tcp_hdr *hdr,
  */
 static int tcp_state_syn_recv(struct nsock *sk, struct rte_tcp_hdr *hdr,
                               struct rte_mbuf *mbuf) {
-        (void)mbuf;
         if (sk->u.tcp.status != TCP_STATUS_SYN_RECV)
                 return 0;
-
-        /* RST from peer: free the child TCB and keep listening */
-        if (hdr->tcp_flags & RTE_TCP_RST_FLAG) {
-                if (ntohl(hdr->sent_seq) != sk->u.tcp.recv_ack) {
-                        LOG_WARN("tcp SYN_RECV RST mismatch " IP_FMT
-                                 ":%u seq=%u expect=%u",
-                                 IP_ARG(sk->u.tcp.remote_ip),
-                                 rte_be_to_cpu_16(sk->u.tcp.remote_port),
-                                 ntohl(hdr->sent_seq), sk->u.tcp.recv_ack);
-                        return 0;
-                }
-                struct nsock *listener = sk->u.tcp.listener;
-                if (listener != NULL && listener->u.tcp.syn_pending > 0) {
-                        listener->u.tcp.syn_pending--;
-                }
-                rte_timer_stop(&sk->u.tcp.timer);
-                tcp_drain_send(sk);
-                tcp_drain_recv(sk);
-                nsock_free(sk);
-                return 0;
-        }
 
         /*
          * Peer lost our SYN+ACK and retransmitted SYN: resend SYN+ACK with the
@@ -1250,12 +1254,16 @@ static int tcp_state_syn_recv(struct nsock *sk, struct rte_tcp_hdr *hdr,
                         pthread_cond_signal(&listener->cond);
                         pthread_mutex_unlock(&listener->mutex);
                 } else {
-                        /* TODO: send RST to the peer before freeing. */
+                        struct rte_ether_hdr *eth =
+                            rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
+
                         LOG_ERROR(
                             "tcp accept_queue full listen_fd=%d peer " IP_FMT
-                            ":%u; free child TCB",
+                            ":%u; sent RST and free child TCB",
                             listener->fd, IP_ARG(sk->u.tcp.remote_ip),
                             rte_be_to_cpu_16(sk->u.tcp.remote_port));
+
+                        tcp_send_reset_for_stream(sk, eth->src_addr.addr_bytes);
                         tcp_drain_send(sk);
                         tcp_drain_recv(sk);
                         nsock_free(sk);
@@ -1648,9 +1656,8 @@ static int tcp_state_close_wait(struct nsock *sk, struct rte_tcp_hdr *hdr,
 /**
  * @brief Drop a segment received in a state without a dedicated handler.
  *
- * Fallback for states that still ignore unexpected segments:
- *   TCP_STATUS_CLOSED  -> TODO: RST for segments to a closed port.
- *   TCP_STATUS_LISTEN  -> real work is in tcp_state_listen via tcp_ingress.
+ * Closed sockets are treated as unmatched by tcp_ingress, which generates an
+ * RST where appropriate. LISTEN processing is also performed by tcp_ingress.
  * @param sk Socket selected by ingress.
  * @param hdr Inbound TCP header.
  * @param mbuf Inbound packet; not retained.
@@ -1710,9 +1717,6 @@ int tcp_ingress(struct rte_mbuf *mbuf) {
         /* TODO: parse TCP options (MSS, window scale, SACK, timestamps) from
          * the SYN; opt_len is currently always treated as 0 on the receive
          * path. */
-        /* TODO: generate/accept RST for segments that match no connection or
-         * that arrive in an invalid state; RST is currently ignored entirely.
-         */
 
         uint32_t remote_ip = iphdr->src_addr;
         uint32_t local_ip = iphdr->dst_addr;
@@ -1722,9 +1726,30 @@ int tcp_ingress(struct rte_mbuf *mbuf) {
         struct nsock *sk =
             tcp_stream_search(remote_ip, local_ip, remote_port, local_port);
 
+        /*
+         * A locally retained CLOSED socket must not suppress RFC 793's
+         * unmatched-segment RST response.
+         */
+        if (sk != NULL && sk->u.tcp.status == TCP_STATUS_CLOSED)
+                sk = NULL;
+
         /* Existing TCB (including SYN_RECV children still awaiting final ACK).
          */
         if (sk != NULL) {
+                if (tcp_hdr->tcp_flags & RTE_TCP_RST_FLAG) {
+                        if (tcp_rst_acceptable(sk, tcp_hdr))
+                                tcp_abort_on_rst(sk);
+                        else
+                                LOG_WARN("tcp ignored unacceptable RST fd=%d "
+                                         "state=%s seq=%u ack=%u",
+                                         sk->fd,
+                                         tcp_status_str(sk->u.tcp.status),
+                                         ntohl(tcp_hdr->sent_seq),
+                                         ntohl(tcp_hdr->recv_ack));
+
+                        rte_pktmbuf_free(mbuf);
+                        return 0;
+                }
                 int delivered = 0;
                 TCP_STATUS st = sk->u.tcp.status;
                 if (st < TCP_STATUS_MAX && tcp_state_ops[st].handle != NULL)
@@ -1740,13 +1765,13 @@ int tcp_ingress(struct rte_mbuf *mbuf) {
                 struct nsock *listener =
                     tcp_listener_lookup(local_ip, local_port);
                 if (listener != NULL) {
-                        (void)tcp_state_listen(listener, tcp_hdr, remote_ip,
-                                               remote_port);
+                        (void)tcp_state_listen(listener, tcp_hdr, eth, iphdr,
+                                               remote_ip, remote_port);
                 } else {
-                        /* TODO: send RST for SYN to a closed port. */
+                        tcp_send_reset_reply(eth, iphdr, tcp_hdr);
                         LOG_DEBUG(
                             "tcp SYN to non-listening " IP_FMT
-                            ":%u from " IP_FMT ":%u; drop",
+                            ":%u from " IP_FMT ":%u; sent RST",
                             IP_ARG(local_ip), rte_be_to_cpu_16(local_port),
                             IP_ARG(remote_ip), rte_be_to_cpu_16(remote_port));
                 }
@@ -1754,8 +1779,10 @@ int tcp_ingress(struct rte_mbuf *mbuf) {
                 return 0;
         }
 
-        /* TODO: RST -- segment matched neither a TCB nor a listener. */
-        LOG_DEBUG("tcp drop unmatched " IP_FMT ":%u -> " IP_FMT ":%u flags=%s",
+        if (!(tcp_hdr->tcp_flags & RTE_TCP_RST_FLAG))
+                tcp_send_reset_reply(eth, iphdr, tcp_hdr);
+
+        LOG_DEBUG("tcp unmatched " IP_FMT ":%u -> " IP_FMT ":%u flags=%s",
                   IP_ARG(remote_ip), rte_be_to_cpu_16(remote_port),
                   IP_ARG(local_ip), rte_be_to_cpu_16(local_port),
                   tcp_flags_str(tcp_hdr->tcp_flags));
@@ -1772,8 +1799,8 @@ int tcp_ingress(struct rte_mbuf *mbuf) {
  * @return Newly built packet mbuf, or NULL on allocation failure.
  */
 static struct rte_mbuf *tcp_build_pkt(struct rte_mempool *mp, uint32_t src_ip,
-                                      uint32_t dst_ip, uint8_t *dst_mac,
-                                      struct tcp_fragment *f) {
+                                      uint32_t dst_ip, const uint8_t *dst_mac,
+                                      const struct tcp_fragment *f) {
         const size_t opt_bytes = (size_t)f->opt_len * sizeof(uint32_t);
         const size_t l4_len =
             sizeof(struct rte_tcp_hdr) + opt_bytes + f->payload_len;
@@ -1805,6 +1832,165 @@ static struct rte_mbuf *tcp_build_pkt(struct rte_mempool *mp, uint32_t src_ip,
 
         tcp->cksum = rte_ipv4_udptcp_cksum(ip, tcp);
         return mbuf;
+}
+
+static void tcp_emit_fragment(uint32_t src_ip, uint32_t dst_ip,
+                              const uint8_t *dst_mac,
+                              const struct tcp_fragment *f) {
+        if (g_net.mp == NULL) {
+                LOG_ERROR("tcp RST: global mbuf pool is unavailable");
+                return;
+        }
+
+        /*
+         * tcp_build_pkt does not retain f or dst_mac. The caller may therefore
+         * pass stack storage and the source-MAC bytes from the received frame.
+         */
+        struct rte_mbuf *out =
+            tcp_build_pkt(g_net.mp, src_ip, dst_ip, dst_mac, f);
+        if (out == NULL) {
+                return;
+        }
+
+        struct inout_ring *ring = ring_instance();
+        if (rte_ring_mp_enqueue(ring->out, out) != 0) {
+                LOG_ERROR("tcp RST: NIC output ring full");
+                rte_pktmbuf_free(out);
+        }
+}
+
+/*
+ * RFC 793 reset generation for a segment that does not match any TCB:
+ *
+ *   incoming ACK:      <SEQ=SEG.ACK><CTL=RST>
+ *   incoming non-ACK:  <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
+ *
+ * SEG.LEN includes payload bytes and SYN/FIN sequence-space consumption.
+ */
+static void tcp_send_reset_reply(const struct rte_ether_hdr *eth,
+                                 const struct rte_ipv4_hdr *iphdr,
+                                 const struct rte_tcp_hdr *tcp_hdr) {
+        if (tcp_hdr->tcp_flags & RTE_TCP_RST_FLAG)
+                return; /* Never answer a reset with another reset. */
+
+        uint8_t tcp_hdr_len = (tcp_hdr->data_off >> 4) * 4;
+        uint16_t ip_len = rte_be_to_cpu_16(iphdr->total_length);
+        if (tcp_hdr_len < sizeof(*tcp_hdr) ||
+            ip_len < sizeof(*iphdr) + tcp_hdr_len) {
+                LOG_WARN(
+                    "tcp RST: malformed segment, cannot calculate SEG.LEN");
+                return;
+        }
+
+        uint32_t seg_len = ip_len - sizeof(*iphdr) - tcp_hdr_len;
+        if (tcp_hdr->tcp_flags & RTE_TCP_SYN_FLAG)
+                seg_len++;
+        if (tcp_hdr->tcp_flags & RTE_TCP_FIN_FLAG)
+                seg_len++;
+
+        struct tcp_fragment rst;
+        memset(&rst, 0, sizeof(rst));
+        rst.src_port = tcp_hdr->dst_port;
+        rst.dst_port = tcp_hdr->src_port;
+        rst.data_off = (5 << 4);
+
+        if (tcp_hdr->tcp_flags & RTE_TCP_ACK_FLAG) {
+                rst.sent_seq = ntohl(tcp_hdr->recv_ack);
+                rst.tcp_flags = RTE_TCP_RST_FLAG;
+        } else {
+                rst.recv_ack = ntohl(tcp_hdr->sent_seq) + seg_len;
+                rst.tcp_flags = RTE_TCP_RST_FLAG | RTE_TCP_ACK_FLAG;
+        }
+
+        tcp_emit_fragment(iphdr->dst_addr, iphdr->src_addr,
+                          eth->src_addr.addr_bytes, &rst);
+
+        LOG_INFO("tcp tx unmatched RST " IP_FMT ":%u -> " IP_FMT
+                 ":%u flags=%s seq=%u ack=%u",
+                 IP_ARG(iphdr->dst_addr), rte_be_to_cpu_16(rst.src_port),
+                 IP_ARG(iphdr->src_addr), rte_be_to_cpu_16(rst.dst_port),
+                 tcp_flags_str(rst.tcp_flags), rst.sent_seq, rst.recv_ack);
+}
+
+/* Send an abortive reset for an existing stream. */
+static void tcp_send_reset_for_stream(const struct nsock *sk,
+                                      const uint8_t *dst_mac) {
+        struct tcp_fragment rst;
+        memset(&rst, 0, sizeof(rst));
+        rst.src_port = sk->local_port;
+        rst.dst_port = sk->u.tcp.remote_port;
+        rst.sent_seq = sk->u.tcp.sent_seq;
+        rst.recv_ack = sk->u.tcp.recv_ack;
+        rst.data_off = (5 << 4);
+        rst.tcp_flags = RTE_TCP_RST_FLAG | RTE_TCP_ACK_FLAG;
+
+        tcp_emit_fragment(sk->local_ip, sk->u.tcp.remote_ip, dst_mac, &rst);
+
+        LOG_INFO("tcp tx abort RST fd=%d peer " IP_FMT ":%u seq=%u ack=%u",
+                 sk->fd, IP_ARG(sk->u.tcp.remote_ip),
+                 rte_be_to_cpu_16(sk->u.tcp.remote_port), rst.sent_seq,
+                 rst.recv_ack);
+}
+
+/*
+ * SYN_SENT validates RST by ACKing our SYN.
+ * Synchronized states (SYN_RECV, ESTABLISHED, etc.) use an exact
+ * RCV.NXT match.
+ * Exact matching is stricter than window acceptance, but is
+ * appropriate for this stack and avoids accepting stale/spoofed resets.
+ */
+static int tcp_rst_acceptable(const struct nsock *sk,
+                              const struct rte_tcp_hdr *hdr) {
+        if (!(hdr->tcp_flags & RTE_TCP_RST_FLAG))
+                return 0;
+
+        if (sk->u.tcp.status == TCP_STATUS_SYN_SENT) {
+                return (hdr->tcp_flags & RTE_TCP_ACK_FLAG) &&
+                       ntohl(hdr->recv_ack) == sk->u.tcp.sent_seq + 1;
+        }
+
+        if (sk->u.tcp.status == TCP_STATUS_TIME_WAIT)
+                return 0; /* RFC 793: ignore RST in TIME_WAIT. */
+
+        return ntohl(hdr->sent_seq) == sk->u.tcp.recv_ack;
+}
+
+/*
+ * Do not free an ESTABLISHED child with fd == -1: it might already be stored
+ * in the listener's accept_queue. tcp_accept() handles that CLOSED child.
+ */
+static void tcp_abort_on_rst(struct nsock *sk) {
+        TCP_STATUS old = sk->u.tcp.status;
+
+        LOG_WARN("tcp accepted RST fd=%d state=%s peer " IP_FMT ":%u", sk->fd,
+                 tcp_status_str(old), IP_ARG(sk->u.tcp.remote_ip),
+                 rte_be_to_cpu_16(sk->u.tcp.remote_port));
+        rte_timer_stop(&sk->u.tcp.timer);
+
+        if (old == TCP_STATUS_SYN_RECV) {
+                struct nsock *listener = sk->u.tcp.listener;
+                if (listener != NULL && listener->u.tcp.syn_pending > 0) {
+                        listener->u.tcp.syn_pending--;
+                }
+
+                tcp_drain_send(sk);
+                tcp_drain_recv(sk);
+                nsock_free(sk);
+                return;
+        }
+
+        tcp_stream_set_status(sk, TCP_STATUS_CLOSED);
+        tcp_drain_send(sk);
+        tcp_drain_recv(sk);
+
+        /*
+         * A reset can unblock pending connect, receive, or close operations.
+         * Broadcast is necessary because several application threads can wait
+         * on this socket; every waiter re-checks its own state predicate.
+         */
+        pthread_mutex_lock(&sk->mutex);
+        pthread_cond_broadcast(&sk->cond);
+        pthread_mutex_unlock(&sk->mutex);
 }
 
 /**
@@ -2211,10 +2397,15 @@ ssize_t tcp_recv(struct nsock *sk, void *buf, size_t len,
 
         if (b == NULL) {
                 pthread_mutex_lock(&sk->mutex);
-                while ((nb = rte_ring_sc_dequeue(sk->recv_buf, (void **)&b)) !=
-                       0)
+                while ((nb = rte_ring_sc_dequeue(sk->recv_buf,
+                                                 (void **)&b)) != 0 &&
+                       sk->u.tcp.status != TCP_STATUS_CLOSED) {
                         pthread_cond_wait(&sk->cond, &sk->mutex);
+                }
                 pthread_mutex_unlock(&sk->mutex);
+
+                if (nb != 0)
+                        return -1; /* RST/close occurred with no queued data. */
                 sk->u.tcp.rx_current = b;
         }
 
@@ -2572,14 +2763,34 @@ int tcp_accept(struct nsock *sk, struct sockaddr *addr,
         }
 
         struct nsock *child;
-        pthread_mutex_lock(&sk->mutex);
-        while (rte_ring_sc_dequeue(sk->u.tcp.accept_queue, (void **)&child) <
-               0) {
-                /* Block until tcp_state_syn_recv signals a completed handshake.
+        for (;;) {
+                pthread_mutex_lock(&sk->mutex);
+                while (rte_ring_sc_dequeue(sk->u.tcp.accept_queue,
+                                           (void **)&child) < 0) {
+                        /* Block until tcp_state_syn_recv signals a completed
+                         * handshake.
+                         */
+                        pthread_cond_wait(&sk->cond, &sk->mutex);
+                }
+                pthread_mutex_unlock(&sk->mutex);
+
+                /*
+                 * A reset may arrive after the child completed the handshake
+                 * but before naccept() dequeues it. Keep the child allocated
+                 * until it leaves accept_queue: tcp_abort_on_rst() marks it
+                 * CLOSED, and this loop performs final cleanup without leaving
+                 * a dangling queue pointer.
                  */
-                pthread_cond_wait(&sk->cond, &sk->mutex);
+                if (child->u.tcp.status != TCP_STATUS_CLOSED)
+                        break;
+
+                LOG_INFO("tcp_accept discard reset child peer " IP_FMT ":%u",
+                         IP_ARG(child->u.tcp.remote_ip),
+                         rte_be_to_cpu_16(child->u.tcp.remote_port));
+                tcp_drain_send(child);
+                tcp_drain_recv(child);
+                nsock_free(child);
         }
-        pthread_mutex_unlock(&sk->mutex);
 
         /*
          * First time this TCB becomes visible to the application: allocate

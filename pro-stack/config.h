@@ -34,6 +34,8 @@
 #define ENABLE_PDUMP 1
 /** Launch the example UDP echo application on a dedicated lcore. */
 #define ENABLE_UDP_APP 0
+/** Enable UDP debug logging. */
+#define ENABLE_UDP_DEBUG 0
 /** Enable the TCP stack ops (required for either TCP app below). */
 #define ENABLE_TCP_APP 1
 /** Launch the TCP echo server (listen/accept/recv/send/close). */
