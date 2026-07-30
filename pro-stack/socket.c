@@ -17,7 +17,6 @@
 #include "tcp.h"
 
 #include <asm-generic/errno-base.h>
-#include <errno.h>
 #include <netinet/in.h>
 #include <pthread.h>
 #include <rte_hash.h>
@@ -302,26 +301,33 @@ struct nsock *g_sock_list = NULL;
 /** fd bitmap: bit i is set while fd i is in use. */
 static uint8_t fd_bitmap[NSOCK_FD_MAX / 8];
 
-/* TODO: fd_alloc/fd_release and the g_sock_list mutations in nsock_alloc /
- * nsock_free are not locked. The app lcore (nsocket/nclose) and the worker
- * lcore (tcp_stream_create) can race on both the bitmap and the list. Add a
- * mutex (or a lock-free fd allocator) before relying on concurrent sockets. */
+/*
+ * registry_lock serializes bitmap, fd-table, hash-index, and g_sock_list
+ * mutations. It does not pin a returned struct nsock pointer; callers that
+ * need lock-free lookup concurrent with close still require deferred free or
+ * reference counting.
+ */
 int fd_alloc(void) {
+        pthread_mutex_lock(&registry_lock);
         for (int i = 0; i < NSOCK_FD_MAX; i++) {
                 uint8_t mask = (uint8_t)(1u << (i % 8));
                 uint8_t *slot = &fd_bitmap[i / 8];
                 if ((*slot & mask) == 0) {
                         *slot |= mask;
+                        pthread_mutex_unlock(&registry_lock);
                         return i;
                 }
         }
+        pthread_mutex_unlock(&registry_lock);
         return -1;
 }
 
 void fd_release(int fd) {
         if (fd < 0 || fd >= NSOCK_FD_MAX)
                 return;
+        pthread_mutex_lock(&registry_lock);
         fd_bitmap[fd / 8] &= (uint8_t)~(1u << (fd % 8));
+        pthread_mutex_unlock(&registry_lock);
 }
 
 struct nsock *nsock_alloc(int fd, uint8_t protocol) {
@@ -406,20 +412,30 @@ struct nsock *nsock_alloc(int fd, uint8_t protocol) {
                 sk->u.tcp.snd_wnd = 0;
                 sk->u.tcp.snd_wl1 = 0;
                 sk->u.tcp.snd_wl2 = 0;
+
+                rb_root_init(&sk->u.tcp.ofo_tree);
+                sk->u.tcp.ofo = NULL;
+                sk->u.tcp.ofo_tail = NULL;
+                sk->u.tcp.ofo_count = 0;
+                sk->u.tcp.ofo_bytes = 0;
         }
 
         rte_memcpy(sk->local_mac, g_net.local_mac, RTE_ETHER_ADDR_LEN);
 
-        pthread_mutex_lock(&registry_lock);
-        if (fd >= 0) {
-                if (fd_table[fd] != NULL) {
-                        pthread_mutex_unlock(&registry_lock);
-                        return NULL;
-                }
-                fd_table[fd] = sk;
-                sk->registry_flags |= NSOCK_REG_FD;
+        if (fd >= 0 && nsock_attach_fd(sk, fd) != 0) {
+                LOG_ERROR("nsock_alloc: fd registry collision fd=%d", fd);
+                if (protocol == IPPROTO_TCP)
+                        tcp_sndbuf_free(&sk->u.tcp.sndbuf);
+                pthread_cond_destroy(&sk->cond);
+                pthread_mutex_destroy(&sk->mutex);
+                rte_ring_free(sk->recv_buf);
+                rte_ring_free(sk->send_buf);
+                rte_free(sk);
+                fd_release(fd);
+                return NULL;
         }
 
+        pthread_mutex_lock(&registry_lock);
         LL_ADD(sk, g_sock_list);
         pthread_mutex_unlock(&registry_lock);
         return sk;

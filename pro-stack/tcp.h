@@ -23,6 +23,7 @@
 #define NETARCH_TCP_H
 
 #include "list.h"
+#include "rbtree.h"
 
 #include <rte_mbuf.h>
 #include <rte_tcp.h>
@@ -77,6 +78,11 @@ struct tcp_ofo_seg {
         uint32_t len;
         uint8_t has_fin;
         unsigned char *data;
+
+        /*O(log n) lookup index, keyed by seq*/
+        struct rb_node rb;
+
+        /* Sequence-ordered queue for O(1) drain from recv_ack. */
         struct tcp_ofo_seg *prev;
         struct tcp_ofo_seg *next;
 };
@@ -167,12 +173,16 @@ struct tcp_stream {
         /** Retransmit count for the currently armed @c timer purpose. */
         uint8_t retries;
 
-        /**
-         * Out-of-order reassembly queue (seq-sorted DLL head).
-         * TODO: pair with an rb-tree index like the Linux TCP ofo cache.
-         */
+        /** RB-tree index for O(log n) OFO insertion and overlap lookup. */
+        struct rb_root ofo_tree;
+
+        /** Sequence-ordered DLL head/tail; head is drained at O(1). */
         struct tcp_ofo_seg *ofo;
-        uint16_t ofo_count; /**< Cap: TCP_OFO_MAX_SEGS (DoS / memory bound). */
+        struct tcp_ofo_seg *ofo_tail;
+
+        /** OFO resource accounting, owned exclusively by packet worker. */
+        uint16_t ofo_count;
+        uint32_t ofo_bytes;
 };
 
 /**

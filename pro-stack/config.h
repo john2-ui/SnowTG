@@ -101,5 +101,8 @@
 
 /** Default receive buffer size (bytes). */
 #define TCP_RCVBUF_SIZE 65535U
-
+/** Maximum OFO payload bytes retained by one TCP control block. */
+#define TCP_OFO_MAX_BYTES TCP_RCVBUF_SIZE
+/** Process-wide cap for copied OFO payload bytes across all TCP streams. */
+#define TCP_OFO_GLOBAL_MAX_BYTES (4U * 1024U * 1024U)
 #endif /* NETARCH_CONFIG_H */

@@ -25,6 +25,7 @@ pro-stack/
 ├── ring.h / ring.c     NIC↔worker 的 in/out 环
 ├── port.h / port.c     以太网端口初始化
 ├── list.h              侵入式双向链表宏 LL_ADD/LL_REMOVE（过渡；目标改为哈希表）
+├── rbtree.h / .c       通用侵入式红黑树（TCP OFO 索引）
 ├── config.h            ENABLE_* 开关与常量
 ├── log.h               分级日志 + IP/MAC 格式化
 └── Makefile            产出 build/pro-stack
@@ -32,7 +33,7 @@ pro-stack/
 
 ### 核心抽象
 
-**统一 socket `struct nsock`**（[socket.h](pro-stack/socket.h)）：持有 fd、本地地址、recv/send 环、mutex/cond、ops 指针、链表节点；传输私有状态嵌入 `u` 联合体（TCP 放 `tcp_stream`，UDP 无私有态）。
+**统一 socket `struct nsock`**（[socket.h](pro-stack/socket.h)）：持有 fd、本地地址、recv/send 环、mutex/cond、ops 指针、注册表标志和链表节点；fd 走定长数组，UDP bind、TCP bind/listener/4-tuple 走 DPDK hash。传输私有状态嵌入 `u` 联合体（TCP 放 `tcp_stream`，UDP 无私有态）。
 
 **ops 向量 `struct sock_ops`**（[sock_ops.h](pro-stack/sock_ops.h)）：`ingress / tx_flush / send / recv / close / connect / listen / accept`。`sock_ops_lookup(proto)` 按 IP 协议号查表；`main.c` 的派发与 worker 循环对协议完全无感。
 
@@ -65,7 +66,7 @@ flowchart LR
 **目标（高效）**：
 
 - **协议层**：校验、按序/乱序重组、更新 ack、回 ACK、重传与窗口；完成后把**已就绪字节流**交给应用。
-- **交付给应用**：统一 stream buffer / payload 视图（含拆除态）；ofo 结构升级为红黑树 + 链表（见效率表）。
+- **交付给应用**：统一 stream buffer / payload 视图（含拆除态）；FIN_* 状态同样走重组交付。
 - **不必**把 RX 数据再包装成发送侧的 `tcp_fragment`——那是 TX 描述符。
 
 极致零拷贝时仍可把底层 buffer 指针交给应用，但应用看到的应是 **payload / 字节流**，而不是自己去解析三层头。
@@ -85,8 +86,9 @@ flowchart LR
 
 ### socket 层
 
-- 统一 `struct nsock`，UDP/TCP 共用 `g_sock_list`（[socket.c](pro-stack/socket.c)）
-- fd 位图分配器 `fd_alloc/fd_release`（`NSOCK_FD_MAX=1024`）
+- 统一 `struct nsock`，UDP/TCP 共用 `g_sock_list` 供过渡性 TX 遍历（[socket.c](pro-stack/socket.c)）
+- fd 位图分配器 + `fd_table` O(1) 查找（`NSOCK_FD_MAX=1024`）
+- socket 注册表：UDP 本地二元组、TCP 本地 bind、listener 与 TCP 四元组均通过 `rte_hash` 索引
 - 唯一命名的 recv/send 环 `sock_recv_%u / sock_send_%u`
 - BSD 风格 API：`nsocket / nbind / nsend / nrecv / nsendto / nrecvfrom / nclose / nconnect / nlisten / naccept`
 - `sock_ops` + `sock_ops_lookup`；TCP 已接线 `connect/listen/accept/close`
@@ -115,8 +117,8 @@ flowchart LR
 - **被动打开**：LISTEN → SYN_RECV → ESTABLISHED；`tcp_listen` backlog + `accept_queue`；`tcp_accept` 分配 fd
 - **主动打开**：CLOSED → SYN_SENT → ESTABLISHED；隐式 bind + 临时端口；SYN RTO + 指数退避
 - **控制段 RTO**：SYN_SENT / SYN_RECV（SYN+ACK）与 FIN（FIN_WAIT_1 / LAST_ACK / CLOSING）独立定时重传
-- ESTABLISHED：累计 ACK、`tcp_rx_blob` 按序交付；OOO 入 `ofo` 链表（重叠裁剪后 drain）；`tcp_send` / `tcp_recv`
-- **发送滑动窗口**：`sndbuf` + `snd_una`/`sent_seq`；TX 后数据保留至 ACK；数据 RTO（Go-Back-N）；按 `TCP_DEFAULT_MSS` 切段
+- ESTABLISHED：累计 ACK、`tcp_rx_blob` 按序交付；OOO 通过 RB-tree（查找）+ 双向链表（drain）重组，保留重叠裁剪与 FIN；每 TCB 和全局 OFO 内存均有上限
+- **发送滑动窗口**：`sndbuf` + `snd_una`/`sent_seq`；按对端通告窗口限制 TX，TX 后数据保留至 ACK；数据 RTO（Go-Back-N）；按 `TCP_DEFAULT_MSS` 切段
 - **被动拆除**：ESTABLISHED → CLOSE_WAIT → LAST_ACK → CLOSED
 - **主动拆除**：FIN_WAIT_1/2、CLOSING、TIME_WAIT（2MSL 定时器）
 - ISN 生成器；统一 mbuf 归属：ingress 一律消费 mbuf
@@ -136,10 +138,8 @@ flowchart LR
 
 | 功能 | 位置 | 说明 / 目标设计 |
 |------|------|-----------------|
-| 收端 / 发端流控 | [tcp.c](pro-stack/tcp.c) ESTABLISHED；`tcp_sndbuf_append` | 不看对端 `rx_win`；`sndbuf` 满时 `tcp_send` 直接 -1。目标：通告窗口限制发送；满缓冲时阻塞或 `EAGAIN` |
-| RST 生成 / 接收 | [tcp.c](pro-stack/tcp.c) | 关闭端口、无匹配 TCB、accept 队列满等应发 RST；非法 RST 应拆除连接 |
-| FIN 段 payload | [tcp.c](pro-stack/tcp.c) FIN_WAIT_2 等 | FIN 携带的数据应先交付再消费 FIN |
-| fd / 注册表线程安全 | [socket.c](pro-stack/socket.c) | `fd_alloc` 与 `g_sock_list` 无锁。目标：锁或无锁并发结构（与哈希表一并设计） |
+| 发送侧应用背压 | [tcp.c](pro-stack/tcp.c) `tcp_send` | TX 已遵守对端 `rx_win`，但 `tcp_send` 仍可在对端窗口为零时写满 `sndbuf`。目标：阻塞、非阻塞 `EAGAIN` 或可配置高水位 |
+| socket 生命周期并发 | [socket.c](pro-stack/socket.c) | bitmap、索引和列表插删已由 registry lock 串行化；lookup 返回的 `nsock *` 仍可能与 close/free 并发。目标：引用计数 + 延迟释放，或严格 worker ownership |
 
 ### P1 — 完备 TCP（选项、拥塞、校验、API）
 
@@ -152,6 +152,7 @@ flowchart LR
 | 重复 ACK / 快重传 | — | 依赖 ACK 处理与 SACK（可选） |
 | RX 校验和 | — | TX 已算；RX 应校验 TCP（及 IPv4）校验和 |
 | socket 选项 | — | `SO_REUSEADDR`、非阻塞、`TCP_NODELAY` 等 |
+| 多连接应用调度 | [tcp_app.c](pro-stack/tcp_app.c) | 示例 echo server 在一个连接的阻塞 `nrecv` 循环中不会再 `accept`。目标：非阻塞 recv + poll/ready queue，或连接任务调度 |
 | 接收交付抽象 | 见上文 | ESTABLISHED 已用 `tcp_rx_blob`；目标：统一 stream buffer，FIN_* 等状态同样走重组交付 |
 
 ### P2 — ARP / ICMP / 网络层
@@ -176,11 +177,12 @@ flowchart LR
 
 | 现状（低效） | 目标（高效） |
 |--------------|--------------|
-| `g_sock_list` / 4-tuple / 监听端口 / ARP 均为 O(n) 链表扫描 | 连接表、监听表、ARP 表用哈希（如 DPDK `rte_hash`），查找 O(1) 期望 |
+| fd、UDP bind、TCP listener/4-tuple 已使用数组或 `rte_hash`；ARP 仍为 O(n) 链表，`g_sock_list` 仍供 TX 遍历 | ARP 表改哈希；TX 改为 dirty socket 队列 |
 | worker 每轮遍历全部 socket 调 `tx_flush` | 仅冲洗有待发数据的 socket：dirty 队列，或 `send_buf` / `sndbuf` 非空时入队 |
-| TCP ofo 为 O(n) 排序双向链表 | 仿 Linux：红黑树（按 seq）+ 双向链表，插入 O(log n)、从 `recv_ack` drain O(1)；满队列/压力回收防 DoS（见 `tcp_ofo_link` TODO） |
+| TCP OFO 使用 RB-tree（按 seq）+ 双向链表，插入定位 O(log n)、从 `recv_ack` drain O(1)，并限制节点、每 TCB 字节与全局字节 | 增加可观测性指标；依据压力和乱序距离自适应调节上限 |
 | `tcp_send` → `sndbuf` 仍 memcpy | （可选）零拷贝 / mbuf 引用计数 |
 | ARP /24 周期性广播 | 按需解析 + 缓存老化；全网扫仅作可选调试手段 |
+| 单 RX/TX queue、单 packet worker | 多 queue + 硬件 RSS：同一四元组固定归属一个 worker；ARP/ICMP、计时器、TX 和 socket 生命周期按 worker 分片。单 RX queue 或自定义亲和时再使用软件 RSS |
 
 ---
 

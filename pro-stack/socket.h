@@ -84,14 +84,28 @@ struct nsock {
 /** Head of the intrusive list containing every open socket. */
 extern struct nsock *g_sock_list;
 
+/**
+ * @brief Create the process-wide fd, bind, listener, and connection indexes.
+ * @return 0 on success, or -1 when any DPDK hash table cannot be created.
+ */
 int socket_registry_init(void);
+/** @brief Release the process-wide socket indexes during orderly shutdown. */
 void socket_registry_fini(void);
 
+/**
+ * @brief Bind a socket to a local endpoint and reserve it in its protocol map.
+ * @return 0 on success, or a negative errno-style error code.
+ */
 int nsock_bind_local(struct nsock *sk, uint32_t ip, uint16_t port);
+/** @brief Publish a bound TCP socket as a listener endpoint. */
 int nsock_tcp_listener_register(struct nsock *sk);
+/** @brief Remove a TCP listener endpoint from the listener index. */
 void nsock_tcp_listener_unregister(struct nsock *sk);
+/** @brief Publish a TCP TCB in the exact four-tuple connection index. */
 int nsock_tcp_conn_register(struct nsock *sk);
+/** @brief Remove a TCP TCB from the exact four-tuple connection index. */
 void nsock_tcp_conn_unregister(struct nsock *sk);
+/** @brief Return non-zero when a TCP local endpoint is already reserved. */
 int nsock_tcp_local_taken(uint32_t ip, uint16_t port);
 
 /**
@@ -119,6 +133,7 @@ void fd_release(int fd);
 struct nsock *nsock_alloc(int fd, uint8_t protocol);
 /** Remove @p sk from the registry and release its rings, lock, cond, and fd. */
 void nsock_free(struct nsock *sk);
+/** Attach an allocated fd to an existing socket, such as an accepted child. */
 int nsock_attach_fd(struct nsock *sk, int fd);
 /** @} */
 
