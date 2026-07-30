@@ -561,16 +561,7 @@ static const char *tcp_flags_str(uint8_t flags) {
  */
 static struct nsock *tcp_listener_lookup(uint32_t local_ip,
                                          uint16_t local_port) {
-        struct nsock *sk;
-        for (sk = g_sock_list; sk != NULL; sk = sk->next) {
-                if (sk->protocol != IPPROTO_TCP)
-                        continue;
-                if (sk->u.tcp.status != TCP_STATUS_LISTEN)
-                        continue;
-                if (sk->local_ip == local_ip && sk->local_port == local_port)
-                        return sk;
-        }
-        return NULL;
+        return nsock_from_ip_port(local_ip, local_port, IPPROTO_TCP);
 }
 
 /** @brief Look up a TCP stream by its complete four-tuple.
@@ -631,6 +622,10 @@ struct nsock *tcp_stream_create(uint32_t remote_ip, uint32_t local_ip,
         sk->u.tcp.remote_ip = remote_ip;
         sk->u.tcp.remote_port = remote_port;
         sk->u.tcp.status = TCP_STATUS_SYN_RECV;
+        if (nsock_tcp_conn_register(sk) != 0) {
+                nsock_free(sk);
+                return NULL;
+        }
         sk->u.tcp.listener = NULL;
         sk->u.tcp.sent_seq = tcp_next_isn();
         sk->u.tcp.snd_una = sk->u.tcp.sent_seq;
@@ -652,6 +647,9 @@ struct nsock *tcp_stream_create(uint32_t remote_ip, uint32_t local_ip,
  */
 void tcp_stream_set_status(struct nsock *sk, TCP_STATUS new_status) {
         TCP_STATUS old = sk->u.tcp.status;
+        if (old != TCP_STATUS_CLOSED && new_status == TCP_STATUS_CLOSED) {
+                nsock_tcp_conn_unregister(sk);
+        }
         sk->u.tcp.status = new_status;
         LOG_INFO("tcp status %s -> %s " IP_FMT ":%u <-> " IP_FMT ":%u",
                  tcp_status_str(old), tcp_status_str(new_status),
@@ -758,7 +756,7 @@ static uint16_t tcp_alloc_ephemeral_port(void) {
                     next > TCP_EPHEMERAL_PORT_MAX)
                         next = TCP_EPHEMERAL_PORT_MIN;
                 uint16_t be = htons(p);
-                if (nsock_from_ip_port(g_net.local_ip, be, IPPROTO_TCP) == NULL)
+                if (!nsock_tcp_local_taken(g_net.local_ip, be))
                         return be;
         }
         return 0;
@@ -2682,6 +2680,8 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
                             sk->fd);
                         return -1;
                 }
+                if (nsock_bind_local(sk, g_net.local_ip, sk->local_port) != 0)
+                        return -1;
         }
 
         sk->u.tcp.remote_ip = peer->sin_addr.s_addr;
@@ -2694,10 +2694,16 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
         sk->u.tcp.recv_ack = 0;
         sk->u.tcp.retries = 0;
 
+        if (nsock_tcp_conn_register(sk) != 0) {
+                LOG_ERROR("tcp_connect: duplicate 4-tuple");
+                return -1;
+        }
+
         struct tcp_fragment *syn_f =
             tcp_make_fragment(sk, RTE_TCP_SYN_FLAG, sk->u.tcp.sent_seq, 0);
         if (tcp_enqueue_fragment(sk, syn_f) != 0) {
                 LOG_ERROR("tcp_connect: SYN enqueue failed fd=%d", sk->fd);
+                nsock_tcp_conn_unregister(sk);
                 return -1;
         }
 
@@ -2757,6 +2763,14 @@ int tcp_listen(struct nsock *sk, int backlog) {
                 LOG_ERROR("tcp_listen: accept_queue create failed fd=%d "
                           "backlog=%d ring_sz=%u",
                           sk->fd, backlog, ring_sz);
+                sk->u.tcp.status = TCP_STATUS_CLOSED;
+                return -1;
+        }
+        if (nsock_tcp_listener_register(sk) != 0) {
+                LOG_ERROR("tcp_listen: local endpoint already listening");
+                rte_ring_free(sk->u.tcp.accept_queue);
+                sk->u.tcp.accept_queue = NULL;
+                sk->u.tcp.status = TCP_STATUS_CLOSED;
                 return -1;
         }
         LOG_INFO("tcp_listen fd=%d " IP_FMT ":%u backlog=%d ring_sz=%u", sk->fd,
@@ -2833,13 +2847,36 @@ int tcp_accept(struct nsock *sk, struct sockaddr *addr,
                         tcp_drain_recv(child);
                         nsock_free(child);
                 } else {
+                        /* A requeued child is available for one tcp_accept()
+                         * waiter that was blocked on an empty accept queue. */
                         pthread_mutex_lock(&sk->mutex);
                         pthread_cond_signal(&sk->cond);
                         pthread_mutex_unlock(&sk->mutex);
                 }
                 return -1;
         }
-        child->fd = fd;
+
+        if (nsock_attach_fd(child, fd) != 0) {
+                LOG_ERROR(
+                    "tcp_accept: attach fd failed; requeue child peer " IP_FMT
+                    ":%u",
+                    IP_ARG(child->u.tcp.remote_ip),
+                    rte_be_to_cpu_16(child->u.tcp.remote_port));
+                fd_release(fd);
+                if (rte_ring_mp_enqueue(sk->u.tcp.accept_queue, child) != 0) {
+                        LOG_ERROR("tcp_accept: requeue failed; dropping child");
+                        tcp_drain_send(child);
+                        tcp_drain_recv(child);
+                        nsock_free(child);
+                } else {
+                        /* A requeued child is available for one tcp_accept()
+                         * waiter that was blocked on an empty accept queue. */
+                        pthread_mutex_lock(&sk->mutex);
+                        pthread_cond_signal(&sk->cond);
+                        pthread_mutex_unlock(&sk->mutex);
+                }
+                return -1;
+        }
 
         if (addr) {
                 struct sockaddr_in *sin = (struct sockaddr_in *)addr;

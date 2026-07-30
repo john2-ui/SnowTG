@@ -16,14 +16,266 @@
 #include "net_context.h"
 #include "tcp.h"
 
+#include <asm-generic/errno-base.h>
+#include <errno.h>
 #include <netinet/in.h>
 #include <pthread.h>
+#include <rte_hash.h>
+#include <rte_jhash.h>
 #include <rte_lcore.h>
 #include <rte_malloc.h>
 #include <rte_ring.h>
 #include <rte_timer.h>
 #include <stdatomic.h>
+#include <stdint.h>
 #include <string.h>
+
+struct local_key {
+        uint32_t ip;
+        uint16_t port;
+        uint16_t pad;
+};
+
+struct tcp_conn_key {
+        uint32_t remote_ip;
+        uint32_t local_ip;
+        uint16_t remote_port;
+        uint16_t local_port;
+};
+
+static struct nsock *fd_table[NSOCK_FD_MAX];
+
+static struct rte_hash *udp_bind_hash;
+static struct rte_hash *tcp_bind_hash;
+static struct rte_hash *tcp_listener_hash;
+static struct rte_hash *tcp_conn_hash;
+
+static pthread_mutex_t registry_lock = PTHREAD_MUTEX_INITIALIZER;
+static int registry_ready;
+
+static struct local_key local_key_make(uint32_t ip, uint16_t port) {
+        struct local_key key;
+        memset(&key, 0, sizeof(key));
+        key.ip = ip;
+        key.port = port;
+        return key;
+}
+
+static struct tcp_conn_key tcp_conn_key_make(const struct nsock *sk) {
+        struct tcp_conn_key key;
+        memset(&key, 0, sizeof(key));
+        key.remote_ip = sk->u.tcp.remote_ip;
+        key.local_ip = sk->local_ip;
+        key.remote_port = sk->u.tcp.remote_port;
+        key.local_port = sk->local_port;
+        return key;
+}
+
+static struct rte_hash *registry_hash_create(const char *name,
+                                             uint32_t key_len) {
+        const struct rte_hash_parameters p = {
+            .name = name,
+            .entries = NSOCK_REGISTRY_ENTRIES,
+            .key_len = key_len,
+            .hash_func = rte_jhash,
+            .hash_func_init_val = 0,
+            .socket_id = rte_socket_id(),
+        };
+        return rte_hash_create(&p);
+}
+
+int socket_registry_init(void) {
+        pthread_mutex_lock(&registry_lock);
+
+        if (registry_ready) {
+                pthread_mutex_unlock(&registry_lock);
+                return 0;
+        }
+
+        udp_bind_hash =
+            registry_hash_create("nsock_udp_bind", sizeof(struct local_key));
+        tcp_bind_hash =
+            registry_hash_create("nsock_tcp_bind", sizeof(struct local_key));
+        tcp_listener_hash = registry_hash_create("nsock_tcp_listener",
+                                                 sizeof(struct local_key));
+        tcp_conn_hash =
+            registry_hash_create("nsock_tcp_conn", sizeof(struct tcp_conn_key));
+
+        if (udp_bind_hash == NULL || tcp_bind_hash == NULL ||
+            tcp_listener_hash == NULL || tcp_conn_hash == NULL) {
+                if (udp_bind_hash != NULL)
+                        rte_hash_free(udp_bind_hash);
+                if (tcp_bind_hash != NULL)
+                        rte_hash_free(tcp_bind_hash);
+                if (tcp_listener_hash != NULL)
+                        rte_hash_free(tcp_listener_hash);
+                if (tcp_conn_hash != NULL)
+                        rte_hash_free(tcp_conn_hash);
+
+                udp_bind_hash = NULL;
+                tcp_bind_hash = NULL;
+                tcp_listener_hash = NULL;
+                tcp_conn_hash = NULL;
+
+                pthread_mutex_unlock(&registry_lock);
+                return -1;
+        }
+
+        registry_ready = 1;
+        pthread_mutex_unlock(&registry_lock);
+        return 0;
+}
+
+void socket_registry_fini(void) {
+        pthread_mutex_lock(&registry_lock);
+
+        if (tcp_conn_hash != NULL)
+                rte_hash_free(tcp_conn_hash);
+        if (tcp_listener_hash != NULL)
+                rte_hash_free(tcp_listener_hash);
+        if (tcp_bind_hash != NULL)
+                rte_hash_free(tcp_bind_hash);
+        if (udp_bind_hash != NULL)
+                rte_hash_free(udp_bind_hash);
+
+        tcp_conn_hash = NULL;
+        tcp_listener_hash = NULL;
+        tcp_bind_hash = NULL;
+        udp_bind_hash = NULL;
+
+        registry_ready = 0;
+        pthread_mutex_unlock(&registry_lock);
+}
+
+static int hash_add_unique(struct rte_hash *hash, const void *key,
+                           struct nsock *sk) {
+        void *old = NULL;
+        int rc = rte_hash_lookup_data(hash, key, &old);
+
+        if (rc >= 0) {
+                return old == sk ? 0 : -EADDRINUSE;
+        }
+
+        rc = rte_hash_add_key_data(hash, key, sk);
+        return rc < 0 ? -1 : 0;
+}
+
+static void hash_del(struct rte_hash *hash, const void *key) {
+        if (hash != NULL)
+                (void)rte_hash_del_key(hash, key);
+}
+
+int nsock_bind_local(struct nsock *sk, uint32_t ip, uint16_t port) {
+        struct rte_hash *hash;
+        struct local_key new_key;
+        uint8_t flag;
+        int rc;
+
+        if (sk == NULL || port == 0)
+                return -EINVAL;
+
+        if (sk->protocol == IPPROTO_UDP) {
+                hash = udp_bind_hash;
+                flag = NSOCK_REG_UDP_BIND;
+        } else if (sk->protocol == IPPROTO_TCP) {
+                hash = tcp_bind_hash;
+                flag = NSOCK_REG_TCP_BIND;
+        } else {
+                return -EINVAL;
+        }
+
+        new_key = local_key_make(ip, port);
+
+        pthread_mutex_lock(&registry_lock);
+
+        if (sk->registry_flags & flag) {
+                pthread_mutex_unlock(&registry_lock);
+                return -EINVAL;
+        }
+
+        rc = hash_add_unique(hash, &new_key, sk);
+        if (rc == 0) {
+                sk->local_ip = ip;
+                sk->local_port = port;
+                sk->registry_flags |= flag;
+        }
+
+        pthread_mutex_unlock(&registry_lock);
+        return rc;
+}
+
+int nsock_tcp_local_taken(uint32_t ip, uint16_t port) {
+        struct local_key key = local_key_make(ip, port);
+        void *data = NULL;
+        int found;
+
+        pthread_mutex_lock(&registry_lock);
+        found = rte_hash_lookup_data(tcp_bind_hash, &key, &data) >= 0;
+        pthread_mutex_unlock(&registry_lock);
+
+        return found;
+}
+
+int nsock_tcp_listener_register(struct nsock *sk) {
+        struct local_key key;
+        int rc;
+
+        if (sk == NULL || sk->protocol != IPPROTO_TCP ||
+            !(sk->registry_flags & NSOCK_REG_TCP_BIND))
+                return -EINVAL;
+
+        key = local_key_make(sk->local_ip, sk->local_port);
+
+        pthread_mutex_lock(&registry_lock);
+        rc = hash_add_unique(tcp_listener_hash, &key, sk);
+        if (rc == 0) {
+                sk->registry_flags |= NSOCK_REG_TCP_LISTENER;
+        }
+        pthread_mutex_unlock(&registry_lock);
+        return rc;
+}
+
+void nsock_tcp_listener_unregister(struct nsock *sk) {
+        struct local_key key;
+        if (sk == NULL || sk->protocol != IPPROTO_TCP ||
+            !(sk->registry_flags & NSOCK_REG_TCP_LISTENER))
+                return;
+
+        key = local_key_make(sk->local_ip, sk->local_port);
+        pthread_mutex_lock(&registry_lock);
+        hash_del(tcp_listener_hash, &key);
+        sk->registry_flags &= (uint8_t)~NSOCK_REG_TCP_LISTENER;
+        pthread_mutex_unlock(&registry_lock);
+}
+
+int nsock_tcp_conn_register(struct nsock *sk) {
+        struct tcp_conn_key key;
+        int rc;
+
+        if (sk == NULL || sk->protocol != IPPROTO_TCP)
+                return -EINVAL;
+
+        key = tcp_conn_key_make(sk);
+
+        pthread_mutex_lock(&registry_lock);
+        rc = hash_add_unique(tcp_conn_hash, &key, sk);
+        if (rc == 0)
+                sk->registry_flags |= NSOCK_REG_TCP_CONN;
+        pthread_mutex_unlock(&registry_lock);
+        return rc;
+}
+
+void nsock_tcp_conn_unregister(struct nsock *sk) {
+        struct tcp_conn_key key;
+        if (sk == NULL || !(sk->registry_flags & NSOCK_REG_TCP_CONN))
+                return;
+
+        key = tcp_conn_key_make(sk);
+        pthread_mutex_lock(&registry_lock);
+        hash_del(tcp_conn_hash, &key);
+        sk->registry_flags &= (uint8_t)~NSOCK_REG_TCP_CONN;
+        pthread_mutex_unlock(&registry_lock);
+}
 
 const struct sock_ops *sock_ops_lookup(uint8_t protocol) {
         switch (protocol) {
@@ -158,7 +410,18 @@ struct nsock *nsock_alloc(int fd, uint8_t protocol) {
 
         rte_memcpy(sk->local_mac, g_net.local_mac, RTE_ETHER_ADDR_LEN);
 
+        pthread_mutex_lock(&registry_lock);
+        if (fd >= 0) {
+                if (fd_table[fd] != NULL) {
+                        pthread_mutex_unlock(&registry_lock);
+                        return NULL;
+                }
+                fd_table[fd] = sk;
+                sk->registry_flags |= NSOCK_REG_FD;
+        }
+
         LL_ADD(sk, g_sock_list);
+        pthread_mutex_unlock(&registry_lock);
         return sk;
 }
 
@@ -170,7 +433,39 @@ void nsock_free(struct nsock *sk) {
                 tcp_sndbuf_free(&sk->u.tcp.sndbuf);
                 rte_timer_stop(&sk->u.tcp.timer);
         }
+        pthread_mutex_lock(&registry_lock);
+
+        if (sk->registry_flags & NSOCK_REG_TCP_CONN) {
+                struct tcp_conn_key key = tcp_conn_key_make(sk);
+                hash_del(tcp_conn_hash, &key);
+        }
+
+        if (sk->registry_flags & NSOCK_REG_TCP_LISTENER) {
+                struct local_key key =
+                    local_key_make(sk->local_ip, sk->local_port);
+                hash_del(tcp_listener_hash, &key);
+        }
+
+        if (sk->registry_flags & NSOCK_REG_TCP_BIND) {
+                struct local_key key =
+                    local_key_make(sk->local_ip, sk->local_port);
+                hash_del(tcp_bind_hash, &key);
+        }
+
+        if (sk->registry_flags & NSOCK_REG_UDP_BIND) {
+                struct local_key key =
+                    local_key_make(sk->local_ip, sk->local_port);
+                hash_del(udp_bind_hash, &key);
+        }
+
+        if ((sk->registry_flags & NSOCK_REG_FD) && sk->fd >= 0 &&
+            sk->fd < NSOCK_FD_MAX && fd_table[sk->fd] == sk)
+                fd_table[sk->fd] = NULL;
+
         LL_REMOVE(sk, g_sock_list);
+        sk->registry_flags = 0;
+
+        pthread_mutex_unlock(&registry_lock);
         pthread_cond_destroy(&sk->cond);
         pthread_mutex_destroy(&sk->mutex);
         rte_ring_free(sk->recv_buf);
@@ -179,38 +474,86 @@ void nsock_free(struct nsock *sk) {
         rte_free(sk);
 }
 
-struct nsock *nsock_from_fd(int fd) {
-        if (fd < 0)
-                return NULL;
-        for (struct nsock *sk = g_sock_list; sk != NULL; sk = sk->next) {
-                if (sk->fd == fd)
-                        return sk;
+int nsock_attach_fd(struct nsock *sk, int fd) {
+        if (sk == NULL || fd < 0 || fd >= NSOCK_FD_MAX)
+                return -EINVAL;
+
+        pthread_mutex_lock(&registry_lock);
+        if (fd_table[fd] != NULL) {
+                pthread_mutex_unlock(&registry_lock);
+                return -EEXIST;
         }
-        return NULL;
+        sk->fd = fd;
+        fd_table[fd] = sk;
+        sk->registry_flags |= NSOCK_REG_FD;
+
+        pthread_mutex_unlock(&registry_lock);
+        return 0;
+}
+
+struct nsock *nsock_from_fd(int fd) {
+        struct nsock *sk = NULL;
+        if (fd < 0 || fd >= NSOCK_FD_MAX)
+                return NULL;
+
+        pthread_mutex_lock(&registry_lock);
+        sk = fd_table[fd];
+        pthread_mutex_unlock(&registry_lock);
+        return sk;
 }
 
 struct nsock *nsock_from_ip_port(uint32_t ip, uint16_t port, uint8_t protocol) {
-        for (struct nsock *sk = g_sock_list; sk != NULL; sk = sk->next) {
-                if (sk->protocol == protocol && sk->local_ip == ip &&
-                    sk->local_port == port)
-                        return sk;
+        struct rte_hash *hash;
+        struct local_key key;
+        struct nsock *sk = NULL;
+        void *data = NULL;
+
+        if (protocol == IPPROTO_UDP) {
+                hash = udp_bind_hash;
+        } else if (protocol == IPPROTO_TCP) {
+                hash = tcp_listener_hash;
+        } else {
+                return NULL;
         }
-        return NULL;
+
+        key = local_key_make(ip, port);
+
+        pthread_mutex_lock(&registry_lock);
+        if (rte_hash_lookup_data(hash, &key, &data) >= 0) {
+                sk = (struct nsock *)data;
+        }
+
+        if (sk == NULL && ip != INADDR_ANY) {
+                key = local_key_make(INADDR_ANY, port);
+                if (rte_hash_lookup_data(hash, &key, &data) >= 0) {
+                        sk = (struct nsock *)data;
+                }
+        }
+        pthread_mutex_unlock(&registry_lock);
+        return sk;
 }
 
 struct nsock *nsock_from_4tuple(uint32_t remote_ip, uint32_t local_ip,
                                 uint16_t remote_port, uint16_t local_port,
                                 uint8_t protocol) {
-        for (struct nsock *sk = g_sock_list; sk != NULL; sk = sk->next) {
-                if (sk->protocol != protocol)
-                        continue;
-                if (sk->u.tcp.remote_ip == remote_ip &&
-                    sk->local_ip == local_ip &&
-                    sk->u.tcp.remote_port == remote_port &&
-                    sk->local_port == local_port)
-                        return sk;
-        }
-        return NULL;
+        struct tcp_conn_key key;
+        struct nsock *sk = NULL;
+        void *data = NULL;
+
+        if (protocol != IPPROTO_TCP)
+                return NULL;
+
+        memset(&key, 0, sizeof(key));
+        key.remote_ip = remote_ip;
+        key.local_ip = local_ip;
+        key.remote_port = remote_port;
+        key.local_port = local_port;
+
+        pthread_mutex_lock(&registry_lock);
+        if (rte_hash_lookup_data(tcp_conn_hash, &key, &data) >= 0)
+                sk = (struct nsock *)data;
+        pthread_mutex_unlock(&registry_lock);
+        return sk;
 }
 
 int nsocket(__attribute__((unused)) int domain, int type,
@@ -250,8 +593,12 @@ int nbind(int sockfd, const struct sockaddr *addr,
         }
 
         const struct sockaddr_in *laddr = (const struct sockaddr_in *)addr;
-        sk->local_port = laddr->sin_port;
-        sk->local_ip = laddr->sin_addr.s_addr;
+
+        if (nsock_bind_local(sk, laddr->sin_addr.s_addr, laddr->sin_port) !=
+            0) {
+                LOG_ERROR("nbind: address already in use");
+                return -1;
+        }
 
         LOG_INFO("nbind fd=%d " IP_FMT ":%u proto=%u", sockfd,
                  IP_ARG(sk->local_ip), rte_be_to_cpu_16(sk->local_port),

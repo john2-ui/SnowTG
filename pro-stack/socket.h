@@ -27,12 +27,22 @@
 #include <pthread.h>
 #include <rte_ether.h>
 #include <rte_ring.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <sys/socket.h>
 #include <sys/types.h>
 
 /** Highest fd value the in-process fd table can hand out. */
 #define NSOCK_FD_MAX 1024
+#define NSOCK_REGISTRY_ENTRIES 4096
+
+enum nsock_registry_flags {
+        NSOCK_REG_FD = 1u << 0,
+        NSOCK_REG_UDP_BIND = 1u << 1,
+        NSOCK_REG_TCP_BIND = 1u << 2,
+        NSOCK_REG_TCP_LISTENER = 1u << 3,
+        NSOCK_REG_TCP_CONN = 1u << 4,
+};
 
 /**
  * @brief One userspace socket, shared by every transport.
@@ -64,12 +74,25 @@ struct nsock {
                 struct tcp_stream tcp; /**< TCP connection state. */
         } u;
 
+        uint8_t registry_flags; /**< Flags indicating the socket's registry
+                                   state. */
+
         struct nsock *prev; /**< Previous socket in @ref g_sock_list. */
         struct nsock *next; /**< Next socket in @ref g_sock_list. */
 };
 
 /** Head of the intrusive list containing every open socket. */
 extern struct nsock *g_sock_list;
+
+int socket_registry_init(void);
+void socket_registry_fini(void);
+
+int nsock_bind_local(struct nsock *sk, uint32_t ip, uint16_t port);
+int nsock_tcp_listener_register(struct nsock *sk);
+void nsock_tcp_listener_unregister(struct nsock *sk);
+int nsock_tcp_conn_register(struct nsock *sk);
+void nsock_tcp_conn_unregister(struct nsock *sk);
+int nsock_tcp_local_taken(uint32_t ip, uint16_t port);
 
 /**
  * @name fd table
@@ -96,6 +119,7 @@ void fd_release(int fd);
 struct nsock *nsock_alloc(int fd, uint8_t protocol);
 /** Remove @p sk from the registry and release its rings, lock, cond, and fd. */
 void nsock_free(struct nsock *sk);
+int nsock_attach_fd(struct nsock *sk, int fd);
 /** @} */
 
 /**
@@ -107,6 +131,7 @@ struct nsock *nsock_from_ip_port(uint32_t ip, uint16_t port, uint8_t protocol);
 struct nsock *nsock_from_4tuple(uint32_t remote_ip, uint32_t local_ip,
                                 uint16_t remote_port, uint16_t local_port,
                                 uint8_t protocol);
+
 /** @} */
 
 /**

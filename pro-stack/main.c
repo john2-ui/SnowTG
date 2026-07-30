@@ -162,6 +162,9 @@ int main(int argc, char *argv[]) {
         if (rte_eal_init(argc, argv) < 0)
                 rte_exit(EXIT_FAILURE, "rte_eal_init() failed\n");
 
+        if (socket_registry_init() != 0)
+                rte_exit(EXIT_FAILURE, "socket registry init failed\n");
+
 #if ENABLE_PDUMP
         /* Register the capture callbacks so dpdk-pdump (a secondary process)
          * can attach to our ports and mirror traffic to a pcap file. */
