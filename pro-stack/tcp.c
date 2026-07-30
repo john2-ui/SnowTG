@@ -24,6 +24,7 @@
 #include <rte_cycles.h>
 #include <rte_ether.h>
 #include <rte_ip.h>
+#include <rte_ip4.h>
 #include <rte_lcore.h>
 #include <rte_malloc.h>
 #include <rte_mbuf_core.h>
@@ -1578,7 +1579,6 @@ static int tcp_state_fin_wait_1(struct nsock *sk, struct rte_tcp_hdr *hdr,
  */
 static int tcp_state_fin_wait_2(struct nsock *sk, struct rte_tcp_hdr *hdr,
                                 struct rte_mbuf *mbuf) {
-        (void)mbuf;
         if (sk->u.tcp.status != TCP_STATUS_FIN_WAIT_2)
                 return 0;
 
@@ -1597,8 +1597,31 @@ static int tcp_state_fin_wait_2(struct nsock *sk, struct rte_tcp_hdr *hdr,
                 return 0;
         }
 
-        /* TODO: deliver any FIN-segment payload before consuming the FIN. */
-        sk->u.tcp.recv_ack = seq + 1;
+        uint8_t hdrlen = (hdr->data_off >> 4) * 4;
+        uint16_t ip_len = rte_be_to_cpu_16(tcp_ipv4_header(mbuf)->total_length);
+        uint16_t payload_len = ip_len - sizeof(struct rte_ipv4_hdr) - hdrlen;
+        uint8_t *payload = (uint8_t *)hdr + hdrlen;
+
+        /*
+         * The FIN sequence number immediately follows the payload. If delivery
+         * fails, do not acknowledge the payload or the FIN; keep recv_ack
+         * unchanged to prompt the peer to retransmit the entire segment based
+         * on RTO.
+         */
+        if (payload_len > 0) {
+                if (tcp_deliver_payload(sk, payload, payload_len) != 0) {
+                        struct tcp_fragment *ack_f = tcp_make_fragment(
+                            sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
+                            sk->u.tcp.recv_ack);
+                        (void)tcp_enqueue_fragment(sk, ack_f);
+                        return 0;
+                }
+                sk->u.tcp.recv_ack += payload_len;
+                sk->u.tcp.rcvbuf_used += payload_len;
+        }
+
+        /* Payload has been delivered; now acknowledge the FIN. */
+        sk->u.tcp.recv_ack += 1;
 
         struct tcp_fragment *ack_f = tcp_make_fragment(
             sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
@@ -2397,8 +2420,8 @@ ssize_t tcp_recv(struct nsock *sk, void *buf, size_t len,
 
         if (b == NULL) {
                 pthread_mutex_lock(&sk->mutex);
-                while ((nb = rte_ring_sc_dequeue(sk->recv_buf,
-                                                 (void **)&b)) != 0 &&
+                while ((nb = rte_ring_sc_dequeue(sk->recv_buf, (void **)&b)) !=
+                           0 &&
                        sk->u.tcp.status != TCP_STATUS_CLOSED) {
                         pthread_cond_wait(&sk->cond, &sk->mutex);
                 }
