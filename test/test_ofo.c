@@ -185,6 +185,27 @@ static void test_sequence_wraparound(void) {
   tcp_test_ofo_purge(&sk);
 }
 
+static void test_initial_send_window_update(void) {
+  struct nsock sk;
+  const uint32_t peer_seq = UINT32_C(2544753203);
+
+  memset(&sk, 0, sizeof(sk));
+  /*
+   * A peer ISN in the upper half of the sequence space must still establish
+   * the first send-window value.  An all-zero snd_wl1 is not a valid RFC 793
+   * ordering baseline before any segment has supplied a window.
+   */
+  tcp_test_update_snd_wnd(&sk, peer_seq, 100, 32768);
+  CHECK(sk.u.tcp.snd_wnd_valid);
+  CHECK(sk.u.tcp.snd_wnd == 32768);
+  CHECK(sk.u.tcp.snd_wl1 == peer_seq);
+  CHECK(sk.u.tcp.snd_wl2 == 100);
+
+  /* Once initialized, an older segment must not overwrite the window. */
+  tcp_test_update_snd_wnd(&sk, peer_seq - 1, 200, 1);
+  CHECK(sk.u.tcp.snd_wnd == 32768);
+}
+
 int main(void) {
   char *eal_argv[] = {"test_ofo", "--in-memory", "--no-pci"};
 
@@ -193,6 +214,7 @@ int main(void) {
   test_overlap_trimming_and_fin();
   test_receive_window_and_capacity();
   test_sequence_wraparound();
+  test_initial_send_window_update();
   puts("test_ofo: PASS");
   return EXIT_SUCCESS;
 }

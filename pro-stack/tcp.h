@@ -109,6 +109,8 @@ int tcp_test_ofo_insert(struct nsock *sk, uint32_t seq, const uint8_t *data,
 struct tcp_ofo_seg *tcp_test_ofo_lower_bound(const struct nsock *sk,
                                              uint32_t seq);
 void tcp_test_ofo_purge(struct nsock *sk);
+void tcp_test_update_snd_wnd(struct nsock *sk, uint32_t seg_seq,
+                             uint32_t seg_ack, uint16_t seg_wnd);
 #endif
 
 /**
@@ -176,8 +178,9 @@ struct tcp_stream {
         /* Send-side flow control: most recently accepted peer advertised
          * window. */
         uint32_t snd_wnd;
-        uint32_t snd_wl1; /* SEG.SEQ of last accepted window update */
-        uint32_t snd_wl2; /* SEG.ACK of last accepted window update */
+        uint32_t snd_wl1;   /* SEG.SEQ of last accepted window update */
+        uint32_t snd_wl2;   /* SEG.ACK of last accepted window update */
+        bool snd_wnd_valid; /**< Whether snd_wl1/snd_wl2 contain an update. */
 
         TCP_STATUS status; /**< Current connection state. */
 

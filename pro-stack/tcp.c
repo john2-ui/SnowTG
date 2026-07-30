@@ -1236,13 +1236,21 @@ static void tcp_update_snd_wnd(struct nsock *sk, uint32_t seg_seq,
          * RFC 793 window-update ordering: an older segment cannot overwrite
          * the newest accepted advertised window.
          */
-        if (tcp_seq_lt(tp->snd_wl1, seg_seq) ||
+        if (!tp->snd_wnd_valid || tcp_seq_lt(tp->snd_wl1, seg_seq) ||
             (tp->snd_wl1 == seg_seq && tcp_seq_leq(tp->snd_wl2, seg_ack))) {
                 tp->snd_wnd = seg_wnd;
                 tp->snd_wl1 = seg_seq;
                 tp->snd_wl2 = seg_ack;
+                tp->snd_wnd_valid = true;
         }
 }
+
+#ifdef TCP_TESTING
+void tcp_test_update_snd_wnd(struct nsock *sk, uint32_t seg_seq,
+                             uint32_t seg_ack, uint16_t seg_wnd) {
+        tcp_update_snd_wnd(sk, seg_seq, seg_ack, seg_wnd);
+}
+#endif
 
 /** @brief Arm the SYN or SYN+ACK retransmission timer.
  * @param sk Stream whose timer is armed.
