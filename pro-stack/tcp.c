@@ -570,6 +570,32 @@ static int tcp_ofo_insert(struct nsock *sk, uint32_t seq, const uint8_t *data,
         return tcp_ofo_link(sk, seq, data, len, has_fin, cur);
 }
 
+#ifdef TCP_TESTING
+void tcp_test_ofo_init(struct nsock *sk, uint32_t rcv_nxt,
+                       uint32_t rcvbuf_size) {
+        sk->u.tcp.recv_ack = rcv_nxt;
+        sk->u.tcp.rcvbuf_size = rcvbuf_size;
+        sk->u.tcp.rcvbuf_used = 0;
+        rb_root_init(&sk->u.tcp.ofo_tree);
+        sk->u.tcp.ofo = NULL;
+        sk->u.tcp.ofo_tail = NULL;
+        sk->u.tcp.ofo_count = 0;
+        sk->u.tcp.ofo_bytes = 0;
+}
+
+int tcp_test_ofo_insert(struct nsock *sk, uint32_t seq, const uint8_t *data,
+                        uint32_t len, int has_fin) {
+        return tcp_ofo_insert(sk, seq, data, len, has_fin);
+}
+
+struct tcp_ofo_seg *tcp_test_ofo_lower_bound(const struct nsock *sk,
+                                             uint32_t seq) {
+        return tcp_ofo_lower_bound(sk, seq);
+}
+
+void tcp_test_ofo_purge(struct nsock *sk) { tcp_ofo_purge(sk); }
+#endif
+
 /** @brief Deliver contiguous ofo segments and advance the receive boundary.
  * @param sk Socket whose sorted ofo queue is drained.
  *

@@ -95,6 +95,22 @@ struct tcp_sndbuf {
         uint32_t head_seq; /**< Seq of data[head_off]; tracks snd_una. */
 };
 
+#ifdef TCP_TESTING
+struct nsock;
+
+/**
+ * Test-only OFO helpers. They expose internal reassembly operations while
+ * leaving the production TCP API unchanged.
+ */
+void tcp_test_ofo_init(struct nsock *sk, uint32_t rcv_nxt,
+                       uint32_t rcvbuf_size);
+int tcp_test_ofo_insert(struct nsock *sk, uint32_t seq, const uint8_t *data,
+                        uint32_t len, int has_fin);
+struct tcp_ofo_seg *tcp_test_ofo_lower_bound(const struct nsock *sk,
+                                             uint32_t seq);
+void tcp_test_ofo_purge(struct nsock *sk);
+#endif
+
 /**
  * @brief Allocate and initialize a TCP send buffer.
  *
