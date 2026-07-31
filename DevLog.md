@@ -5,6 +5,7 @@
 ## 记录索引
 
 - [ARC-001：TCP 接收路径的跨 lcore 所有权缺陷](#arc-001tcp-接收路径的跨-lcore-所有权缺陷) — 接收路径已实施；生命周期收敛待后续处理
+- [ARC-002：Socket 单 owner、代际句柄与命令队列](#arc-002socket-单-owner代际句柄与命令队列) — 已实施；取代跨 lcore 裸指针与 `tcp_rx_events` 过渡模型
 
 ## 条目格式
 
@@ -339,3 +340,563 @@ worker 清除 pending
 不要通过“把 `recv_buf` 改成 MP，然后让 app 直接调用 `tcp_ofo_drain()`”来修复问题。这会扩大并发写状态范围，并使 ACK、重组和 FIN 状态迁移难以保证顺序。
 
 应采用 actor/owner 模型：worker 是 TCP 状态唯一 owner；app 仅消费数据并投递事件。该模型既修复 OFO 卡住和短读乱序，也为后续接收窗口更新、发送流控、dirty socket 队列和多核扩展提供一致的架构基础。
+
+---
+
+## ARC-002：Socket 单 owner、代际句柄与命令队列
+
+- **状态**：已实施。
+- **实施日期**：2026-07-31。
+- **范围**：`pro-stack/socket_owner.h`、`socket_owner.c`、`socket.h`、`socket.c`、`tcp.c`、`tcp.h`、`udp.c`、`main.c`、`ring.c`、`ring.h`、`sock_ops.h`、`Makefile`。
+- **触发**：fd、四元组和 listener 索引虽然由 `registry_lock` 保护，但 lookup 解锁后返回的 `struct nsock *` 仍可与 app `nclose()`、TCP timer 和 worker packet path 并发，形成 use-after-free；`tcp_rx_events` 过渡方案也在 app→worker ring 中携带裸指针，无法独立解决 socket 生命周期。
+- **架构决策**：采用 actor/owner 模型。packet worker 是 `nsock`、TCP TCB、协议索引、TCP timer 和最终释放的唯一执行者；app lcore 只持有整数 fd，通过代际句柄和 MPSC command ring 请求 owner 执行 BSD API。
+- **与 ARC-001 的关系**：ARC-001 记录的 `rx_consumed + tcp_rx_events` 是接收路径的过渡实现。本条目将 SEND、RECV、CONNECT、ACCEPT、CLOSE、timer 和 free 全部收敛到 owner，因此已经删除 `tcp_rx_events`、`rx_consumed` 和 `rx_event_pending`；应用不再直接消费 `recv_buf` 或修改任何 TCP 状态。
+
+### 一、原问题及其边界
+
+旧 socket API 的基本形式为：
+
+```text
+app lcore
+  └─ nsock_from_fd(fd)
+       ├─ registry_lock 加锁
+       ├─ fd_table[fd] 取出 nsock *
+       └─ registry_lock 解锁
+  └─ sk->ops->send/recv/connect/close(sk)
+```
+
+`registry_lock` 只保护查表动作，并不 pin 返回对象。下列交错仍然成立：
+
+```text
+app A                           app B / timer / worker
+-----                           ----------------------
+sk = nsock_from_fd(fd)
+registry_lock 已释放
+                                nsock_free(sk)
+sk->ops->send(sk, ...)
+```
+
+此时 A 使用的是已释放对象。类似风险还存在于：
+
+- worker 无锁遍历 `g_sock_list` 与其他 lcore 删除/释放 socket；
+- main lcore 的 `tcp_timer_cb()` 修改或释放 worker 正在处理的 TCB；
+- app 直接修改 `sndbuf`、`rx_current`，worker 同时处理 ACK、重组或 RTO；
+- `tcp_rx_events` ring 保存 `nsock *`，socket 释放后仍可能有待消费事件；
+- fd 或 owner slot 被快速复用时，延迟到达的旧操作可能命中新对象，即 ABA。
+
+单纯增加 `nsock` 引用计数只能延迟 free，不能自然解决 TCP 字段由多个 lcore 并发修改、timer 执行归属和阻塞 API 卡住 packet worker 等问题。因此最终选择严格 owner，而不是把 refcount 作为长期数据路径。
+
+### 二、核心不变量
+
+本次实施后的正确性依赖以下不变量：
+
+1. **只有 owner packet worker 可以把 socket 身份解析成 `struct nsock *`。**
+2. **app lcore 只能保存 fd 或 `struct nsock_handle`，不能保存/解引用 `nsock *`。**
+3. **command ring 中只传递 handle 和 API 参数，不传递 `nsock *`。**
+4. **packet ingress、socket command、TCP timer、状态迁移、协议索引修改和 `nsock_free()` 在同一 owner lcore 串行执行。**
+5. **transport hook 不得等待网络进展；不能立即完成时返回 `EAGAIN` 或 `EINPROGRESS`。**
+6. **阻塞的是 app command，不是 packet worker。**
+7. **fd 撤销与 TCP TCB 回收是两个不同生命周期。**
+8. **owner slot 在释放内存前先取消发布并推进 generation。**
+
+任何后续功能若需要 app 直接调用 TCP 内部函数、从非 owner lcore 执行 `nsock_free()`，或将 `nsock *` 放入跨 lcore 队列，都违反本条目的架构约束。
+
+### 三、线程模型
+
+```text
+main lcore
+  ├─ NIC RX burst → ring->in
+  ├─ ring->out → NIC TX burst
+  └─ 管理 ARP sweep 等基础设施 timer
+
+packet worker / socket owner
+  ├─ drain socket command ring
+  ├─ drain ring->in 并执行 UDP/TCP ingress
+  ├─ TCP 状态机、ACK、窗口、OFO、sndbuf
+  ├─ tx_flush
+  ├─ rte_timer_manage()：TCP RTO / TIME_WAIT
+  └─ nsock_free()
+
+app lcore
+  ├─ 持有整数 fd
+  ├─ fd → generation handle
+  ├─ 构造 sock_cmd 并提交
+  └─ 等待 command completion
+```
+
+worker 每轮在收包前后各处理一次 command，降低无网络流量时的 API 延迟，并使本轮收包期间提交的命令能在 TX flush 前得到处理。
+
+### 四、三层 socket 身份
+
+#### 1. 应用 fd
+
+fd 是应用可见、范围为 `[0, NSOCK_FD_MAX)` 的小整数。它可以在 `nclose()` 后立即复用，不代表 TCB 的存储地址，也不再写入 owner 对象作为生命周期依据。
+
+#### 2. 代际句柄
+
+fd 表保存：
+
+```c
+struct nsock_handle {
+        uint32_t id;
+        uint32_t generation;
+        uint16_t owner_lcore;
+        uint8_t protocol;
+};
+```
+
+字段含义：
+
+- `id`：owner `slots[]` 的下标；
+- `generation`：该 slot 当前对象的代数；
+- `owner_lcore`：负责解析和执行该命令的 worker；
+- `protocol`：TCP/UDP 类型校验。
+
+#### 3. owner 私有指针
+
+真正的对象指针仅存在于：
+
+```text
+g_owner.slots[handle.id] → struct nsock *
+```
+
+owner 解析 handle 时同时验证：
+
+```text
+owner 已初始化
+id 在范围内
+handle.owner_lcore == g_owner.lcore_id
+slots[id] 非空
+sk->generation == handle.generation
+sk->protocol == handle.protocol
+```
+
+任何条件不满足都以 `EBADF` 完成命令。
+
+### 五、generation 与 ABA 防护
+
+初次采用 slot 时，generation 从 1 开始，0 保留为无效值。对象退休时按以下顺序执行：
+
+```text
+1. 完成/取消该 socket 上所有 waiter
+2. slots[id] = NULL
+3. generations[id]++
+4. 从索引和活跃链表删除
+5. 停 timer、释放 ring/缓冲区和 nsock
+```
+
+示例：
+
+```text
+旧对象 A：fd=3 → {id=12, generation=8}
+nclose(A)
+退休 A：slots[12]=NULL，generations[12]=9
+新对象 B 复用 slot：{id=12, generation=9}
+延迟的 A 命令：{id=12, generation=8} → 校验失败
+```
+
+即使 slot 下标和后续内存地址都被复用，旧命令也不能操作新对象。
+
+### 六、fd 表与 close 线性化
+
+`fd_table` 的 value 从 `nsock *` 改为 `nsock_handle`。它提供三个内部操作：
+
+- `fd_publish(handle)`：为 CREATE/ACCEPT 返回的 handle 分配 fd；
+- `fd_resolve(fd, &handle)`：普通 API 在 `registry_lock` 下复制 handle；
+- `fd_take(fd, &handle)`：原子复制 handle 并清空 fd 项。
+
+`fd_take()` 是 close 的线性化点。一旦成功：
+
+- 后续 API 对旧 fd 返回 `EBADF`；
+- 第二个并发 `nclose()` 返回 `EBADF`；
+- fd 可以映射到另一个 generation handle；
+- 旧 TCP TCB 仍可由 owner 继续执行 FIN、LAST_ACK、TIME_WAIT 和 2MSL。
+
+并发操作已经复制旧 handle 也不会形成 UAF：它只携带值类型身份，最终由 owner 校验 generation 和 `app_closed`。
+
+### 七、command ring 与 completion
+
+每次 BSD API 调用在 app 栈上构造：
+
+```c
+struct sock_cmd {
+        enum sock_cmd_type type;
+        struct nsock_handle handle;
+        union { /* CREATE/address/I/O/LISTEN 参数 */ } args;
+        struct nsock_handle result_handle;
+        ssize_t result;
+        int error;
+        pthread_mutex_t done_mutex;
+        pthread_cond_t done_cond;
+        bool done;
+        struct sock_cmd *next;
+};
+```
+
+当前支持：
+
+```text
+CREATE
+BIND
+CONNECT
+LISTEN
+ACCEPT
+SEND
+RECV
+SENDTO
+RECVFROM
+CLOSE
+```
+
+command ring 是多 app producer、单 owner consumer，因此创建时只指定 `RING_F_SC_DEQ`。
+
+`socket_owner_call()` 的同步流程：
+
+```text
+app 初始化 command completion
+  ↓
+MPSC enqueue
+  ↓
+app 在 cmd->done_cond 等待
+  ↓
+owner dequeue + owner_lookup(handle)
+  ↓
+立即执行，或把 cmd 挂入 owner waiter
+  ↓
+socket_owner_complete(result, error)
+  ↓
+app 醒来并返回 cmd.result / errno
+```
+
+command ring 满时不再返回 `ENOBUFS`，而是用 `rte_pause()` 对 producer 施加背压。该选择对 CLOSE 尤其重要：`nclose()` 已先撤销 fd，若随后丢弃 CLOSE command，将留下应用无法再引用的永久 TCB。
+
+command 当前保存在调用线程栈上，因此调用者必须一直等到 owner completion；当前模型不支持在命令挂起期间直接取消线程、超时返回或销毁 coroutine。
+
+### 八、owner waiter 与非阻塞 transport hook
+
+如果 owner 在 transport hook 中等待 ACK、payload 或握手，worker 将无法继续处理使条件成立的网络包。因此协议 hook 改为单次非阻塞探测：
+
+```text
+能立即完成       → 返回结果
+暂时不能完成     → -1 / EAGAIN
+异步握手已启动   → -1 / EINPROGRESS
+```
+
+owner 根据 API flags 决定：
+
+- `MSG_DONTWAIT`：把 `EAGAIN` 直接返回应用；
+- 阻塞 API：把 command 放入 socket 的 owner-only FIFO；
+- 状态进展后调用 wake helper 重试。
+
+`nsock` 中的 waiter：
+
+```text
+recv_wait_head/tail    TCP RECV、UDP RECVFROM
+send_wait_head/tail    TCP SEND 背压
+connect_waiter         TCP CONNECT 单飞
+accept_wait_head/tail  listener ACCEPT
+```
+
+这些链表只由 owner 操作，不需要跨 lcore 锁。
+
+#### SEND
+
+`tcp_send()` 不再 `pthread_cond_wait()`。它检查 ESTABLISHED、`sndbuf` 高水位和对端窗口：
+
+```text
+无空间          → EAGAIN
+有部分空间      → short write
+有足够空间      → 复制进入 sndbuf
+非 ESTABLISHED  → EPIPE
+```
+
+ACK 释放 sndbuf 或对端窗口更新后，TCP 调用 `socket_owner_wake_send()`，按 FIFO 重试 waiter。
+
+#### RECV / RECVFROM
+
+owner 先把 command 放入 recv waiter，再立即调用 wake helper 探测。TCP/UDP 接收队列为空时返回 `EAGAIN`；ingress 交付数据后调用 `socket_owner_wake_recv()`。
+
+TCP 短读仍通过 `sk->u.tcp.rx_current` 保留未读 blob，但该状态已从“app 私有”变为“owner 私有”。应用不再直接 dequeue `recv_buf`。读取后 owner 立即：
+
+1. 扣减 `rcvbuf_used`；
+2. 调用 `tcp_ofo_drain()`；
+3. 生成携带新窗口的 ACK。
+
+因此不再需要 ARC-001 的 `rx_consumed` 原子计数和 `tcp_rx_events` ring。
+
+当状态为 CLOSE_WAIT/CLOSED 且已无排队 payload 时，TCP RECV 返回 0，提供标准 EOF 语义。
+
+`socket_owner_wake_recv()` 在调用 transport hook 前先把 command 从队列摘除；原因是 `tcp_recv()` 可能 drain OFO，而 OFO delivery 又会递归触发 wake。若当前 command 仍在队列，递归 wake 会执行同一 command 两次。探测返回阻塞型 `EAGAIN` 时，再把 command 放回队首。
+
+#### CONNECT
+
+`tcp_connect()` 只执行：
+
+```text
+隐式 bind / 临时端口
+注册四元组
+构造 SYN
+切 SYN_SENT
+arm SYN timer
+返回 EINPROGRESS
+```
+
+owner 保存 `connect_waiter` 后立刻回到 packet loop。后续结果：
+
+- 合法 SYN+ACK：切 ESTABLISHED，完成 command；
+- SYN 重试耗尽：`ETIMEDOUT`；
+- RST：`ECONNRESET`；
+- 并发 CLOSE：`ECANCELED`。
+
+#### ACCEPT
+
+listener 同时维护：
+
+- TCP `accept_queue`：已完成握手但尚未 accept 的 child；
+- `accept_wait`：正在等待 child 的应用 command。
+
+最终 ACK 将 child 放入 `accept_queue` 后调用 `socket_owner_wake_accept()`。owner 取出 child，设置 `app_visible=true`，把 child handle 写入 command；app 醒来后再调用 `fd_publish()` 分配 fd。
+
+因此 SYN_RECV 半连接会占 owner slot，但不会占应用 fd。若 fd 表已满，app 用返回的 handle 再提交 CLOSE，避免孤儿 child。
+
+### 九、`app_visible` 与 `app_closed`
+
+`app_visible` 表示对象是否已经通过 CREATE 或 ACCEPT 暴露给应用：
+
+```text
+SYN_RECV child               false
+已完成握手、仍在 accept_queue false
+ACCEPT 返回 handle            true
+```
+
+它主要用于 listener teardown：关闭 listener 时释放未 accept child，但已 accept 的连接必须存活，只清除其 `listener` 裸指针。
+
+`app_closed` 表示 fd 已被撤销，但协议 teardown 可能尚未结束：
+
+```text
+nclose()
+  ├─ fd_take：应用身份立即失效
+  ├─ owner 设置 app_closed=true
+  └─ TCP 继续 FIN_WAIT/TIME_WAIT
+```
+
+owner 对 `app_closed` socket 的后续非 CLOSE command 返回 `EBADF`。
+
+### 十、close 和协议终态回收
+
+owner 处理 CLOSE 时：
+
+```text
+设置 app_closed
+取消 recv/send/connect/accept waiter
+调用 protocol close hook
+完成 CLOSE command
+```
+
+UDP 没有 wire teardown，因此 drain 队列并立即 `nsock_free()`。
+
+TCP 根据状态执行：
+
+- CLOSED：立即 drain/free；
+- LISTEN：取消 accept，释放未 accept/半开 child，保留已 accept child，释放 listener；
+- SYN_SENT：停止 timer，以 `ECANCELED` 完成 connect，立即 free；
+- ESTABLISHED：排 FIN，进入 FIN_WAIT_1，CLOSE command 立即返回；
+- CLOSE_WAIT：排 FIN，进入 LAST_ACK，CLOSE command 立即返回；
+- FIN_WAIT_* / CLOSING / LAST_ACK / TIME_WAIT：teardown 已在运行，仅返回。
+
+应用 `nclose()` 不再一直等待到 2MSL。fd 先失效，TCB 在 owner 中继续存在；最后由状态处理器或 TIME_WAIT timer 释放。
+
+如果 FIN 分配/入队失败，fd 已经不可恢复。当前策略是本地转 CLOSED 并释放对象，返回 `ENOBUFS`；未来可增加 abortive RST。
+
+### 十一、TCP timer 所有权
+
+旧实现将 TCP timer 目标设为 main lcore，导致 main timer callback 与 packet worker 并发修改同一 TCB。
+
+现在：
+
+```c
+tcp_timer_lcore(sk) = sk->owner_lcore;
+```
+
+worker 调用 `rte_timer_manage()`，因此：
+
+```text
+SYN/SYN+ACK RTO
+数据 RTO
+FIN RTO
+TIME_WAIT 2MSL
+```
+
+都与 packet ingress、command 和 free 在同一 lcore 串行执行。
+
+main lcore 仍可管理 ARP sweep 等不引用 TCB 的基础设施 timer。
+
+timer callback 仍以 `nsock *` 为参数是安全的，因为它不会跨 owner 执行；`nsock_free()` 在释放前停止对应 timer。
+
+### 十二、最终析构顺序
+
+`nsock_free()` 只能从 owner lcore 调用。若调用者 lcore 不等于 `sk->owner_lcore`，函数记录错误并拒绝释放；选择泄漏并报警优于破坏 owner 正在使用的对象。
+
+正常析构顺序：
+
+```text
+socket_owner_retire()
+  ├─ abort 所有 waiter
+  ├─ slots[id] = NULL
+  └─ generation++
+
+停止 TCP timer
+释放 TCP sndbuf
+从 TCP conn/listener/bind 或 UDP bind hash 删除
+从 g_sock_list 删除
+销毁 cond/mutex
+释放 recv_buf/send_buf
+rte_free(nsock)
+```
+
+先取消发布 handle，再释放对象内存，保证 owner 后续 dequeued 的旧命令只能得到 `EBADF`。
+
+### 十三、并发 close 的可观察语义
+
+若 SEND command 先于 CLOSE 被 owner 处理，SEND 可以成功；若 CLOSE 先处理，后续 SEND 因 `app_closed` 失败。这给共享 fd 的并发调用提供了明确的线性化顺序。
+
+如果应用线程在 close 前已经复制 handle、但 command 在 close 后才到达：
+
+- TCB 尚在 teardown：`app_closed` 拒绝命令；
+- TCB 已释放：slot 为空；
+- slot 已复用：generation 不匹配。
+
+三种情况下都不会出现 UAF 或误操作新 socket。
+
+### 十四、本次修改的模块边界
+
+#### `socket_owner.h/.c`
+
+- 定义 handle、command、owner slot 表和 command ring；
+- 实现 adopt/retire、generation 校验；
+- 实现 completion 和 recv/send/connect/accept waiter；
+- 实现 owner command dispatcher。
+
+#### `socket.h/.c`
+
+- fd 表从裸指针改为 handle；
+- BSD API 改为 command producer；
+- `nsock` 增加 owner identity、可见/关闭状态和 waiter；
+- `nsock_free()` 增加 owner 检查和 retire-before-free。
+
+#### `tcp.c/.h`
+
+- SEND/RECV/CONNECT/ACCEPT/CLOSE 改为 owner 非阻塞原语；
+- ACK、窗口、payload、握手状态驱动 waiter；
+- TCP timer 迁到 owner；
+- 删除 `tcp_rx_events` 接收消费通知路径；
+- listener close 区分未 accept 与已 accept child。
+
+#### `udp.c`
+
+- RECVFROM 改为 EAGAIN probe；
+- ingress 直接唤醒 owner recv waiter；
+- CLOSE 仅由 owner drain/free；
+- 修复 unmatched UDP ingress 未释放 mbuf 的泄漏。
+
+#### `main.c`
+
+- app 启动前初始化 socket owner；
+- packet worker 每轮处理 command；
+- packet worker 管理 TCP timer。
+
+#### `ring.h/.c` 与 `config.h`
+
+- 删除 `tcp_rx_events` ring；
+- 删除 `TCP_EVENT_RING_SIZE`。
+
+#### `Makefile`
+
+- 将 `socket_owner.c` 纳入构建。
+
+### 十五、验证
+
+本次实施完成后执行：
+
+```text
+pro-stack: make
+pro-stack: CFLAGS="-Wall -Wextra" make
+test: make test
+IDE lints
+```
+
+结果：
+
+- 完整静态构建通过；
+- `-Wall -Wextra` 无警告；
+- `test_rbtree: PASS`；
+- `test_ofo: PASS`；
+- IDE linter 无错误。
+
+尚未完成真实 NIC 下的并发压力回归，验证重点见后续事项。
+
+### 十六、保留的过渡实现与后续事项
+
+#### 1. 删除 `nsock` 中遗留 mutex/cond
+
+应用已不再使用 `sk->cond` 等待 socket 状态。TCP sndbuf 相关路径仍保留 `sk->mutex`，但 command、ACK、timer 和 TX 已由 owner 串行执行，后续应在确认所有调用点后删除这些锁和条件变量。
+
+#### 2. dirty TX queue
+
+`g_sock_list` 的遍历现在是 owner-local，因此生命周期安全，但每轮仍为 O(全部 socket 数)。应改为 socket 从“无发送工作”变为“有发送工作”时进入 dirty queue，只 flush 活跃 socket。
+
+#### 3. 多 worker / RSS
+
+当前只有全局 `g_owner`。handle 已保留 `owner_lcore`，后续应扩展为 per-worker owner context，并通过硬件 RSS 将同一四元组固定到同一 worker。协议 hash、timer、dirty queue 和 slot 表都应按 owner 分片。
+
+#### 4. command 生命周期与取消
+
+command 当前位于调用线程栈上，依赖调用者一直等待 completion。若加入超时、`pthread_cancel`、异步 coroutine 或真正 nonblocking API，应改为 slab/heap command，加引用计数、取消状态和 late-completion 处理。
+
+#### 5. command ring 背压
+
+当前 ring 满时 app lcore 使用 `rte_pause()` 忙等。应评估 per-app command ring、保留控制命令容量、eventfd/futex 或显式高低水位；CLOSE 等生命周期命令不能被丢弃。
+
+#### 6. registry 分片
+
+fd 表与 endpoint hash 仍共享 `registry_lock`。单 owner 下 hash 可转为 owner-local；多 worker 时应按 owner/RSS 分片，避免重新引入全局数据路径锁。
+
+#### 7. 删除诊断 fd
+
+`nsock->fd` 已不参与身份和生命周期，owner 创建的对象通常保持 `-1`，部分旧日志仍打印该值。日志应迁为 `{id,generation}`，之后删除该字段。
+
+#### 8. 清理旧注释和 ring flags
+
+部分注释仍描述 app 直接消费 `recv_buf` 或 app/worker 共同生产 `send_buf`。应按 owner 模型更新，并在确认 producer/consumer 唯一后收紧 DPDK ring flags。
+
+#### 9. TCP 关闭策略
+
+当前未实现 `SO_LINGER`、abortive close 和 FIN 入队失败时的 RST。需要明确 graceful close 与 abortive close 的 API 策略。
+
+#### 10. 压力与竞态验证
+
+至少覆盖：
+
+- `nclose` 与 SEND/RECV 并发；
+- fd 及 owner slot 高频复用；
+- SYN_SENT timeout 与并发 close；
+- RST 与 pending CONNECT/RECV/SEND；
+- listener close 与 SYN_RECV/accept_queue/已 accept child；
+- FIN_WAIT/LAST_ACK/TIME_WAIT timer 与回收；
+- 多 app lcore 共享同一 fd；
+- command ring 满载背压；
+- UDP pending RECVFROM 与 close；
+- ASan/UBSan（若 DPDK 构建环境允许）及长时间真实 NIC 流量。
+
+### 结论
+
+本次改动把 socket 生命周期从“跨 lcore 共享裸指针 + 局部加锁”转换为：
+
+```text
+fd
+  → generation-checked handle
+  → owner command ring
+  → owner-local nsock / TCB
+```
+
+生命周期正确性不再依赖所有调用者都记得 pin 指针或持有同一把锁，而依赖更容易审计的结构不变量：**非 owner lcore 无法获得可解引用的 `nsock *`**。该边界也是后续 dirty queue、多 RX queue、RSS 和 per-worker 协议栈分片的基础。
