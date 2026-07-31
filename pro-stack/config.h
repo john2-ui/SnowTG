@@ -76,6 +76,8 @@
 
 /** TCP send buffer (sliding window) size in bytes. */
 #define TCP_SNDBUF_SIZE (64 * 1024)
+/** Application-visible TCP send buffer high watermark. */
+#define TCP_SNDBUF_APP_HIWAT TCP_SNDBUF_SIZE
 /** Default MSS used when slicing sndbuf for TX (no option negotiation yet). */
 #define TCP_DEFAULT_MSS 1460
 /** Data-path initial RTO (ms). */
@@ -105,4 +107,5 @@
 #define TCP_OFO_MAX_BYTES TCP_RCVBUF_SIZE
 /** Process-wide cap for copied OFO payload bytes across all TCP streams. */
 #define TCP_OFO_GLOBAL_MAX_BYTES (4U * 1024U * 1024U)
+
 #endif /* NETARCH_CONFIG_H */
