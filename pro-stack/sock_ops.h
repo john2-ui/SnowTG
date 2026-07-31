@@ -2,12 +2,11 @@
  * @file sock_ops.h
  * @brief Per-protocol operations vector shared by every transport.
  *
- * Each transport (UDP, TCP, ...) publishes a @ref sock_ops instance and
- * registers it by its IP protocol number. The socket API dispatchers and the
- * packet worker both indirect through this table, so adding a new transport
- * is a matter of providing a new @ref sock_ops instance plus one
- * @ref sock_ops_lookup entry -- no changes to the socket API or to the worker
- * loop.
+ * Each transport publishes a @ref sock_ops instance.  All hooks execute on
+ * the socket's owner packet worker: application lcores submit commands and do
+ * not call this table or dereference @ref nsock directly.  Hooks that cannot
+ * make immediate progress return -1/EAGAIN; the owner parks the command and
+ * retries it after packet/timer state changes.
  *
  * Lifecycle contract for @c ingress:
  *   - The handler always consumes @p mbuf. On a successful delivery it either
@@ -51,14 +50,15 @@ struct sock_ops {
         int (*tx_flush)(struct nsock *sk, struct rte_mempool *mp);
 
         /**
-         * Connected send (TCP). Peer comes from the TCB; @p dest is unused.
-         * NULL for connectionless transports.
+         * Non-sleeping connected send probe (TCP).  Peer comes from the TCB.
+         * Return EAGAIN instead of waiting for send/window space.
          */
         ssize_t (*send)(struct nsock *sk, const void *buf, size_t len,
                         int flags);
 
         /**
-         * Connected receive (TCP). NULL for connectionless transports.
+         * Non-sleeping connected receive probe.  Return EAGAIN when no bytes
+         * are ready; the owner implements blocking API semantics.
          */
         ssize_t (*recv)(struct nsock *sk, void *buf, size_t len, int flags);
 
@@ -77,12 +77,15 @@ struct sock_ops {
         ssize_t (*recvfrom)(struct nsock *sk, void *buf, size_t len, int flags,
                             struct sockaddr *src, socklen_t *addrlen);
 
-        /** Release the socket and every queued packet it still owns. */
+        /**
+         * Begin protocol close after the fd has been detached.  It must not
+         * block for FIN/TIME_WAIT; terminal owner-side handlers reclaim later.
+         */
         int (*close)(struct nsock *sk);
 
         /**
-         * Active open (TCP): may implicit-bind, send SYN, block until
-         * ESTABLISHED or failure. NULL for connectionless transports.
+         * Start active open.  A successful asynchronous start reports
+         * EINPROGRESS; handshake/timer paths complete the parked command.
          */
         int (*connect)(struct nsock *sk, const struct sockaddr *addr,
                        socklen_t addrlen);

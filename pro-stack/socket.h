@@ -3,25 +3,27 @@
  * @brief Unified userspace socket: one type for UDP and TCP, one registry, and
  *        the BSD-style socket API dispatchers.
  *
- * @ref nsock carries the transport-independent state every socket needs (fd,
- * local address, receive/send rings, blocking-wait synchronization, the
- * per-protocol @ref sock_ops, and list linkage). Transport-private state is
- * embedded in the @c u union -- TCP puts its @ref tcp_stream there; UDP has no
- * private peer state (the socket is the local 2-tuple only).
+ * @ref nsock carries transport-independent state, but is dereferenced only by
+ * its packet-worker owner.  Application lcores use integer fds that resolve to
+ * generation-checked @ref nsock_handle values and submit @ref sock_cmd
+ * requests.  Consequently close/free cannot race an application retaining a
+ * raw pointer.
  *
  * Addressing model:
  *   - UDP: socket <-> (local_ip, local_port). Each datagram carries its peer
  *     via @c nsendto / @c nrecvfrom.
  *   - TCP: socket <-> 4-tuple after accept/connect. Use @c nsend / @c nrecv.
  *
- * The socket API entry points are thin dispatchers: they resolve the fd to a
- * @ref nsock and forward to @c sk->ops->... . The packet worker iterates
- * @ref g_sock_list and calls @c sk->ops->tx_flush per socket.
+ * The socket API entry points are command producers.  Protocol lookup, state
+ * mutation, timer processing, and final destruction all run on the owner
+ * worker.  The list remains an owner-local transitional TX index; it can later
+ * be replaced by a dirty-socket queue without changing fd semantics.
  */
 #ifndef NETARCH_SOCKET_H
 #define NETARCH_SOCKET_H
 
 #include "sock_ops.h"
+#include "socket_owner.h"
 #include "tcp.h"
 
 #include <pthread.h>
@@ -37,11 +39,10 @@
 #define NSOCK_REGISTRY_ENTRIES 4096
 
 enum nsock_registry_flags {
-        NSOCK_REG_FD = 1u << 0,
-        NSOCK_REG_UDP_BIND = 1u << 1,
-        NSOCK_REG_TCP_BIND = 1u << 2,
-        NSOCK_REG_TCP_LISTENER = 1u << 3,
-        NSOCK_REG_TCP_CONN = 1u << 4,
+        NSOCK_REG_UDP_BIND = 1u << 0,
+        NSOCK_REG_TCP_BIND = 1u << 1,
+        NSOCK_REG_TCP_LISTENER = 1u << 2,
+        NSOCK_REG_TCP_CONN = 1u << 3,
 };
 
 /**
@@ -53,7 +54,11 @@ enum nsock_registry_flags {
  * (UDP stores mbufs, TCP stores @ref tcp_fragment).
  */
 struct nsock {
-        int fd; /**< Descriptor from fd_alloc(), or -1 until tcp_accept(). */
+        /**
+         * Diagnostic fd label only.  Object identity is id+generation; this
+         * field is never used for lookup or lifetime ownership.
+         */
+        int fd;
         uint8_t protocol; /**< IPPROTO_UDP / IPPROTO_TCP. */
 
         uint32_t local_ip;   /**< Bound IPv4, network byte order. */
@@ -63,9 +68,33 @@ struct nsock {
         struct rte_ring *recv_buf; /**< Worker -> application packet ring. */
         struct rte_ring *send_buf; /**< Application -> worker packet ring. */
 
-        /** Used by blocking recv(); ring occupancy is the condition. */
+        /**
+         * Transitional protocol lock/condition.  Application APIs no longer
+         * touch these directly; owner conversion lets them be removed once all
+         * legacy transport helpers have been simplified.
+         */
         pthread_cond_t cond;
         pthread_mutex_t mutex;
+
+        uint32_t id;         /**< Slot in the owner's object table. */
+        uint32_t generation; /**< Rejects stale commands after slot reuse. */
+        uint16_t
+            owner_lcore; /**< Sole lcore allowed to dereference this TCB. */
+
+        /** Socket has been published through CREATE/ACCEPT to an application.
+         */
+        bool app_visible;
+        /** fd has been detached; protocol teardown may still be in progress. */
+        bool app_closed;
+
+        /** Owner-only queues for blocking BSD operations. */
+        struct sock_cmd *recv_wait_head;
+        struct sock_cmd *recv_wait_tail;
+        struct sock_cmd *send_wait_head;
+        struct sock_cmd *send_wait_tail;
+        struct sock_cmd *connect_waiter;
+        struct sock_cmd *accept_wait_head;
+        struct sock_cmd *accept_wait_tail;
 
         const struct sock_ops *ops; /**< Per-protocol behavior. */
 
@@ -109,39 +138,33 @@ void nsock_tcp_conn_unregister(struct nsock *sk);
 int nsock_tcp_local_taken(uint32_t ip, uint16_t port);
 
 /**
- * @name fd table
- * @{
- */
-/** Allocate and reserve an unused fd, or return -1 when the table is full. */
-int fd_alloc(void);
-/** Release a reserved fd back to the table. */
-void fd_release(int fd);
-/** @} */
-
-/**
  * @name socket allocation
  * @{
  */
 /**
  * @brief Allocate and register a @ref nsock with fresh, uniquely-named rings.
  *
- * @param fd       Descriptor from fd_alloc(), or -1 for an incomplete TCP
- *                 child that will receive an fd later in tcp_accept.
+ * @param fd       Optional diagnostic label; pass -1 for owner-created
+ *                 sockets.  It does not participate in object lookup.
  * @param protocol IP protocol number; selects the @ref sock_ops to bind.
  * @return Initialized socket, or NULL on allocation failure.
  */
 struct nsock *nsock_alloc(int fd, uint8_t protocol);
-/** Remove @p sk from the registry and release its rings, lock, cond, and fd. */
+/**
+ * Retire @p sk from its owner and indexes, then release all object storage.
+ * Must be called by the owning packet worker.
+ */
 void nsock_free(struct nsock *sk);
-/** Attach an allocated fd to an existing socket, such as an accepted child. */
-int nsock_attach_fd(struct nsock *sk, int fd);
 /** @} */
 
 /**
  * @name registry lookups
  * @{
  */
-struct nsock *nsock_from_fd(int fd);
+/*
+ * Packet-path lookups return raw pointers safely because both the indexes and
+ * returned objects are owned and consumed by the same worker lcore.
+ */
 struct nsock *nsock_from_ip_port(uint32_t ip, uint16_t port, uint8_t protocol);
 struct nsock *nsock_from_4tuple(uint32_t remote_ip, uint32_t local_ip,
                                 uint16_t remote_port, uint16_t local_port,
