@@ -3,11 +3,11 @@
  * @brief TCP control block, table-driven state machine, and ingress/egress.
  *
  * The TCP-specific connection state lives in @ref tcp_stream, which is embedded
- * inside the unified @ref nsock (see socket.h) as @c nsock.u.tcp. The socket
- * itself owns the fd, rings, local address, and synchronization primitives, so
- * @ref tcp_stream only carries what is genuinely TCP-private: the peer 4-tuple,
- * the connection status, the send/receive sequence numbers, and the per-TCB
- * timer / retry counters (SYN / SYN+ACK / data / FIN RTO and TIME_WAIT 2MSL).
+ * inside the unified @ref nsock (see socket.h) as @c nsock.u.tcp.  The nsock is
+ * owned by one packet worker and named cross-lcore by a generation-checked
+ * handle; integer fds remain application-side aliases.  tcp_stream therefore
+ * carries only TCP-private state: peer tuple, sequence/window state, queues,
+ * and the per-TCB owner-lcore timer.
  *
  * The state machine is table-driven: @ref tcp_state_ops indexes one handler per
  * @ref TCP_STATUS, so adding a state or a transition is a one-line table edit
@@ -28,7 +28,6 @@
 #include <rte_mbuf.h>
 #include <rte_tcp.h>
 #include <rte_timer.h>
-#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -165,15 +164,12 @@ struct tcp_stream {
         struct tcp_sndbuf sndbuf;
 
         /*
-         * Receive-side flow control. Only the packet worker modifies
-         * rcvbuf_used; the application accumulates consumed bytes for the
-         * worker in rx_consumed.
+         * Receive-side flow control.  Command execution and packet ingress
+         * both run on the owner, so rcvbuf_used is plain owner-local state.
          */
         uint32_t rcvbuf_size;
         uint32_t rcvbuf_used;
-        atomic_uint rx_consumed;
-        atomic_bool rx_event_pending;
-        struct tcp_rx_blob *rx_current; /**< App-owned short-read blob. */
+        struct tcp_rx_blob *rx_current; /**< Owner-held short-read blob. */
 
         /* Send-side flow control: most recently accepted peer advertised
          * window. */
@@ -247,9 +243,9 @@ struct nsock *tcp_stream_search(uint32_t remote_ip, uint32_t local_ip,
 /**
  * @brief Allocate a new TCP child control block for a passive-open handshake.
  *
- * Creates a socket in @c TCP_STATUS_SYN_RECV with @c fd == -1. A real fd is
- * assigned later in @ref tcp_accept once the handshake completes, so a SYN
- * flood cannot exhaust the process fd table.
+ * Creates an owner-adopted socket in SYN_RECV without publishing an
+ * application handle.  ACCEPT publishes the handle and allocates an fd only
+ * after the handshake, so a SYN flood cannot exhaust the fd table.
  *
  * @param remote_ip   Peer IPv4 (network order).
  * @param local_ip    Local IPv4 (network order).
@@ -259,6 +255,15 @@ struct nsock *tcp_stream_search(uint32_t remote_ip, uint32_t local_ip,
  */
 struct nsock *tcp_stream_create(uint32_t remote_ip, uint32_t local_ip,
                                 uint16_t remote_port, uint16_t local_port);
+
+/**
+ * @brief Dequeue one established passive-open child without blocking.
+ *
+ * This owner-side primitive returns EAGAIN when the accept queue is empty.
+ * The socket command layer parks a blocking ACCEPT request and retries it when
+ * the handshake path reports a newly completed child.
+ */
+struct nsock *tcp_accept_owned(struct nsock *listener);
 
 /**
  * @brief Transition a TCP socket to a new status with uniform logging.
@@ -279,15 +284,6 @@ void tcp_stream_set_status(struct nsock *sk, TCP_STATUS new_status);
  * @return 0.
  */
 int tcp_ingress(struct rte_mbuf *mbuf);
-
-/**
- * @brief Process application receive-progress notifications on the worker.
- *
- * Applications enqueue one coalesced notification after consuming payload.
- * This function is called only by the packet worker and is the sole path that
- * updates TCP receive accounting, drains OFO data, and sends window updates.
- */
-void tcp_process_app_events(void);
 
 /**
  * @brief Drain pending outbound fragments from one TCP socket to the NIC.
