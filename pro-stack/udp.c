@@ -17,6 +17,7 @@
 #include "ring.h"
 #include "socket.h"
 
+#include <errno.h>
 #include <netinet/in.h>
 #include <rte_ether.h>
 #include <rte_ip.h>
@@ -69,9 +70,9 @@ int udp_ingress(struct rte_mbuf *mbuf) {
         struct rte_ipv4_hdr *ip = udp_ipv4_header(mbuf);
         struct rte_udp_hdr *udp = udp_header(ip);
 
+#if ENABLE_UDP_DEBUG
         uint16_t payload_len =
             rte_be_to_cpu_16(udp->dgram_len) - sizeof(struct rte_udp_hdr);
-#if ENABLE_UDP_DEBUG
         LOG_INFO("udp rx " IP_FMT ":%u -> " IP_FMT ":%u payload=%u",
                  IP_ARG(ip->src_addr), rte_be_to_cpu_16(udp->src_port),
                  IP_ARG(ip->dst_addr), rte_be_to_cpu_16(udp->dst_port),
@@ -88,8 +89,9 @@ int udp_ingress(struct rte_mbuf *mbuf) {
                 LOG_WARN("no socket for " IP_FMT ":%u proto=%u",
                          IP_ARG(ip->dst_addr), rte_be_to_cpu_16(udp->dst_port),
                          ip->next_proto_id);
-                rte_pktmbuf_free(mbuf);
 #endif
+                /* ingress owns every mbuf, including unmatched datagrams. */
+                rte_pktmbuf_free(mbuf);
                 return -1;
         }
 
@@ -100,9 +102,12 @@ int udp_ingress(struct rte_mbuf *mbuf) {
                 rte_pktmbuf_free(mbuf);
                 return -1;
         }
-        pthread_mutex_lock(&sk->mutex);
-        pthread_cond_signal(&sk->cond);
-        pthread_mutex_unlock(&sk->mutex);
+        /*
+         * UDP delivery and application commands execute on the same owner.
+         * Retry parked RECVFROM requests directly instead of waking an
+         * application thread that would dereference sk.
+         */
+        socket_owner_wake_recv(sk);
         return 0;
 }
 
@@ -202,12 +207,16 @@ ssize_t udp_recvfrom(struct nsock *sk, void *buf, size_t len,
                      __attribute__((unused)) int flags,
                      struct sockaddr *src_addr,
                      __attribute__((unused)) socklen_t *addrlen) {
-        struct rte_mbuf *mbuf;
-        int nb = -1;
-        pthread_mutex_lock(&sk->mutex);
-        while ((nb = rte_ring_sc_dequeue(sk->recv_buf, (void **)&mbuf)) != 0)
-                pthread_cond_wait(&sk->cond, &sk->mutex);
-        pthread_mutex_unlock(&sk->mutex);
+        struct rte_mbuf *mbuf = NULL;
+        if (rte_ring_sc_dequeue(sk->recv_buf, (void **)&mbuf) != 0) {
+                /*
+                 * Transport callbacks are owner-side probes and must never
+                 * block the packet worker.  socket_owner.c parks a blocking
+                 * command and retries it after udp_ingress queues a datagram.
+                 */
+                errno = EAGAIN;
+                return -1;
+        }
 
         struct rte_ether_hdr *eth =
             rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
@@ -248,7 +257,12 @@ static void udp_drain_ring(struct rte_ring *ring) {
 }
 
 int udp_close(struct nsock *sk) {
-        LOG_INFO("udp_close fd=%d", sk->fd);
+        /*
+         * UDP has no wire-level teardown.  Because this callback runs on the
+         * owner after fd detachment, queued datagrams can be drained and the
+         * object retired immediately without racing ingress or recvfrom.
+         */
+        LOG_INFO("udp_close socket=%u", sk->id);
         udp_drain_ring(sk->recv_buf);
         udp_drain_ring(sk->send_buf);
         nsock_free(sk);
