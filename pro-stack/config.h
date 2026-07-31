@@ -58,17 +58,13 @@
 #define BURST_SIZE 32
 /** Depth of the rx/tx software rings. */
 #define RING_SIZE 1024
-/**
- * App-to-worker TCP receive-progress ring capacity. One event is coalesced per
- * application-visible socket, so this exceeds NSOCK_FD_MAX while preserving
- * the default rte_ring usable-capacity convention.
- */
-#define TCP_EVENT_RING_SIZE 2048
 /** Rx/Tx descriptor ring size for the NIC queues. */
 #define NB_DESC 1024
 
 /**
- * How often main calls rte_timer_manage(), in milliseconds.
+ * How often timer-owning lcores call rte_timer_manage(), in milliseconds.
+ * The main lcore manages ARP infrastructure timers; the packet worker manages
+ * TCP TCB timers so callbacks obey socket ownership.
  * Actual cycle threshold is computed at runtime:
  *   rte_get_timer_hz() * TIMER_MANAGE_INTERVAL_MS / 1000
  */
