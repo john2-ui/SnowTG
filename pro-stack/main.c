@@ -95,25 +95,27 @@ static void dispatch_packet(struct rte_mempool *mp, struct rte_mbuf *mbuf,
 static int pkt_worker(void *arg) {
         struct rte_mempool *mp = (struct rte_mempool *)arg;
         struct inout_ring *ring = ring_instance();
+        uint64_t last_timer_tsc = 0;
+        const uint64_t timer_interval =
+            rte_get_timer_hz() * TIMER_MANAGE_INTERVAL_MS / 1000;
 
         LOG_INFO("packet worker started on lcore %u", rte_lcore_id());
 
         while (1) {
                 struct rte_mbuf *mbufs[BURST_SIZE];
                 /*
-                 * Apply app receive progress before packet handling, so newly
-                 * freed buffer space can drain OFO data and advertise an
-                 * updated TCP receive window without waiting for inbound I/O.
+                 * Application lcores never dereference an nsock.  Execute
+                 * their commands first so bind/send/close has bounded latency
+                 * even when no packets are arriving.
                  */
-                tcp_process_app_events();
+                socket_owner_process_commands();
                 unsigned int nb_rx = rte_ring_mc_dequeue_burst(
                     ring->in, (void **)mbufs, BURST_SIZE, NULL);
 
                 for (unsigned int i = 0; i < nb_rx; i++)
                         dispatch_packet(mp, mbufs[i], ring->out);
 
-                /* Handle app reads that raced with packet dispatch. */
-                tcp_process_app_events();
+                socket_owner_process_commands();
 
                 /*
                  * Drain each socket's send ring toward the NIC. Iterating the
@@ -124,6 +126,18 @@ static int pkt_worker(void *arg) {
                      sk = sk->next) {
                         if (sk->ops->tx_flush != NULL)
                                 sk->ops->tx_flush(sk, mp);
+                }
+
+                /*
+                 * TCP timers are armed on this lcore.  Running callbacks here
+                 * preserves the single-owner rule: RTO/TIME_WAIT callbacks,
+                 * packet ingress, commands, and destruction are serialized by
+                 * this loop without cross-lcore TCB locks.
+                 */
+                uint64_t now = rte_get_timer_cycles();
+                if (now - last_timer_tsc >= timer_interval) {
+                        rte_timer_manage();
+                        last_timer_tsc = now;
                 }
         }
 
@@ -194,9 +208,10 @@ int main(int argc, char *argv[]) {
         arp_table_instance();
 
         /*
-         * Timers (ARP sweep + TCP SYN RTO) are always managed on this lcore.
-         * rte_timer_manage() runs in the main I/O loop below; TCP arms its
-         * SINGLE timers with rte_get_main_lcore() so callbacks land here.
+         * Initialize the shared timer subsystem before either timer-managing
+         * lcore starts.  The main lcore owns only infrastructure timers such
+         * as ARP sweep; each TCP timer is targeted at the packet worker that
+         * owns its TCB and is managed from pkt_worker().
          */
         rte_timer_subsystem_init();
         uint64_t hz = rte_get_timer_hz();
@@ -217,6 +232,14 @@ int main(int argc, char *argv[]) {
                          "need at least 2 lcores (e.g. -l 0-1), got only "
                          "main lcore %u\n",
                          main_lcore);
+
+        /*
+         * Publish the command ring before launching any application lcore.
+         * Applications may call nsocket immediately after launch and block
+         * until the worker drains their CREATE command.
+         */
+        if (socket_owner_init(worker_lcore) != 0)
+                rte_exit(EXIT_FAILURE, "socket owner init failed\n");
 
         unsigned int next_app_lcore = worker_lcore;
 

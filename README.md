@@ -10,8 +10,9 @@
 
 ```
 pro-stack/
-├── main.c              EAL 初始化、NIC RX/TX 主循环、worker 派发、定时器（ARP sweep / TCP RTO）
-├── socket.h / socket.c 统一 socket：struct nsock、fd 位图、注册表、BSD API 派发器
+├── main.c              EAL 初始化、NIC RX/TX 主循环、worker 派发、ARP 与 owner timer 调度
+├── socket.h / socket.c 统一 socket、fd→handle 表、端点注册表、BSD API 命令入口
+├── socket_owner.h / .c 代际句柄、应用命令环、阻塞操作 waiter 与 owner 生命周期
 ├── sock_ops.h          每协议 ops 向量 + sock_ops_lookup
 ├── pkt_frame.h / .c    共享 Ethernet+IPv4 组帧 helper (eth_ipv4_build)
 ├── tcp.h / tcp.c       TCP：表驱动状态机、tcp_ops、编解码/egress、定时器
@@ -33,7 +34,7 @@ pro-stack/
 
 ### 核心抽象
 
-**统一 socket `struct nsock`**（[socket.h](pro-stack/socket.h)）：持有 fd、本地地址、recv/send 环、mutex/cond、ops 指针、注册表标志和链表节点；fd 走定长数组，UDP bind、TCP bind/listener/4-tuple 走 DPDK hash。传输私有状态嵌入 `u` 联合体（TCP 放 `tcp_stream`，UDP 无私有态）。
+**统一 socket `struct nsock`**（[socket.h](pro-stack/socket.h)）：由 packet worker 独占，持有本地地址、协议队列、ops、owner slot/generation 和传输私有状态。应用 fd 表只保存 `{id, generation, owner_lcore, protocol}` 句柄，不保存 `nsock *`；所有 BSD API 经 [socket_owner.c](pro-stack/socket_owner.c) 的 MPSC command ring 提交。UDP bind、TCP bind/listener/4-tuple 仍走 DPDK hash。
 
 **ops 向量 `struct sock_ops`**（[sock_ops.h](pro-stack/sock_ops.h)）：`ingress / tx_flush / send / recv / close / connect / listen / accept`。`sock_ops_lookup(proto)` 按 IP 协议号查表；`main.c` 的派发与 worker 循环对协议完全无感。
 
@@ -47,17 +48,19 @@ flowchart LR
     InRing --> Worker["pkt_worker (worker lcore)"]
     Worker -->|"ARP / ICMP / sock_ops.ingress"| Ops["udp_ops / tcp_ops"]
     Ops -->|ingress| NSock["nsock"]
-    NSock -->|recv_buf| App["app lcore: nrecv / nsend"]
-    App -->|send_buf| NSock
+    App["app lcore: nrecv / nsend"] -->|"fd → handle → command ring"| Owner["socket owner"]
+    Owner -->|"execute command"| NSock["nsock"]
+    NSock -->|"complete waiter"| Owner
+    Owner -->|"copy/result + wake"| App
     Worker -->|"ops->tx_flush"| OutRing["ring->out"]
     OutRing -->|tx burst| NIC
 ```
 
 ### 三线程模型
 
-- **main lcore**：NIC RX → `ring->in`；`ring->out` → NIC TX；`rte_timer_manage`（ARP sweep、TCP SYN RTO / TIME_WAIT）。
-- **worker lcore**：`ring->in` → `dispatch_packet` → ARP/ICMP/`ops->ingress`；遍历 socket 调 `ops->tx_flush`（过渡实现；目标见下文效率项）。
-- **app lcore**：`tcp_client_entry` / `tcp_server_entry` / `udp_app_entry`（由 `config.h` 的 `ENABLE_*` 选择；默认 TCP client 开、TCP server / UDP app 关）。
+- **main lcore**：NIC RX → `ring->in`；`ring->out` → NIC TX；只管理 ARP 等基础设施 timer。
+- **worker lcore（socket owner）**：处理 command ring、`ring->in`、协议状态机、TCP timer 和最终释放；当前仍遍历 socket 调 `ops->tx_flush`（过渡实现）。
+- **app lcore**：只持有整数 fd；`tcp_client_entry` / `tcp_server_entry` / `udp_app_entry` 的 API 调用通过 command ring 阻塞等待结果，不直接访问 TCB。
 
 ### 接收交付模型（长期目标）
 
@@ -87,8 +90,11 @@ flowchart LR
 ### socket 层
 
 - 统一 `struct nsock`，UDP/TCP 共用 `g_sock_list` 供过渡性 TX 遍历（[socket.c](pro-stack/socket.c)）
-- fd 位图分配器 + `fd_table` O(1) 查找（`NSOCK_FD_MAX=1024`）
+- fd→代际句柄表 O(1) 查找与分配（`NSOCK_FD_MAX=1024`）
 - socket 注册表：UDP 本地二元组、TCP 本地 bind、listener 与 TCP 四元组均通过 `rte_hash` 索引
+- **单 owner 生命周期**：fd 表保存代际句柄；应用命令不携带裸指针；packet ingress、TCP timer、状态迁移与 `nsock_free` 全部归同一 worker
+- 阻塞 `send/recv/connect/accept` 使用 owner-only waiter 队列；owner 遇到 `EAGAIN/EINPROGRESS` 时挂起命令但不阻塞包处理
+- `nclose` 原子撤销 fd 后仅发起协议关闭；TCP TCB 可继续经历 FIN/TIME_WAIT，终态由 owner 延迟释放；generation 防止 slot 复用 ABA
 - 唯一命名的 recv/send 环 `sock_recv_%u / sock_send_%u`
 - BSD 风格 API：`nsocket / nbind / nsend / nrecv / nsendto / nrecvfrom / nclose / nconnect / nlisten / naccept`
 - `sock_ops` + `sock_ops_lookup`；TCP 已接线 `connect/listen/accept/close`
@@ -107,7 +113,7 @@ flowchart LR
 ### UDP
 
 - `udp_build_pkt` / `udp_ingress` / `udp_tx_flush` / `udp_send` / `udp_recv` / `udp_close`
-- 阻塞 `nrecvfrom`（mutex/cond），含部分读语义
+- 阻塞 `nrecvfrom` 由 owner recv waiter 实现，transport probe 保持非阻塞并支持部分读语义
 - UDP echo 应用（[udp_app.c](pro-stack/udp_app.c)，默认关闭）
 
 ### TCP
@@ -119,6 +125,7 @@ flowchart LR
 - **控制段 RTO**：SYN_SENT / SYN_RECV（SYN+ACK）与 FIN（FIN_WAIT_1 / LAST_ACK / CLOSING）独立定时重传
 - ESTABLISHED：累计 ACK、`tcp_rx_blob` 按序交付；OOO 通过 RB-tree（查找）+ 双向链表（drain）重组，保留重叠裁剪与 FIN；每 TCB 和全局 OFO 内存均有上限
 - **发送滑动窗口**：`sndbuf` + `snd_una`/`sent_seq`；按对端通告窗口限制 TX，TX 后数据保留至 ACK；数据 RTO（Go-Back-N）；按 `TCP_DEFAULT_MSS` 切段
+- **发送侧应用背压**：本地高水位与对端窗口共同限制写入；阻塞请求停放在 owner waiter 队列，`MSG_DONTWAIT` 返回 `EAGAIN`
 - **被动拆除**：ESTABLISHED → CLOSE_WAIT → LAST_ACK → CLOSED
 - **主动拆除**：FIN_WAIT_1/2、CLOSING、TIME_WAIT（2MSL 定时器）
 - ISN 生成器；统一 mbuf 归属：ingress 一律消费 mbuf
@@ -136,10 +143,34 @@ flowchart LR
 
 ### P0 — TCP 正确性（丢包/乱序/窗口下仍可用）
 
-| 功能 | 位置 | 说明 / 目标设计 |
-|------|------|-----------------|
-| 发送侧应用背压 | [tcp.c](pro-stack/tcp.c) `tcp_send` | TX 已遵守对端 `rx_win`，但 `tcp_send` 仍可在对端窗口为零时写满 `sndbuf`。目标：阻塞、非阻塞 `EAGAIN` 或可配置高水位 |
-| socket 生命周期并发 | [socket.c](pro-stack/socket.c) | bitmap、索引和列表插删已由 registry lock 串行化；lookup 返回的 `nsock *` 仍可能与 close/free 并发。目标：引用计数 + 延迟释放，或严格 worker ownership |
+本阶段原有的发送背压与 socket 生命周期并发项均已完成：前者由 `sndbuf` 高水位、对端窗口和 owner waiter 实现；后者采用严格 worker ownership、代际句柄与终态延迟释放。后续压力测试仍需覆盖 fd 快速复用、close/RST/timer 竞态和多应用线程共享 fd。
+
+### Socket owner 后续 TODO
+
+以下事项是单 owner 架构落地后的剩余工作，详细背景和约束见 [DevLog ARC-002](DevLog.md#arc-002socket-单-owner代际句柄与命令队列)。
+
+#### P0 — 正确性与回归门槛
+
+- [ ] **补齐生命周期并发压力测试**：覆盖 `nclose` 与 SEND/RECV 并发、fd/owner slot 高频复用、SYN_SENT timeout 与 close、RST 与 pending waiter、listener close 与半连接/已 accept child、FIN/TIME_WAIT 回收、UDP pending RECVFROM，以及多 app lcore 共享 fd。
+- [ ] **引入动态竞态检查**：在构建环境允许时运行 ASan/UBSan，并补充真实 NIC 长时间流量测试，确认 command、timer 与延迟回收不存在 UAF、double-free 或 waiter 遗失。
+
+#### P1 — 生命周期语义与 owner 边界收尾
+
+- [ ] **定义 TCP 关闭策略**：实现并验证 graceful close、abortive close、`SO_LINGER`，以及 FIN 分配/入队失败时的 RST 或本地终止策略。
+- [ ] **完善 command 生命周期与取消**：当前 command 位于调用线程栈上，调用者必须等待 completion；加入超时、线程取消、异步 API 或 coroutine 前，应改为 slab/heap command，并设计引用计数、取消状态和 late completion。
+- [ ] **改进 command ring 背压**：当前 ring 满时 app lcore 通过 `rte_pause()` 忙等；评估 per-app ring、控制命令保留容量、eventfd/futex 或高低水位，同时保证 CLOSE 等生命周期命令绝不丢失。
+- [ ] **删除 owner 内遗留锁与条件变量**：审计 `sk->mutex` / `sk->cond` 的全部调用点，在确认 SEND、ACK、timer、TX 都只由 owner 执行后移除冗余同步。
+- [ ] **收紧跨 lcore 数据结构约束**：修正仍描述 app 直接消费 `recv_buf`、共同生产 `send_buf` 的旧注释，并在确认唯一 producer/consumer 后收紧 DPDK ring flags。
+
+#### P2 — 性能与多 worker 扩展
+
+- [ ] **用 dirty socket queue 替代全量 TX 遍历**：socket 从无发送工作变为有发送工作时入队，worker 只 flush 活跃 socket，消除每轮 O(全部 socket 数) 的 `g_sock_list` 扫描。
+- [ ] **扩展为 per-worker socket owner**：将当前单例 `g_owner` 改为按 worker/lcore 分片的 context；结合硬件 RSS 保证同一四元组固定归属同一 worker，并同步分片 slot、协议 hash、timer 与 dirty queue。
+- [ ] **分片 socket registry**：单 owner 下将 endpoint hash 转为 owner-local；多 worker 时按 RSS/owner 分片 fd 之外的协议注册表，避免全局 `registry_lock` 回到数据路径。
+
+#### P3 — 兼容字段与文档清理
+
+- [ ] **删除诊断用途的 `nsock->fd`**：先把剩余日志迁移为 `{id, generation}`，确认该字段不再参与身份、索引或生命周期后移除。
 
 ### P1 — 完备 TCP（选项、拥塞、校验、API）
 
@@ -210,8 +241,8 @@ cd pro-stack && make          # 静态链接 build/pro-stack
 | 宏 | 默认 | 作用 |
 |----|------|------|
 | `ENABLE_TCP_APP` | 1 | 启用 TCP ops / 应用 |
-| `ENABLE_TCP_CLIENT` | 1 | app lcore 跑 TCP client |
-| `ENABLE_TCP_SERVER` | 0 | app lcore 跑 TCP echo server |
+| `ENABLE_TCP_CLIENT` | 0 | app lcore 跑 TCP client |
+| `ENABLE_TCP_SERVER` | 1 | app lcore 跑 TCP echo server |
 | `ENABLE_UDP_APP` | 0 | UDP echo 应用 |
 | `ENABLE_ARP` / `ENABLE_ICMP` / `ENABLE_ARP_SWEEP` | 1 | L2/L3 辅助路径 |
 
