@@ -37,7 +37,15 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 #include <time.h>
+
+#define TCP_OPT_EOL 0
+#define TCP_OPT_NOP 1
+#define TCP_OPT_MSS 2
+
+#define TCP_OPT_MSS_LEN 4
+#define TCP_MIN_MSS 536
 
 static void tcp_drain_send(struct nsock *sk);
 static void tcp_drain_recv(struct nsock *sk);
@@ -56,6 +64,70 @@ static void tcp_send_reset_for_stream(const struct nsock *sk,
 static int tcp_rst_acceptable(const struct nsock *sk,
                               const struct rte_tcp_hdr *hdr);
 static void tcp_abort_on_rst(struct nsock *sk);
+
+/*
+ * Parse options of a SYN. Return 0 for syntactically valid options and -1
+ * for malformed wire data. Unknown well-formed options are ignored.
+ */
+static int tcp_parse_syn_options(const struct rte_tcp_hdr *hdr,
+                                 uint16_t *peer_mss) {
+        const uint8_t hdr_len = (hdr->data_off >> 4) * 4;
+        const uint8_t *opt = (const uint8_t *)hdr + sizeof(*hdr);
+        size_t remain = hdr_len - sizeof(*hdr);
+
+        *peer_mss = TCP_DEFAULT_MSS;
+
+        while (remain > 0) {
+                uint8_t kind = opt[0];
+
+                if (kind == TCP_OPT_EOL)
+                        break;
+
+                if (kind == TCP_OPT_NOP) {
+                        opt++;
+                        remain--;
+                        continue;
+                }
+
+                if (remain < 2)
+                        return -1;
+
+                uint8_t len = opt[1];
+                if (len < 2 || len > remain)
+                        return -1;
+
+                if (kind == TCP_OPT_MSS && len == TCP_OPT_MSS_LEN) {
+                        uint16_t value = ((uint16_t)opt[2] << 8) | opt[3];
+
+                        /*
+                         * RFC 1122's minimum reassembly size is 536.
+                         * Do not accept a peer MSS below it, otherwise a
+                         * hostile SYN can cause pathological segmentation.
+                         */
+                        if (value >= TCP_MIN_MSS)
+                                *peer_mss = value;
+                }
+
+                opt += len;
+                remain -= len;
+        }
+
+        return 0;
+}
+
+/* Add exactly one aligned MSS option: kind=2, len=4, value=local MSS. */
+static void tcp_fragment_add_mss(struct tcp_fragment *f, uint16_t mss) {
+        uint8_t *opt = (uint8_t *)f->options;
+
+        memset(f->options, 0, sizeof(f->options));
+        opt[0] = TCP_OPT_MSS;
+        opt[1] = TCP_OPT_MSS_LEN;
+        opt[2] = (uint8_t)(mss >> 8);
+        opt[3] = (uint8_t)(mss & 0xFF);
+
+        f->opt_len = 1; /* 4 bytes / one TCP word */
+        f->data_off = (uint8_t)((5 + f->opt_len) << 4);
+}
 
 /**
  * @brief Return the currently advertisable receive window.
@@ -1112,6 +1184,7 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                         sk->u.tcp.retries++;
                         struct tcp_fragment *syn_f = tcp_make_fragment(
                             sk, RTE_TCP_SYN_FLAG, sk->u.tcp.sent_seq, 0);
+                        tcp_fragment_add_mss(syn_f, TCP_DEFAULT_MSS);
                         if (tcp_enqueue_fragment(sk, syn_f) == 0) {
                                 LOG_INFO("tcp SYN_SENT retransmit #%u fd=%d",
                                          sk->u.tcp.retries, sk->fd);
@@ -1178,6 +1251,7 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                         struct tcp_fragment *syn_ack_f = tcp_make_fragment(
                             sk, RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG,
                             sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
+                        tcp_fragment_add_mss(syn_ack_f, TCP_DEFAULT_MSS);
                         if (tcp_enqueue_fragment(sk, syn_ack_f) == 0) {
                                 LOG_INFO(
                                     "tcp SYN_RECV retransmit #%u seq=%u ack=%u",
@@ -1392,12 +1466,14 @@ static void tcp_enter_time_wait(struct nsock *sk) {
  * @param iphdr IPv4 header; provides the tuple and SEG.LEN for an RST reply.
  * @param remote_ip Peer IPv4 address in network byte order.
  * @param remote_port Peer TCP port in network byte order.
+ * @param peer_mss MSS announced by the peer SYN, or the local default.
  * @return 0; ingress retains ownership of the packet mbuf.
  */
 static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
                             const struct rte_ether_hdr *eth,
                             const struct rte_ipv4_hdr *iphdr,
-                            uint32_t remote_ip, uint16_t remote_port) {
+                            uint32_t remote_ip, uint16_t remote_port,
+                            uint16_t peer_mss) {
         if (!(hdr->tcp_flags & RTE_TCP_SYN_FLAG))
                 return 0;
         /* Ignore SYN+ACK (active-open reply); only bare SYN opens a child. */
@@ -1436,6 +1512,8 @@ static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
         }
         /* Used by tcp_state_syn_recv to wake naccept on the parent. */
         child->u.tcp.listener = listener;
+        child->u.tcp.snd_mss =
+            peer_mss < TCP_DEFAULT_MSS ? peer_mss : TCP_DEFAULT_MSS;
         listener->u.tcp.syn_pending++;
 
         struct tcp_fragment *f = tcp_fragment_alloc();
@@ -1444,8 +1522,8 @@ static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
         f->sent_seq = child->u.tcp.sent_seq;
         f->recv_ack = ntohl(hdr->sent_seq) + 1;
         f->tcp_flags = RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG;
-        f->data_off = (5 << 4);
         f->rx_win = tcp_rcv_wnd(child);
+        tcp_fragment_add_mss(f, TCP_DEFAULT_MSS);
         child->u.tcp.recv_ack = f->recv_ack;
         rte_ring_mp_enqueue(child->send_buf, f);
         /* Independent SYN+ACK RTO; stopped when the final ACK arrives. */
@@ -1550,6 +1628,7 @@ static int tcp_state_syn_recv(struct nsock *sk, struct rte_tcp_hdr *hdr,
                 struct tcp_fragment *f =
                     tcp_make_fragment(sk, RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG,
                                       sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
+                tcp_fragment_add_mss(f, TCP_DEFAULT_MSS);
                 if (tcp_enqueue_fragment(sk, f) == 0)
                         LOG_INFO("tcp SYN_RECV retransmit SYN+ACK " IP_FMT
                                  ":%u seq=%u ack=%u",
@@ -2113,6 +2192,7 @@ int tcp_ingress(struct rte_mbuf *mbuf) {
 
         const uint8_t tcp_hdr_len = (tcp_hdr->data_off >> 4) * 4;
         if (tcp_hdr_len < sizeof(*tcp_hdr) || tcp_hdr_len > l4_len ||
+            mbuf->data_len < l2_l3_len + tcp_hdr_len ||
             rte_ipv4_udptcp_cksum_mbuf_verify(mbuf, iphdr, l2_l3_len) != 0) {
                 LOG_DEBUG("dropping invalid TCP segment");
                 rte_pktmbuf_free(mbuf);
@@ -2130,6 +2210,19 @@ int tcp_ingress(struct rte_mbuf *mbuf) {
         /* TODO: parse TCP options (MSS, window scale, SACK, timestamps) from
          * the SYN; opt_len is currently always treated as 0 on the receive
          * path. */
+        uint16_t peer_mss = TCP_DEFAULT_MSS;
+
+        /*
+         * MSS is meaningful only in a SYN.  Validate all options before a
+         * state transition; malformed SYN options cause this segment to drop.
+         */
+        if (tcp_hdr->tcp_flags & RTE_TCP_SYN_FLAG) {
+                if (tcp_parse_syn_options(tcp_hdr, &peer_mss) != 0) {
+                        LOG_ERROR("dropping malformed SYN options");
+                        rte_pktmbuf_free(mbuf);
+                        return 0;
+                }
+        }
 
         uint32_t remote_ip = iphdr->src_addr;
         uint32_t local_ip = iphdr->dst_addr;
@@ -2165,6 +2258,15 @@ int tcp_ingress(struct rte_mbuf *mbuf) {
                 }
                 int delivered = 0;
                 TCP_STATUS st = sk->u.tcp.status;
+                if (st == TCP_STATUS_SYN_SENT &&
+                    (tcp_hdr->tcp_flags &
+                     (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG)) ==
+                        (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG) &&
+                    ntohl(tcp_hdr->recv_ack) == sk->u.tcp.sent_seq + 1) {
+                        sk->u.tcp.snd_mss = peer_mss < TCP_DEFAULT_MSS
+                                                ? peer_mss
+                                                : TCP_DEFAULT_MSS;
+                }
                 if (st < TCP_STATUS_MAX && tcp_state_ops[st].handle != NULL)
                         delivered = tcp_state_ops[st].handle(sk, tcp_hdr, mbuf);
                 if (!delivered)
@@ -2179,7 +2281,8 @@ int tcp_ingress(struct rte_mbuf *mbuf) {
                     tcp_listener_lookup(local_ip, local_port);
                 if (listener != NULL) {
                         (void)tcp_state_listen(listener, tcp_hdr, eth, iphdr,
-                                               remote_ip, remote_port);
+                                               remote_ip, remote_port,
+                                               peer_mss);
                 } else {
                         tcp_send_reset_reply(eth, iphdr, tcp_hdr);
                         LOG_DEBUG(
@@ -2214,6 +2317,12 @@ int tcp_ingress(struct rte_mbuf *mbuf) {
 static struct rte_mbuf *tcp_build_pkt(struct rte_mempool *mp, uint32_t src_ip,
                                       uint32_t dst_ip, const uint8_t *dst_mac,
                                       const struct tcp_fragment *f) {
+        if (f->opt_len < 0 || f->opt_len > TCP_MAX_OPTIONS ||
+            f->data_off != (uint8_t)((5 + f->opt_len) << 4)) {
+                LOG_ERROR("invalid TCP option descriptor");
+                return NULL;
+        }
+
         const size_t opt_bytes = (size_t)f->opt_len * sizeof(uint32_t);
         const size_t l4_len =
             sizeof(struct rte_tcp_hdr) + opt_bytes + f->payload_len;
@@ -2237,6 +2346,11 @@ static struct rte_mbuf *tcp_build_pkt(struct rte_mempool *mp, uint32_t src_ip,
         tcp->rx_win = htons(f->rx_win);
         tcp->tcp_urp = f->tcp_urp;
         tcp->cksum = 0;
+
+        if (opt_bytes > 0) {
+                rte_memcpy((uint8_t *)tcp + sizeof(struct rte_tcp_hdr),
+                           f->options, opt_bytes);
+        }
 
         if (f->payload_len > 0)
                 rte_memcpy((uint8_t *)tcp + sizeof(struct rte_tcp_hdr) +
@@ -2452,8 +2566,11 @@ static int tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
         uint32_t credit = sk->u.tcp.snd_wnd - in_flight;
         uint32_t seglen = unsent;
 
-        if (seglen > TCP_DEFAULT_MSS)
-                seglen = TCP_DEFAULT_MSS;
+        uint32_t mss = sk->u.tcp.snd_mss;
+        if (mss == 0)
+                mss = TCP_DEFAULT_MSS;
+        if (seglen > mss)
+                seglen = mss;
         if (seglen > credit)
                 seglen = credit;
         if (seglen == 0)
@@ -2984,6 +3101,7 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
 
         struct tcp_fragment *syn_f =
             tcp_make_fragment(sk, RTE_TCP_SYN_FLAG, sk->u.tcp.sent_seq, 0);
+        tcp_fragment_add_mss(syn_f, TCP_DEFAULT_MSS);
         if (tcp_enqueue_fragment(sk, syn_f) != 0) {
                 LOG_ERROR("tcp_connect: SYN enqueue failed fd=%d", sk->fd);
                 nsock_tcp_conn_unregister(sk);

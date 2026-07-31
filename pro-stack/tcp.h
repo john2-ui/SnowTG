@@ -178,6 +178,12 @@ struct tcp_stream {
         uint32_t snd_wl2;   /* SEG.ACK of last accepted window update */
         bool snd_wnd_valid; /**< Whether snd_wl1/snd_wl2 contain an update. */
 
+        /*
+         * MSS that limits locally originated payload.  It is initialized to
+         * TCP_DEFAULT_MSS and replaced by the peer's SYN MSS when present.
+         */
+        uint16_t snd_mss;
+
         TCP_STATUS status; /**< Current connection state. */
 
         /**

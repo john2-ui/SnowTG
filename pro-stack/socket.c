@@ -436,6 +436,8 @@ struct nsock *nsock_alloc(int fd, uint8_t protocol) {
                 sk->u.tcp.snd_wl2 = 0;
                 sk->u.tcp.snd_wnd_valid = false;
 
+                sk->u.tcp.snd_mss = TCP_DEFAULT_MSS;
+
                 rb_root_init(&sk->u.tcp.ofo_tree);
                 sk->u.tcp.ofo = NULL;
                 sk->u.tcp.ofo_tail = NULL;
