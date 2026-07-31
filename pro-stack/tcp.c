@@ -2092,6 +2092,32 @@ int tcp_ingress(struct rte_mbuf *mbuf) {
             rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
         struct rte_ipv4_hdr *iphdr = tcp_ipv4_header(mbuf);
         struct rte_tcp_hdr *tcp_hdr = (struct rte_tcp_hdr *)(iphdr + 1);
+        const uint16_t l2_l3_len =
+            sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr);
+        const uint16_t l4_len =
+            rte_be_to_cpu_16(iphdr->total_length) - sizeof(*iphdr);
+
+        /*
+         * IPv4 length and header checksum were validated by dispatch_packet().
+         * Validate the TCP header before reading its fields, then verify the
+         * TCP checksum over the pseudo-header and complete (possibly
+         * multi-segment) L4 payload.  Do this before ARP learning, RST
+         * generation, or state transitions so corrupt traffic has no effects.
+         */
+        if (mbuf->data_len < l2_l3_len + sizeof(*tcp_hdr) ||
+            l4_len < sizeof(*tcp_hdr)) {
+                LOG_DEBUG("dropping invalid TCP segment");
+                rte_pktmbuf_free(mbuf);
+                return 0;
+        }
+
+        const uint8_t tcp_hdr_len = (tcp_hdr->data_off >> 4) * 4;
+        if (tcp_hdr_len < sizeof(*tcp_hdr) || tcp_hdr_len > l4_len ||
+            rte_ipv4_udptcp_cksum_mbuf_verify(mbuf, iphdr, l2_l3_len) != 0) {
+                LOG_DEBUG("dropping invalid TCP segment");
+                rte_pktmbuf_free(mbuf);
+                return 0;
+        }
 
         LOG_INFO("tcp rx " IP_FMT ":%u -> " IP_FMT ":%u flags=%s seq=%u ack=%u",
                  IP_ARG(iphdr->src_addr), rte_be_to_cpu_16(tcp_hdr->src_port),

@@ -69,6 +69,31 @@ int udp_ingress(struct rte_mbuf *mbuf) {
             rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
         struct rte_ipv4_hdr *ip = udp_ipv4_header(mbuf);
         struct rte_udp_hdr *udp = udp_header(ip);
+        const uint16_t l2_l3_len =
+            sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr);
+        const uint16_t l4_len =
+            rte_be_to_cpu_16(ip->total_length) - sizeof(*ip);
+
+        /*
+         * dispatch_packet() already validated the IPv4 header and length.
+         * Validate UDP's own length before reading its fields, then verify its
+         * checksum when present. RFC 768 permits an IPv4 UDP checksum of zero.
+         */
+        if (mbuf->data_len < l2_l3_len + sizeof(*udp) ||
+            l4_len < sizeof(*udp)) {
+                LOG_DEBUG("dropping invalid UDP datagram");
+                rte_pktmbuf_free(mbuf);
+                return -1;
+        }
+
+        const uint16_t udp_len = rte_be_to_cpu_16(udp->dgram_len);
+        if (udp_len != l4_len ||
+            (udp->dgram_cksum != 0 &&
+             rte_ipv4_udptcp_cksum_mbuf_verify(mbuf, ip, l2_l3_len) != 0)) {
+                LOG_DEBUG("dropping invalid UDP datagram");
+                rte_pktmbuf_free(mbuf);
+                return -1;
+        }
 
 #if ENABLE_UDP_DEBUG
         uint16_t payload_len =
@@ -78,9 +103,6 @@ int udp_ingress(struct rte_mbuf *mbuf) {
                  IP_ARG(ip->dst_addr), rte_be_to_cpu_16(udp->dst_port),
                  payload_len);
 #endif
-        /* TODO: validate udp->dgram_cksum (and the IPv4 header checksum) on
-         * receive; a bad checksum should drop the datagram. Both are currently
-         * trusted unconditionally. */
 
         struct nsock *sk =
             nsock_from_ip_port(ip->dst_addr, udp->dst_port, ip->next_proto_id);

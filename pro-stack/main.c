@@ -39,6 +39,47 @@
 static uint32_t g_local_ip = MAKE_IPV4_ADDR(192, 168, 21, 2);
 
 /**
+ * @brief Validate the IPv4 header and its advertised packet length.
+ * @param mbuf Ethernet frame whose ethertype is IPv4.
+ * @param ip_out Receives the validated, contiguous IPv4 header.
+ * @return 0 on success, or -1 when the frame must be dropped.
+ *
+ * The current stack does not support IPv4 options, so accepting only the
+ * fixed 20-byte header also keeps all L4 parsers on their documented layout.
+ * L4 checksums are validated by their protocol ingress handlers.
+ */
+static int ipv4_rx_validate(const struct rte_mbuf *mbuf,
+                            struct rte_ipv4_hdr **ip_out) {
+        const uint16_t eth_len = sizeof(struct rte_ether_hdr);
+        const uint16_t ip_len = sizeof(struct rte_ipv4_hdr);
+
+        /*
+         * rte_ipv4_cksum() needs a contiguous header. Packet headers normally
+         * reside in the first segment; reject an unusual split header rather
+         * than dereferencing past data_len.
+         */
+        if (mbuf->pkt_len < eth_len + ip_len ||
+            mbuf->data_len < eth_len + ip_len)
+                return -1;
+
+        struct rte_ipv4_hdr *ip =
+            rte_pktmbuf_mtod_offset(mbuf, struct rte_ipv4_hdr *, eth_len);
+        if ((ip->version_ihl >> 4) != 4 || rte_ipv4_hdr_len(ip) != sizeof(*ip))
+                return -1;
+
+        uint16_t total_len = rte_be_to_cpu_16(ip->total_length);
+        if (total_len < ip_len || total_len > mbuf->pkt_len - eth_len)
+                return -1;
+
+        /* A valid IPv4 header, including its checksum field, sums to zero. */
+        if (rte_ipv4_cksum(ip) != 0)
+                return -1;
+
+        *ip_out = ip;
+        return 0;
+}
+
+/**
  * @brief Route one inbound frame to the matching protocol handler.
  *
  * Each handler is responsible for freeing @p mbuf; unhandled frames are freed
@@ -46,6 +87,13 @@ static uint32_t g_local_ip = MAKE_IPV4_ADDR(192, 168, 21, 2);
  */
 static void dispatch_packet(struct rte_mempool *mp, struct rte_mbuf *mbuf,
                             struct rte_ring *out) {
+        if (mbuf->pkt_len < sizeof(struct rte_ether_hdr) ||
+            mbuf->data_len < sizeof(struct rte_ether_hdr)) {
+                LOG_DEBUG("dropping truncated Ethernet frame");
+                rte_pktmbuf_free(mbuf);
+                return;
+        }
+
         struct rte_ether_hdr *eth =
             rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
 
@@ -65,7 +113,13 @@ static void dispatch_packet(struct rte_mempool *mp, struct rte_mbuf *mbuf,
                 return;
         }
 
-        struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *)(eth + 1);
+        struct rte_ipv4_hdr *ip;
+        if (ipv4_rx_validate(mbuf, &ip) != 0) {
+                LOG_DEBUG("dropping invalid IPv4 frame");
+                rte_pktmbuf_free(mbuf);
+                return;
+        }
+
         /* TODO: IP fragment reassembly. Fragmented IPv4 datagrams (non-zero
          * fragment_offset / MF flag) are passed straight to the L4 handler,
          * which only sees the first fragment; the rest are misparsed. */
