@@ -43,8 +43,11 @@
 #define TCP_OPT_EOL 0
 #define TCP_OPT_NOP 1
 #define TCP_OPT_MSS 2
+#define TCP_OPT_WSCALE 3
 
 #define TCP_OPT_MSS_LEN 4
+#define TCP_OPT_WSCALE_LEN 3
+#define TCP_WSCALE_MAX 14
 #define TCP_MIN_MSS 536
 
 static void tcp_drain_send(struct nsock *sk);
@@ -65,17 +68,25 @@ static int tcp_rst_acceptable(const struct nsock *sk,
                               const struct rte_tcp_hdr *hdr);
 static void tcp_abort_on_rst(struct nsock *sk);
 
+struct tcp_syn_options {
+        uint16_t mss;
+        uint8_t wscale;
+        bool wscale_present;
+};
+
 /*
  * Parse options of a SYN. Return 0 for syntactically valid options and -1
  * for malformed wire data. Unknown well-formed options are ignored.
  */
 static int tcp_parse_syn_options(const struct rte_tcp_hdr *hdr,
-                                 uint16_t *peer_mss) {
+                                 struct tcp_syn_options *opts) {
         const uint8_t hdr_len = (hdr->data_off >> 4) * 4;
         const uint8_t *opt = (const uint8_t *)hdr + sizeof(*hdr);
         size_t remain = hdr_len - sizeof(*hdr);
 
-        *peer_mss = TCP_DEFAULT_MSS;
+        opts->mss = TCP_DEFAULT_MSS;
+        opts->wscale = 0;
+        opts->wscale_present = false;
 
         while (remain > 0) {
                 uint8_t kind = opt[0];
@@ -105,7 +116,14 @@ static int tcp_parse_syn_options(const struct rte_tcp_hdr *hdr,
                          * hostile SYN can cause pathological segmentation.
                          */
                         if (value >= TCP_MIN_MSS)
-                                *peer_mss = value;
+                                opts->mss = value;
+                } else if (kind == TCP_OPT_WSCALE &&
+                           len == TCP_OPT_WSCALE_LEN) {
+                        if (opt[2] > TCP_WSCALE_MAX)
+                                return -1;
+
+                        opts->wscale = opt[2];
+                        opts->wscale_present = true;
                 }
 
                 opt += len;
@@ -115,8 +133,14 @@ static int tcp_parse_syn_options(const struct rte_tcp_hdr *hdr,
         return 0;
 }
 
-/* Add exactly one aligned MSS option: kind=2, len=4, value=local MSS. */
-static void tcp_fragment_add_mss(struct tcp_fragment *f, uint16_t mss) {
+/**
+ * @brief Add SYN options for local MSS and, when negotiated, Window Scale.
+ *
+ * MSS consumes four bytes.  A one-byte NOP aligns the three-byte Window Scale
+ * option to the following 32-bit TCP option word.
+ */
+static void tcp_fragment_add_syn_options(struct tcp_fragment *f, uint16_t mss,
+                                         uint8_t wscale, bool include_wscale) {
         uint8_t *opt = (uint8_t *)f->options;
 
         memset(f->options, 0, sizeof(f->options));
@@ -125,26 +149,68 @@ static void tcp_fragment_add_mss(struct tcp_fragment *f, uint16_t mss) {
         opt[2] = (uint8_t)(mss >> 8);
         opt[3] = (uint8_t)(mss & 0xFF);
 
-        f->opt_len = 1; /* 4 bytes / one TCP word */
+        if (!include_wscale) {
+                f->opt_len = 1; /* 4 bytes / one TCP word */
+                f->data_off = (uint8_t)((5 + f->opt_len) << 4);
+                return;
+        }
+
+        opt[4] = TCP_OPT_NOP;
+        opt[5] = TCP_OPT_WSCALE;
+        opt[6] = TCP_OPT_WSCALE_LEN;
+        opt[7] = wscale;
+
+        f->opt_len = 2;
         f->data_off = (uint8_t)((5 + f->opt_len) << 4);
 }
 
 /**
- * @brief Return the currently advertisable receive window.
+ * @brief Choose the smallest Window Scale that represents @p rcvbuf_size.
+ * @return A valid RFC 7323 scale in the inclusive range [0, 14].
+ */
+static uint8_t tcp_choose_rcv_wscale(uint32_t rcvbuf_size) {
+        uint8_t scale = 0;
+
+        while (scale < TCP_WSCALE_MAX && (rcvbuf_size >> scale) > UINT16_MAX)
+                scale++;
+
+        return scale;
+}
+
+/**
+ * @brief Return the currently advertisable unscaled receive window.
  * @param sk TCP stream whose receive-buffer accounting is queried.
- * @return Available receive-buffer space, clamped to the TCP header field.
+ * @return Available receive-buffer space before TCP-header encoding.
  *
  * Both packet ingress and application RECV commands execute on the owner
  * worker, which exclusively owns @c rcvbuf_used.
  */
-static uint16_t tcp_rcv_wnd(const struct nsock *sk) {
-        uint32_t free;
-
+static uint32_t tcp_rcv_wnd(const struct nsock *sk) {
         if (sk->u.tcp.rcvbuf_used >= sk->u.tcp.rcvbuf_size)
                 return 0;
 
-        free = sk->u.tcp.rcvbuf_size - sk->u.tcp.rcvbuf_used;
-        return (uint16_t)(free > UINT16_MAX ? UINT16_MAX : free);
+        return sk->u.tcp.rcvbuf_size - sk->u.tcp.rcvbuf_used;
+}
+
+/**
+ * @brief Encode the current receive window for an outbound TCP header.
+ *
+ * SYN and SYN+ACK windows are never scaled.  After a successful Window Scale
+ * negotiation, all other advertised windows use this endpoint's scale.
+ */
+static uint16_t tcp_wire_rcv_wnd(const struct nsock *sk, uint8_t flags) {
+        uint32_t wnd = tcp_rcv_wnd(sk);
+        uint8_t scale = 0;
+
+        /*
+         * SYN and SYN+ACK carry an unscaled window. The negotiated scale
+         * applies only to subsequent segments.
+         */
+        if (!(flags & RTE_TCP_SYN_FLAG) && sk->u.tcp.wscale_ok)
+                scale = sk->u.tcp.rcv_wscale;
+
+        wnd >>= scale;
+        return (uint16_t)(wnd > UINT16_MAX ? UINT16_MAX : wnd);
 }
 
 /** @brief Test whether @p a precedes @p b in the TCP serial number space.
@@ -227,9 +293,9 @@ static void tcp_rcvbuf_sub(struct nsock *sk, uint32_t bytes) {
  * @param seq Target sequence number in host byte order.
  * @return The lower-bound segment, or NULL when every node precedes @p seq.
  *
- * The receive window is at most 65535 bytes, so every OFO key remains within
- * less than 2^31 sequence-space distance from recv_ack. tcp_seq_lt() is thus
- * a valid strict ordering relation for this tree.
+ * TCP_RCVBUF_SIZE is bounded far below 2^31 bytes, so every OFO key remains
+ * within less than 2^31 sequence-space distance from recv_ack.
+ * tcp_seq_lt() is thus a valid strict ordering relation for this tree.
  */
 static struct tcp_ofo_seg *tcp_ofo_lower_bound(const struct nsock *sk,
                                                uint32_t seq) {
@@ -1013,6 +1079,9 @@ struct nsock *tcp_stream_create(uint32_t remote_ip, uint32_t local_ip,
         /* sndbuf already allocated in nsock_alloc; only reset sequence base. */
         tcp_sndbuf_reset(&sk->u.tcp.sndbuf, sk->u.tcp.sent_seq);
         sk->u.tcp.recv_ack = 0;
+        sk->u.tcp.rcv_wscale = tcp_choose_rcv_wscale(sk->u.tcp.rcvbuf_size);
+        sk->u.tcp.snd_wscale = 0;
+        sk->u.tcp.wscale_ok = false;
 
         LOG_INFO("tcp stream create " IP_FMT ":%u -> " IP_FMT
                  ":%u isn=%u status=%s (fd deferred until accept)",
@@ -1099,7 +1168,7 @@ static struct tcp_fragment *tcp_make_fragment(struct nsock *sk, uint8_t flags,
         f->recv_ack = recv_ack;
         f->tcp_flags = flags;
         f->data_off = (5 << 4);
-        f->rx_win = tcp_rcv_wnd(sk);
+        f->rx_win = tcp_wire_rcv_wnd(sk, flags);
         return f;
 }
 
@@ -1184,7 +1253,8 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                         sk->u.tcp.retries++;
                         struct tcp_fragment *syn_f = tcp_make_fragment(
                             sk, RTE_TCP_SYN_FLAG, sk->u.tcp.sent_seq, 0);
-                        tcp_fragment_add_mss(syn_f, TCP_DEFAULT_MSS);
+                        tcp_fragment_add_syn_options(
+                            syn_f, TCP_DEFAULT_MSS, sk->u.tcp.rcv_wscale, true);
                         if (tcp_enqueue_fragment(sk, syn_f) == 0) {
                                 LOG_INFO("tcp SYN_SENT retransmit #%u fd=%d",
                                          sk->u.tcp.retries, sk->fd);
@@ -1251,7 +1321,9 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                         struct tcp_fragment *syn_ack_f = tcp_make_fragment(
                             sk, RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG,
                             sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
-                        tcp_fragment_add_mss(syn_ack_f, TCP_DEFAULT_MSS);
+                        tcp_fragment_add_syn_options(syn_ack_f, TCP_DEFAULT_MSS,
+                                                     sk->u.tcp.rcv_wscale,
+                                                     sk->u.tcp.wscale_ok);
                         if (tcp_enqueue_fragment(sk, syn_ack_f) == 0) {
                                 LOG_INFO(
                                     "tcp SYN_RECV retransmit #%u seq=%u ack=%u",
@@ -1398,11 +1470,14 @@ static void tcp_process_peer_ack(struct nsock *sk, uint32_t ack) {
  * @param sk TCP socket whose peer window is updated.
  * @param seg_seq SEG.SEQ from the segment carrying the update.
  * @param seg_ack SEG.ACK from the segment carrying the update.
- * @param seg_wnd Advertised receive window in host byte order.
+ * @param seg_wnd Advertised receive window field in host byte order.
+ * @param scale Window Scale announced by the peer; zero before negotiation.
  */
 static void tcp_update_snd_wnd(struct nsock *sk, uint32_t seg_seq,
-                               uint32_t seg_ack, uint16_t seg_wnd) {
+                               uint32_t seg_ack, uint16_t seg_wnd,
+                               uint8_t scale) {
         struct tcp_stream *tp = &sk->u.tcp;
+        uint32_t scaled_wnd = (uint32_t)seg_wnd << scale;
 
         pthread_mutex_lock(&sk->mutex);
 
@@ -1412,7 +1487,7 @@ static void tcp_update_snd_wnd(struct nsock *sk, uint32_t seg_seq,
          */
         if (!tp->snd_wnd_valid || tcp_seq_lt(tp->snd_wl1, seg_seq) ||
             (tp->snd_wl1 == seg_seq && tcp_seq_leq(tp->snd_wl2, seg_ack))) {
-                tp->snd_wnd = seg_wnd;
+                tp->snd_wnd = scaled_wnd;
                 tp->snd_wl1 = seg_seq;
                 tp->snd_wl2 = seg_ack;
                 tp->snd_wnd_valid = true;
@@ -1429,7 +1504,7 @@ static void tcp_update_snd_wnd(struct nsock *sk, uint32_t seg_seq,
 #ifdef TCP_TESTING
 void tcp_test_update_snd_wnd(struct nsock *sk, uint32_t seg_seq,
                              uint32_t seg_ack, uint16_t seg_wnd) {
-        tcp_update_snd_wnd(sk, seg_seq, seg_ack, seg_wnd);
+        tcp_update_snd_wnd(sk, seg_seq, seg_ack, seg_wnd, 0);
 }
 #endif
 
@@ -1473,7 +1548,7 @@ static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
                             const struct rte_ether_hdr *eth,
                             const struct rte_ipv4_hdr *iphdr,
                             uint32_t remote_ip, uint16_t remote_port,
-                            uint16_t peer_mss) {
+                            const struct tcp_syn_options *synopt) {
         if (!(hdr->tcp_flags & RTE_TCP_SYN_FLAG))
                 return 0;
         /* Ignore SYN+ACK (active-open reply); only bare SYN opens a child. */
@@ -1513,7 +1588,9 @@ static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
         /* Used by tcp_state_syn_recv to wake naccept on the parent. */
         child->u.tcp.listener = listener;
         child->u.tcp.snd_mss =
-            peer_mss < TCP_DEFAULT_MSS ? peer_mss : TCP_DEFAULT_MSS;
+            synopt->mss < TCP_DEFAULT_MSS ? synopt->mss : TCP_DEFAULT_MSS;
+        child->u.tcp.snd_wscale = synopt->wscale;
+        child->u.tcp.wscale_ok = synopt->wscale_present;
         listener->u.tcp.syn_pending++;
 
         struct tcp_fragment *f = tcp_fragment_alloc();
@@ -1522,8 +1599,10 @@ static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
         f->sent_seq = child->u.tcp.sent_seq;
         f->recv_ack = ntohl(hdr->sent_seq) + 1;
         f->tcp_flags = RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG;
-        f->rx_win = tcp_rcv_wnd(child);
-        tcp_fragment_add_mss(f, TCP_DEFAULT_MSS);
+        f->rx_win = tcp_wire_rcv_wnd(child, f->tcp_flags);
+        tcp_fragment_add_syn_options(f, TCP_DEFAULT_MSS,
+                                     child->u.tcp.rcv_wscale,
+                                     child->u.tcp.wscale_ok);
         child->u.tcp.recv_ack = f->recv_ack;
         rte_ring_mp_enqueue(child->send_buf, f);
         /* Independent SYN+ACK RTO; stopped when the final ACK arrives. */
@@ -1592,7 +1671,7 @@ static int tcp_state_syn_sent(struct nsock *sk, struct rte_tcp_hdr *hdr,
 
         rte_timer_stop(&sk->u.tcp.timer);
         tcp_update_snd_wnd(sk, ntohl(hdr->sent_seq), ntohl(hdr->recv_ack),
-                           ntohs(hdr->rx_win));
+                           ntohs(hdr->rx_win), 0);
         tcp_stream_set_status(sk, TCP_STATUS_ESTABLISHED);
 
         LOG_INFO("tcp handshake done (active) fd=%d peer " IP_FMT ":%u", sk->fd,
@@ -1628,7 +1707,9 @@ static int tcp_state_syn_recv(struct nsock *sk, struct rte_tcp_hdr *hdr,
                 struct tcp_fragment *f =
                     tcp_make_fragment(sk, RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG,
                                       sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
-                tcp_fragment_add_mss(f, TCP_DEFAULT_MSS);
+                tcp_fragment_add_syn_options(f, TCP_DEFAULT_MSS,
+                                             sk->u.tcp.rcv_wscale,
+                                             sk->u.tcp.wscale_ok);
                 if (tcp_enqueue_fragment(sk, f) == 0)
                         LOG_INFO("tcp SYN_RECV retransmit SYN+ACK " IP_FMT
                                  ":%u seq=%u ack=%u",
@@ -1676,7 +1757,8 @@ static int tcp_state_syn_recv(struct nsock *sk, struct rte_tcp_hdr *hdr,
         sk->u.tcp.retries = 0;
 
         tcp_update_snd_wnd(sk, ntohl(hdr->sent_seq), ntohl(hdr->recv_ack),
-                           ntohs(hdr->rx_win));
+                           ntohs(hdr->rx_win),
+                           sk->u.tcp.wscale_ok ? sk->u.tcp.snd_wscale : 0);
         tcp_stream_set_status(sk, TCP_STATUS_ESTABLISHED);
 
         /*
@@ -1738,7 +1820,8 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
                 tcp_process_peer_ack(sk, seg_ack);
 
         /* Update the send window based on the peer's advertised rx_win. */
-        tcp_update_snd_wnd(sk, seg_seq, seg_ack, ntohs(hdr->rx_win));
+        tcp_update_snd_wnd(sk, seg_seq, seg_ack, ntohs(hdr->rx_win),
+                           sk->u.tcp.wscale_ok ? sk->u.tcp.snd_wscale : 0);
 
         if (payload_len == 0 && !has_fin)
                 return 0; /* pure ACK: caller frees mbuf */
@@ -2207,17 +2290,22 @@ int tcp_ingress(struct rte_mbuf *mbuf) {
 
         arp_table_add(iphdr->src_addr, eth->src_addr.addr_bytes);
 
-        /* TODO: parse TCP options (MSS, window scale, SACK, timestamps) from
-         * the SYN; opt_len is currently always treated as 0 on the receive
-         * path. */
-        uint16_t peer_mss = TCP_DEFAULT_MSS;
+        /*
+         * MSS and Window Scale are negotiated exclusively on SYN segments.
+         * Other well-formed options are ignored for now.
+         */
+        struct tcp_syn_options synopt = {
+            .mss = TCP_DEFAULT_MSS,
+            .wscale = 0,
+            .wscale_present = false,
+        };
 
         /*
-         * MSS is meaningful only in a SYN.  Validate all options before a
-         * state transition; malformed SYN options cause this segment to drop.
+         * Validate SYN options before a state transition; malformed options
+         * cause this segment to drop.
          */
         if (tcp_hdr->tcp_flags & RTE_TCP_SYN_FLAG) {
-                if (tcp_parse_syn_options(tcp_hdr, &peer_mss) != 0) {
+                if (tcp_parse_syn_options(tcp_hdr, &synopt) != 0) {
                         LOG_ERROR("dropping malformed SYN options");
                         rte_pktmbuf_free(mbuf);
                         return 0;
@@ -2263,9 +2351,11 @@ int tcp_ingress(struct rte_mbuf *mbuf) {
                      (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG)) ==
                         (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG) &&
                     ntohl(tcp_hdr->recv_ack) == sk->u.tcp.sent_seq + 1) {
-                        sk->u.tcp.snd_mss = peer_mss < TCP_DEFAULT_MSS
-                                                ? peer_mss
+                        sk->u.tcp.snd_mss = synopt.mss < TCP_DEFAULT_MSS
+                                                ? synopt.mss
                                                 : TCP_DEFAULT_MSS;
+                        sk->u.tcp.snd_wscale = synopt.wscale;
+                        sk->u.tcp.wscale_ok = synopt.wscale_present;
                 }
                 if (st < TCP_STATUS_MAX && tcp_state_ops[st].handle != NULL)
                         delivered = tcp_state_ops[st].handle(sk, tcp_hdr, mbuf);
@@ -2281,8 +2371,7 @@ int tcp_ingress(struct rte_mbuf *mbuf) {
                     tcp_listener_lookup(local_ip, local_port);
                 if (listener != NULL) {
                         (void)tcp_state_listen(listener, tcp_hdr, eth, iphdr,
-                                               remote_ip, remote_port,
-                                               peer_mss);
+                                               remote_ip, remote_port, &synopt);
                 } else {
                         tcp_send_reset_reply(eth, iphdr, tcp_hdr);
                         LOG_DEBUG(
@@ -2600,7 +2689,7 @@ static int tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
         f.recv_ack = sk->u.tcp.recv_ack;
         f.tcp_flags = RTE_TCP_ACK_FLAG | RTE_TCP_PSH_FLAG;
         f.data_off = (5 << 4);
-        f.rx_win = tcp_rcv_wnd(sk);
+        f.rx_win = tcp_wire_rcv_wnd(sk, f.tcp_flags);
         f.payload = sb->data + sb->head_off + off;
         f.payload_len = seglen;
 
@@ -3094,6 +3183,10 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
         sk->u.tcp.recv_ack = 0;
         sk->u.tcp.retries = 0;
 
+        sk->u.tcp.rcv_wscale = tcp_choose_rcv_wscale(sk->u.tcp.rcvbuf_size);
+        sk->u.tcp.snd_wscale = 0;
+        sk->u.tcp.wscale_ok = false;
+
         if (nsock_tcp_conn_register(sk) != 0) {
                 LOG_ERROR("tcp_connect: duplicate 4-tuple");
                 return -1;
@@ -3101,7 +3194,8 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
 
         struct tcp_fragment *syn_f =
             tcp_make_fragment(sk, RTE_TCP_SYN_FLAG, sk->u.tcp.sent_seq, 0);
-        tcp_fragment_add_mss(syn_f, TCP_DEFAULT_MSS);
+        tcp_fragment_add_syn_options(syn_f, TCP_DEFAULT_MSS,
+                                     sk->u.tcp.rcv_wscale, true);
         if (tcp_enqueue_fragment(sk, syn_f) != 0) {
                 LOG_ERROR("tcp_connect: SYN enqueue failed fd=%d", sk->fd);
                 nsock_tcp_conn_unregister(sk);

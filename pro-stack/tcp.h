@@ -171,8 +171,10 @@ struct tcp_stream {
         uint32_t rcvbuf_used;
         struct tcp_rx_blob *rx_current; /**< Owner-held short-read blob. */
 
-        /* Send-side flow control: most recently accepted peer advertised
-         * window. */
+        /*
+         * Send-side flow control: most recently accepted peer advertised
+         * window, decoded to unscaled bytes.
+         */
         uint32_t snd_wnd;
         uint32_t snd_wl1;   /* SEG.SEQ of last accepted window update */
         uint32_t snd_wl2;   /* SEG.ACK of last accepted window update */
@@ -183,6 +185,18 @@ struct tcp_stream {
          * TCP_DEFAULT_MSS and replaced by the peer's SYN MSS when present.
          */
         uint16_t snd_mss;
+        /**
+         * Scale announced in our SYN and used to encode post-SYN advertised
+         * receive windows after Window Scale negotiation.
+         */
+        uint8_t rcv_wscale;
+        /**
+         * Scale announced by the peer in its SYN; used to decode its post-SYN
+         * advertised receive windows after Window Scale negotiation.
+         */
+        uint8_t snd_wscale;
+        /** True only after both endpoints have offered Window Scale. */
+        bool wscale_ok;
 
         TCP_STATUS status; /**< Current connection state. */
 
@@ -220,9 +234,13 @@ struct tcp_fragment {
         uint32_t recv_ack; /**< Acknowledgment number (host order). */
         uint8_t data_off;  /**< Data offset byte (upper nibble = hdr words). */
         uint8_t tcp_flags; /**< SYN/ACK/FIN/... flag bits. */
-        uint16_t rx_win;   /**< Receive window (host order). */
-        uint16_t cksum;    /**< Unused before encode; filled on the wire. */
-        uint16_t tcp_urp;  /**< Urgent pointer. */
+        /**
+         * Encoded 16-bit receive window sent on the wire (host order).
+         * The caller has already applied any negotiated Window Scale.
+         */
+        uint16_t rx_win;
+        uint16_t cksum;   /**< Unused before encode; filled on the wire. */
+        uint16_t tcp_urp; /**< Urgent pointer. */
 
         int opt_len; /**< Option length in 32-bit words. */
         uint32_t options[TCP_MAX_OPTIONS]; /**< TCP options payload. */

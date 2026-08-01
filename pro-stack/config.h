@@ -97,8 +97,11 @@
 #define TCP_MSL_MS 1000
 #define TCP_2MSL_MS (2 * TCP_MSL_MS)
 
-/** Default receive buffer size (bytes). */
-#define TCP_RCVBUF_SIZE 65535U
+/**
+ * Default receive buffer size (bytes).  Values above UINT16_MAX require the
+ * RFC 7323 Window Scale option, negotiated by TCP during the handshake.
+ */
+#define TCP_RCVBUF_SIZE (256U * 1024U)
 /** Maximum OFO payload bytes retained by one TCP control block. */
 #define TCP_OFO_MAX_BYTES TCP_RCVBUF_SIZE
 /** Process-wide cap for copied OFO payload bytes across all TCP streams. */
