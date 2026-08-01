@@ -36,6 +36,8 @@ struct nsock; /* Forward declaration; full definition in socket.h. */
 
 /** Maximum number of TCP option words carried in a @ref tcp_fragment. */
 #define TCP_MAX_OPTIONS 10
+/** Largest Window Scale shift permitted by RFC 7323. */
+#define TCP_WSCALE_MAX 14
 
 /**
  * @brief TCP connection state (subset of the classic TCP state machine).
@@ -197,6 +199,17 @@ struct tcp_stream {
         uint8_t snd_wscale;
         /** True only after both endpoints have offered Window Scale. */
         bool wscale_ok;
+
+        /** True only when both handshake SYNs carried Timestamp. */
+        bool timestamps_ok;
+        /** Latest peer TSval to echo as TSecr on the next outbound segment. */
+        uint32_t ts_recent;
+        /** Most recent locally emitted TSval. */
+        uint32_t ts_last_val;
+        /*
+         * TODO(RTT/RTO): add RTTM probe, SRTT, RTTVAR, and adaptive RTO state
+         * when replacing the current fixed data retransmission timeout.
+         */
 
         TCP_STATUS status; /**< Current connection state. */
 
