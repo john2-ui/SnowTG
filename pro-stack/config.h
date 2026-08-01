@@ -77,7 +77,7 @@
 /** Default MSS used when slicing sndbuf for TX (no option negotiation yet). */
 #define TCP_DEFAULT_MSS 1460
 /** Data-path initial RTO (ms). */
-#define TCP_DATA_RTO_MS 1000
+#define TCP_DATA_RTO_MS 2000
 /** First SYN retransmit timeout (ms). */
 #define TCP_SYN_RTO_MS 1000
 /** Give up after this many data RTOs. */

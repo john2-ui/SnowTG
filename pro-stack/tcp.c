@@ -497,11 +497,10 @@ static int tcp_deliver_payload(struct nsock *sk, const uint8_t *data,
                 return -1;
         }
         /*
-         * A blocking application recv is represented by a parked command.
-         * Retry it on this owner lcore now that contiguous bytes are queued;
-         * never wake an application to dereference sk itself.
+         * The caller commits recv_ack and rcvbuf_used before waking a parked
+         * receive command.  Waking here would re-enter tcp_recv() while those
+         * TCP receive-side state variables still describe the prior segment.
          */
-        socket_owner_wake_recv(sk);
         return 0;
 }
 
@@ -794,11 +793,9 @@ static void tcp_ofo_drain(struct nsock *sk) {
 
                 if (fin) {
                         sk->u.tcp.recv_ack += 1;
-                        if (sk->u.tcp.status == TCP_STATUS_ESTABLISHED) {
+                        if (sk->u.tcp.status == TCP_STATUS_ESTABLISHED)
                                 tcp_stream_set_status(sk,
                                                       TCP_STATUS_CLOSE_WAIT);
-                                socket_owner_wake_recv(sk);
-                        }
                 }
         }
 }
@@ -1869,6 +1866,7 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
 
         uint8_t *payload = (uint8_t *)hdr + hdrlen;
 
+        int wake_recv = 0;
         if (seq == rcv_nxt) {
                 /*
                  * recv_ack is a delivery boundary, not merely an RX boundary:
@@ -1883,11 +1881,12 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
                 } else {
                         sk->u.tcp.recv_ack += payload_len;
                         sk->u.tcp.rcvbuf_used += payload_len;
+                        wake_recv = payload_len > 0;
                         if (has_fin) {
                                 sk->u.tcp.recv_ack += 1;
                                 tcp_stream_set_status(sk,
                                                       TCP_STATUS_CLOSE_WAIT);
-                                socket_owner_wake_recv(sk);
+                                wake_recv = 1;
                         }
                         tcp_ofo_drain(sk);
                 }
@@ -1903,6 +1902,12 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
         struct tcp_fragment *ack_f = tcp_make_fragment(
             sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
         (void)tcp_enqueue_fragment(sk, ack_f);
+        /*
+         * All TCP receive state and the cumulative ACK have been committed.
+         * A resumed recv may now safely send a window-update ACK.
+         */
+        if (wake_recv)
+                socket_owner_wake_recv(sk);
 
         return 0;
 }

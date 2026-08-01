@@ -21,7 +21,7 @@
 #include <unistd.h>
 
 #define TCP_APP_BACKLOG 16
-#define TCP_APP_RECV_BUFFER_SIZE 128
+#define TCP_APP_RECV_BUFFER_SIZE 1280
 #define TCP_CLIENT_RETRY_SEC 2
 #define TCP_CLIENT_MSG "hello from tcp client\n"
 
