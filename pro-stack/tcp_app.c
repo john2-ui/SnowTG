@@ -52,8 +52,9 @@ int tcp_server_entry(__attribute__((unused)) void *arg) {
                 goto out;
         }
 
-        LOG_INFO("TCP server listening on " IP_FMT ":%u",
-                 IP_ARG(g_net.local_ip), rte_be_to_cpu_16(local_addr.sin_port));
+        LOG_MOD_INFO("APP", "tcp-server event=listening local=" IP_FMT ":%u",
+                     IP_ARG(g_net.local_ip),
+                     rte_be_to_cpu_16(local_addr.sin_port));
 
         char buffer[TCP_APP_RECV_BUFFER_SIZE];
 
@@ -67,9 +68,10 @@ int tcp_server_entry(__attribute__((unused)) void *arg) {
                         continue;
                 }
 
-                LOG_INFO("tcp_server accepted fd=%d peer " IP_FMT ":%u",
-                         conn_fd, IP_ARG(peer_addr.sin_addr.s_addr),
-                         rte_be_to_cpu_16(peer_addr.sin_port));
+                LOG_MOD_INFO(
+                    "APP", "tcp-server event=accepted fd=%d peer=" IP_FMT ":%u",
+                    conn_fd, IP_ARG(peer_addr.sin_addr.s_addr),
+                    rte_be_to_cpu_16(peer_addr.sin_port));
 
                 while (1) {
                         ssize_t received =
@@ -77,8 +79,9 @@ int tcp_server_entry(__attribute__((unused)) void *arg) {
                         if (received <= 0)
                                 break;
 
-                        LOG_INFO("tcp_server recv fd=%d len=%zd data=%.*s",
-                                 conn_fd, received, (int)received, buffer);
+                        LOG_MOD_DEBUG("APP",
+                                      "tcp-server event=recv fd=%d len=%zd",
+                                      conn_fd, received);
 
                         if (nsend(conn_fd, buffer, (size_t)received, 0) < 0) {
                                 LOG_ERROR("tcp_server: nsend failed fd=%d",
@@ -88,7 +91,7 @@ int tcp_server_entry(__attribute__((unused)) void *arg) {
                 }
 
                 nclose(conn_fd);
-                LOG_INFO("tcp_server closed fd=%d", conn_fd);
+                LOG_MOD_INFO("APP", "tcp-server event=closed fd=%d", conn_fd);
         }
 
 out:
@@ -110,8 +113,10 @@ int tcp_client_entry(__attribute__((unused)) void *arg) {
         peer_addr.sin_port = htons(TCP_APP_PORT);
         peer_addr.sin_addr.s_addr = TCP_CLIENT_PEER_IP;
 
-        LOG_INFO("TCP client targeting " IP_FMT ":%u (implicit local bind)",
-                 IP_ARG(TCP_CLIENT_PEER_IP), TCP_APP_PORT);
+        LOG_MOD_INFO("APP",
+                     "tcp-client event=target peer=" IP_FMT
+                     ":%u implicit_local_bind=1",
+                     IP_ARG(TCP_CLIENT_PEER_IP), TCP_APP_PORT);
 
         char buffer[TCP_APP_RECV_BUFFER_SIZE];
 
@@ -131,9 +136,11 @@ int tcp_client_entry(__attribute__((unused)) void *arg) {
                         continue;
                 }
 
-                LOG_INFO("tcp_client connected fd=%d -> " IP_FMT ":%u", fd,
-                         IP_ARG(peer_addr.sin_addr.s_addr),
-                         rte_be_to_cpu_16(peer_addr.sin_port));
+                LOG_MOD_INFO("APP",
+                             "tcp-client event=connected fd=%d peer=" IP_FMT
+                             ":%u",
+                             fd, IP_ARG(peer_addr.sin_addr.s_addr),
+                             rte_be_to_cpu_16(peer_addr.sin_port));
 
                 const size_t msg_len = strlen(TCP_CLIENT_MSG);
                 if (nsend(fd, TCP_CLIENT_MSG, msg_len, 0) < 0) {
@@ -145,15 +152,17 @@ int tcp_client_entry(__attribute__((unused)) void *arg) {
 
                 ssize_t received = nrecv(fd, buffer, sizeof(buffer), 0);
                 if (received > 0) {
-                        LOG_INFO("tcp_client recv fd=%d len=%zd data=%.*s", fd,
-                                 received, (int)received, buffer);
+                        LOG_MOD_DEBUG("APP",
+                                      "tcp-client event=recv fd=%d len=%zd", fd,
+                                      received);
                 } else {
                         LOG_ERROR("tcp_client: nrecv failed fd=%d", fd);
                 }
 
                 nclose(fd);
-                LOG_INFO("tcp_client closed fd=%d; retry in %ds", fd,
-                         TCP_CLIENT_RETRY_SEC);
+                LOG_MOD_INFO("APP",
+                             "tcp-client event=closed fd=%d retry_sec=%d", fd,
+                             TCP_CLIENT_RETRY_SEC);
                 sleep(TCP_CLIENT_RETRY_SEC);
         }
 

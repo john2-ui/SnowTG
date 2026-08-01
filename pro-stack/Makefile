@@ -4,6 +4,11 @@
 # binary name
 APP = pro-stack
 
+# TCP packet traces are enabled by default. Override, for example:
+#   make LOG_LEVEL=LOG_LVL_INFO TCP_LOG_PACKETS=0
+LOG_LEVEL ?= LOG_LVL_TRACE
+TCP_LOG_PACKETS ?= 1
+
 # all source are stored in SRCS-y
 SRCS-y := main.c net_context.c ring.c arp.c udp.c icmp.c port.c \
 	socket.c socket_owner.c pkt_frame.c udp_app.c tcp_app.c tcp.c rbtree.c
@@ -25,6 +30,7 @@ PKGCONF=pkg-config --define-prefix
 PC_FILE := $(shell $(PKGCONF) --path libdpdk)
 CFLAGS += -O3 $(shell $(PKGCONF) --cflags libdpdk)
 CFLAGS += -DALLOW_EXPERIMENTAL_API
+CFLAGS += -DLOG_LEVEL=$(LOG_LEVEL) -DTCP_LOG_PACKETS=$(TCP_LOG_PACKETS)
 # Force --no-as-needed so ALL DPDK libraries are linked, not just the ones the
 # app references directly. This makes every library's constructor register its
 # tailq, which a full secondary process (e.g. dpdk-pdump) requires; otherwise
@@ -66,6 +72,7 @@ endif
 
 CFLAGS += -O3
 CFLAGS += -DALLOW_EXPERIMENTAL_API
+CFLAGS += -DLOG_LEVEL=$(LOG_LEVEL) -DTCP_LOG_PACKETS=$(TCP_LOG_PACKETS)
 CFLAGS += $(WERROR_FLAGS)
 
 include $(RTE_SDK)/mk/rte.extapp.mk

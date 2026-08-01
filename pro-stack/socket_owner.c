@@ -1,6 +1,7 @@
 #include "socket_owner.h"
 
 #include "config.h"
+#include "log.h"
 #include "socket.h"
 #include "tcp.h"
 
@@ -19,6 +20,36 @@
  */
 static struct socket_owner g_owner;
 static bool g_owner_ready;
+
+#define OWNER_SK_FMT "sock=%u gen=%u fd=%d"
+#define OWNER_SK_ARG(sk) (sk)->id, (sk)->generation, (sk)->fd
+
+static const char *sock_cmd_type_str(enum sock_cmd_type type) {
+        switch (type) {
+        case SOCK_CMD_CREATE:
+                return "create";
+        case SOCK_CMD_BIND:
+                return "bind";
+        case SOCK_CMD_CONNECT:
+                return "connect";
+        case SOCK_CMD_LISTEN:
+                return "listen";
+        case SOCK_CMD_ACCEPT:
+                return "accept";
+        case SOCK_CMD_SEND:
+                return "send";
+        case SOCK_CMD_RECV:
+                return "recv";
+        case SOCK_CMD_SENDTO:
+                return "sendto";
+        case SOCK_CMD_RECVFROM:
+                return "recvfrom";
+        case SOCK_CMD_CLOSE:
+                return "close";
+        default:
+                return "unknown";
+        }
+}
 
 /** Resolve a handle only on the owner lcore; no pointer crosses this boundary.
  */
@@ -87,6 +118,8 @@ int socket_owner_init(unsigned int lcore_id) {
                 return -1;
 
         g_owner_ready = true;
+        LOG_OWNER_INFO("event=init lcore=%u ring_capacity=%u", lcore_id,
+                       NSOCK_REGISTRY_ENTRIES);
         return 0;
 }
 
@@ -116,6 +149,8 @@ int socket_owner_adopt(struct nsock *sk) {
                 sk->generation = generation;
                 sk->owner_lcore = (uint16_t)g_owner.lcore_id;
                 g_owner.slots[id] = sk;
+                LOG_OWNER_DEBUG(OWNER_SK_FMT " event=adopt owner_lcore=%u",
+                                OWNER_SK_ARG(sk), sk->owner_lcore);
                 return 0;
         }
 
@@ -134,6 +169,7 @@ void socket_owner_retire(struct nsock *sk) {
         socket_owner_abort_waiters(sk, ECANCELED);
 
         if (g_owner.slots[sk->id] == sk) {
+                LOG_OWNER_DEBUG(OWNER_SK_FMT " event=retire", OWNER_SK_ARG(sk));
                 g_owner.slots[sk->id] = NULL;
                 uint32_t next = g_owner.generations[sk->id] + 1;
                 /* Generation zero remains reserved after uint32_t wrap. */
@@ -242,11 +278,16 @@ void socket_owner_wake_recv(struct nsock *sk) {
 
                 if (result < 0 && errno == EAGAIN &&
                     !(cmd->args.io.flags & MSG_DONTWAIT)) {
+                        LOG_OWNER_DEBUG(OWNER_SK_FMT " event=wait-park op=recv",
+                                        OWNER_SK_ARG(sk));
                         waitq_push_front(&sk->recv_wait_head,
                                          &sk->recv_wait_tail, cmd);
                         return;
                 }
 
+                LOG_OWNER_DEBUG(
+                    OWNER_SK_FMT " event=wait-wake op=recv result=%zd errno=%d",
+                    OWNER_SK_ARG(sk), result, result < 0 ? errno : 0);
                 complete_transport_result(cmd, result);
         }
 }
@@ -307,6 +348,7 @@ void socket_owner_complete_connect(struct nsock *sk, int error) {
 
 void socket_owner_abort_waiters(struct nsock *sk, int error) {
         struct sock_cmd *cmd;
+        unsigned int aborted = 0;
         if (sk == NULL)
                 return;
 
@@ -314,17 +356,28 @@ void socket_owner_abort_waiters(struct nsock *sk, int error) {
                 cmd = sk->connect_waiter;
                 sk->connect_waiter = NULL;
                 socket_owner_complete(cmd, -1, error);
+                aborted++;
         }
 
         while ((cmd = waitq_pop(&sk->recv_wait_head, &sk->recv_wait_tail)) !=
-               NULL)
+               NULL) {
                 socket_owner_complete(cmd, -1, error);
+                aborted++;
+        }
         while ((cmd = waitq_pop(&sk->send_wait_head, &sk->send_wait_tail)) !=
-               NULL)
+               NULL) {
                 socket_owner_complete(cmd, -1, error);
+                aborted++;
+        }
         while ((cmd = waitq_pop(&sk->accept_wait_head,
-                                &sk->accept_wait_tail)) != NULL)
+                                &sk->accept_wait_tail)) != NULL) {
                 socket_owner_complete(cmd, -1, error);
+                aborted++;
+        }
+        if (aborted > 0)
+                LOG_OWNER_WARN(OWNER_SK_FMT
+                               " event=wait-abort count=%u errno=%d",
+                               OWNER_SK_ARG(sk), aborted, error);
 }
 
 /** Handle one request without ever sleeping on protocol progress. */
@@ -348,10 +401,17 @@ static void owner_process_one(struct sock_cmd *cmd) {
 
         sk = owner_lookup(cmd->handle);
         if (sk == NULL) {
+                LOG_OWNER_WARN("event=invalid-handle op=%s sock=%u gen=%u "
+                               "owner_lcore=%u protocol=%u",
+                               sock_cmd_type_str(cmd->type), cmd->handle.id,
+                               cmd->handle.generation, cmd->handle.owner_lcore,
+                               cmd->handle.protocol);
                 socket_owner_complete(cmd, -1, EBADF);
                 return;
         }
         if (sk->app_closed && cmd->type != SOCK_CMD_CLOSE) {
+                LOG_OWNER_WARN(OWNER_SK_FMT " event=closed-handle op=%s",
+                               OWNER_SK_ARG(sk), sock_cmd_type_str(cmd->type));
                 socket_owner_complete(cmd, -1, EBADF);
                 return;
         }
@@ -382,6 +442,9 @@ static void owner_process_one(struct sock_cmd *cmd) {
                     cmd->args.address.addrlen);
                 if (result < 0 && errno == EINPROGRESS) {
                         sk->connect_waiter = cmd;
+                        LOG_OWNER_DEBUG(OWNER_SK_FMT
+                                        " event=wait-park op=connect",
+                                        OWNER_SK_ARG(sk));
                         return;
                 }
                 complete_transport_result(cmd, result);
@@ -400,6 +463,8 @@ static void owner_process_one(struct sock_cmd *cmd) {
                         return;
                 }
                 waitq_push(&sk->accept_wait_head, &sk->accept_wait_tail, cmd);
+                LOG_OWNER_DEBUG(OWNER_SK_FMT " event=wait-park op=accept",
+                                OWNER_SK_ARG(sk));
                 socket_owner_wake_accept(sk);
                 return;
         case SOCK_CMD_SEND:
@@ -413,6 +478,8 @@ static void owner_process_one(struct sock_cmd *cmd) {
                     !(cmd->args.io.flags & MSG_DONTWAIT)) {
                         waitq_push(&sk->send_wait_head, &sk->send_wait_tail,
                                    cmd);
+                        LOG_OWNER_DEBUG(OWNER_SK_FMT " event=wait-park op=send",
+                                        OWNER_SK_ARG(sk));
                         return;
                 }
                 complete_transport_result(cmd, result);
@@ -426,6 +493,8 @@ static void owner_process_one(struct sock_cmd *cmd) {
                         return;
                 }
                 waitq_push(&sk->recv_wait_head, &sk->recv_wait_tail, cmd);
+                LOG_OWNER_DEBUG(OWNER_SK_FMT " event=wait-park op=%s",
+                                OWNER_SK_ARG(sk), sock_cmd_type_str(cmd->type));
                 socket_owner_wake_recv(sk);
                 return;
         case SOCK_CMD_SENDTO:
