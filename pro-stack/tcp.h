@@ -215,6 +215,7 @@ struct tcp_stream {
         uint32_t ts_last_val;
         /** Timestamp fields decoded from the segment currently in ingress. */
         bool rx_timestamp_present;
+        uint32_t rx_tsval;
         uint32_t rx_tsecr;
         /** RFC 6298 RTT estimators and current data/FIN RTO, in ms. */
         uint32_t srtt_ms;

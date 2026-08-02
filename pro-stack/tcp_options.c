@@ -109,6 +109,7 @@ void tcp_options_reset_state(struct nsock *sk) {
         sk->u.tcp.ts_recent_age_ms = 0;
         sk->u.tcp.ts_last_val = 0;
         sk->u.tcp.rx_timestamp_present = false;
+        sk->u.tcp.rx_tsval = 0;
         sk->u.tcp.rx_tsecr = 0;
 }
 
@@ -239,9 +240,9 @@ int tcp_options_apply_established(struct nsock *sk, struct tcp_fragment *f) {
 
 int tcp_options_process_inbound(struct nsock *sk,
                                 const struct tcp_options_rx *rx, bool is_rst,
-                                uint32_t seg_seq, uint16_t seg_len,
-                                bool has_fin, bool seq_acceptable) {
+                                uint32_t seg_seq, bool seq_acceptable) {
         sk->u.tcp.rx_timestamp_present = rx->timestamp_present;
+        sk->u.tcp.rx_tsval = rx->tsval;
         sk->u.tcp.rx_tsecr = rx->tsecr;
 
         if (is_rst || !sk->u.tcp.timestamps_ok)
@@ -260,24 +261,27 @@ int tcp_options_process_inbound(struct nsock *sk,
                 TCP_PAWS_IDLE_MS)
                 sk->u.tcp.ts_recent_valid = false;
 
-        if (seq_acceptable && (seg_len > 0 || has_fin) &&
+        if (seq_acceptable &&
             tcp_options_seq_at_or_after(seg_seq, sk->u.tcp.recv_ack) &&
             sk->u.tcp.ts_recent_valid &&
             (int32_t)(rx->tsval - sk->u.tcp.ts_recent) < 0)
                 return -2;
 
         /*
-         * TS.Recent follows accepted in-order receive progress only.  Pure
-         * ACKs and out-of-order data must not poison the value echoed as TSecr.
+         * TS.Recent follows accepted in-order receive progress only.  It is
+         * committed by tcp_options_note_receive_progress() after the state
+         * handler has actually advanced recv_ack.
          */
-        if (seq_acceptable && (seg_len > 0 || has_fin) &&
-            seg_seq == sk->u.tcp.recv_ack) {
-                sk->u.tcp.ts_recent = rx->tsval;
-                sk->u.tcp.ts_recent_valid = true;
-                sk->u.tcp.ts_recent_age_ms = tcp_options_now_ms();
-        }
-
         return 0;
+}
+
+void tcp_options_note_receive_progress(struct nsock *sk) {
+        if (!sk->u.tcp.timestamps_ok || !sk->u.tcp.rx_timestamp_present)
+                return;
+
+        sk->u.tcp.ts_recent = sk->u.tcp.rx_tsval;
+        sk->u.tcp.ts_recent_valid = true;
+        sk->u.tcp.ts_recent_age_ms = tcp_options_now_ms();
 }
 
 uint16_t tcp_options_data_mss(const struct nsock *sk) {

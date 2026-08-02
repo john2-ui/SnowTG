@@ -46,8 +46,7 @@ static void test_missing_timestamp_is_rejected(void) {
 
   init_timestamp_socket(&sk, 1000, 100);
   memset(&rx, 0, sizeof(rx));
-  CHECK(tcp_options_process_inbound(&sk, &rx, false, 1000, 1, false, true) ==
-        -1);
+  CHECK(tcp_options_process_inbound(&sk, &rx, false, 1000, true) == -1);
   CHECK(sk.u.tcp.ts_recent == 100);
 }
 
@@ -56,8 +55,7 @@ static void test_paws_rejects_stale_timestamp(void) {
   struct tcp_options_rx rx = timestamp(100);
 
   init_timestamp_socket(&sk, 1000, 200);
-  CHECK(tcp_options_process_inbound(&sk, &rx, false, 1000, 1, false, true) ==
-        -2);
+  CHECK(tcp_options_process_inbound(&sk, &rx, false, 1000, true) == -2);
   CHECK(sk.u.tcp.ts_recent == 200);
 }
 
@@ -66,8 +64,9 @@ static void test_paws_accepts_timestamp_wrap(void) {
   struct tcp_options_rx rx = timestamp(0x00000010);
 
   init_timestamp_socket(&sk, 1000, 0xfffffff0);
-  CHECK(tcp_options_process_inbound(&sk, &rx, false, 1000, 1, false, true) ==
-        0);
+  CHECK(tcp_options_process_inbound(&sk, &rx, false, 1000, true) == 0);
+  CHECK(sk.u.tcp.ts_recent == 0xfffffff0);
+  tcp_options_note_receive_progress(&sk);
   CHECK(sk.u.tcp.ts_recent == 0x00000010);
 }
 
@@ -77,11 +76,18 @@ static void test_left_edge_and_pure_ack_do_not_advance_recent(void) {
   struct tcp_options_rx new_rx = timestamp(300);
 
   init_timestamp_socket(&sk, 1000, 200);
-  CHECK(tcp_options_process_inbound(&sk, &old_rx, false, 999, 1, false, true) ==
-        0);
+  CHECK(tcp_options_process_inbound(&sk, &old_rx, false, 999, true) == 0);
   CHECK(sk.u.tcp.ts_recent == 200);
-  CHECK(tcp_options_process_inbound(&sk, &new_rx, false, 1000, 0, false,
-                                    true) == 0);
+  CHECK(tcp_options_process_inbound(&sk, &new_rx, false, 1000, true) == 0);
+  CHECK(sk.u.tcp.ts_recent == 200);
+}
+
+static void test_paws_rejects_stale_pure_ack(void) {
+  struct nsock sk;
+  struct tcp_options_rx rx = timestamp(100);
+
+  init_timestamp_socket(&sk, 1000, 200);
+  CHECK(tcp_options_process_inbound(&sk, &rx, false, 1000, true) == -2);
   CHECK(sk.u.tcp.ts_recent == 200);
 }
 
@@ -90,13 +96,12 @@ static void test_unacceptable_and_idle_segments_do_not_use_stale_recent(void) {
   struct tcp_options_rx rx = timestamp(100);
 
   init_timestamp_socket(&sk, 1000, 200);
-  CHECK(tcp_options_process_inbound(&sk, &rx, false, 2000, 1, false, false) ==
-        0);
+  CHECK(tcp_options_process_inbound(&sk, &rx, false, 2000, false) == 0);
   CHECK(sk.u.tcp.ts_recent == 200);
 
   sk.u.tcp.ts_recent_age_ms = tcp_options_now_ms() - PAWS_IDLE_MS - 1;
-  CHECK(tcp_options_process_inbound(&sk, &rx, false, 1000, 1, false, true) ==
-        0);
+  CHECK(tcp_options_process_inbound(&sk, &rx, false, 1000, true) == 0);
+  tcp_options_note_receive_progress(&sk);
   CHECK(sk.u.tcp.ts_recent == 100);
 }
 
@@ -105,7 +110,7 @@ static void test_rst_bypasses_paws(void) {
   struct tcp_options_rx rx = timestamp(100);
 
   init_timestamp_socket(&sk, 1000, 200);
-  CHECK(tcp_options_process_inbound(&sk, &rx, true, 1000, 1, false, true) == 0);
+  CHECK(tcp_options_process_inbound(&sk, &rx, true, 1000, true) == 0);
   CHECK(sk.u.tcp.ts_recent == 200);
 }
 
@@ -117,6 +122,7 @@ int main(void) {
   test_paws_rejects_stale_timestamp();
   test_paws_accepts_timestamp_wrap();
   test_left_edge_and_pure_ack_do_not_advance_recent();
+  test_paws_rejects_stale_pure_ack();
   test_unacceptable_and_idle_segments_do_not_use_stale_recent();
   test_rst_bypasses_paws();
   puts("test_tcp_paws: PASS");

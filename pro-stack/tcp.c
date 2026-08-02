@@ -152,16 +152,22 @@ static inline int tcp_seq_gt(uint32_t a, uint32_t b) {
  *
  * This is the RFC 793 receive-window test shared by Timestamp PAWS and the
  * ESTABLISHED data path.  The zero-window special case accepts only an empty
- * probe at RCV.NXT.
+ * probe at RCV.NXT; with a nonzero window, an empty ACK is accepted when its
+ * sequence number lies in the window.
  */
 static int tcp_segment_acceptable(const struct nsock *sk, uint32_t seq,
                                   uint16_t payload_len, bool has_fin) {
         uint32_t rcv_nxt = sk->u.tcp.recv_ack;
         uint32_t rcv_wnd = tcp_rcv_wnd(sk);
-        uint32_t seg_end = seq + payload_len + (has_fin ? 1 : 0);
+        uint32_t seg_len = payload_len + (has_fin ? 1 : 0);
+        uint32_t seg_end = seq + seg_len;
 
         if (rcv_wnd == 0)
-                return payload_len == 0 && !has_fin && seq == rcv_nxt;
+                return seg_len == 0 && seq == rcv_nxt;
+
+        if (seg_len == 0)
+                return !tcp_seq_lt(seq, rcv_nxt) &&
+                       tcp_seq_lt(seq, rcv_nxt + rcv_wnd);
 
         return tcp_seq_lt(seq, rcv_nxt + rcv_wnd) &&
                tcp_seq_gt(seg_end, rcv_nxt);
@@ -1840,6 +1846,7 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
         uint8_t *payload = (uint8_t *)hdr + hdrlen;
 
         int wake_recv = 0;
+        int recv_progress = 0;
         if (seq == rcv_nxt) {
                 /*
                  * recv_ack is a delivery boundary, not merely an RX boundary:
@@ -1855,12 +1862,16 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
                         sk->u.tcp.recv_ack += payload_len;
                         sk->u.tcp.rcvbuf_used += payload_len;
                         wake_recv = payload_len > 0;
+                        recv_progress = payload_len > 0;
                         if (has_fin) {
                                 sk->u.tcp.recv_ack += 1;
                                 tcp_stream_set_status(sk,
                                                       TCP_STATUS_CLOSE_WAIT);
                                 wake_recv = 1;
+                                recv_progress = 1;
                         }
+                        if (recv_progress)
+                                tcp_options_note_receive_progress(sk);
                         tcp_ofo_drain(sk);
                 }
         } else {
@@ -2337,8 +2348,7 @@ int tcp_ingress(struct rte_mbuf *mbuf) {
                     st == TCP_STATUS_ESTABLISHED &&
                     tcp_segment_acceptable(sk, seg_seq, seg_len, has_fin);
                 int ts_result = tcp_options_process_inbound(
-                    sk, &opts, false, seg_seq, seg_len, has_fin,
-                    seq_acceptable);
+                    sk, &opts, false, seg_seq, seq_acceptable);
                 if (ts_result != 0) {
                         LOG_DEBUG(ts_result == -2
                                       ? "dropping stale Timestamp (PAWS)"

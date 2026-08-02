@@ -67,8 +67,16 @@ int tcp_options_apply_established(struct nsock *sk, struct tcp_fragment *f);
  */
 int tcp_options_process_inbound(struct nsock *sk,
                                 const struct tcp_options_rx *rx, bool is_rst,
-                                uint32_t seg_seq, uint16_t seg_len,
-                                bool has_fin, bool seq_acceptable);
+                                uint32_t seg_seq, bool seq_acceptable);
+
+/**
+ * @brief Commit Timestamp state after in-order receive progress.
+ *
+ * Must be called only after the current segment's payload or FIN advanced
+ * @c recv_ack.  This prevents a segment retained for later delivery from
+ * changing the Timestamp echoed to the peer.
+ */
+void tcp_options_note_receive_progress(struct nsock *sk);
 
 /** Return the local payload limit after emitted post-SYN options. */
 uint16_t tcp_options_data_mss(const struct nsock *sk);
