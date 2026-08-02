@@ -12,7 +12,7 @@ TCP_LOG_PACKETS ?= 1
 # all source are stored in SRCS-y
 SRCS-y := main.c net_context.c ring.c arp.c udp.c icmp.c port.c \
 	socket.c socket_owner.c pkt_frame.c udp_app.c tcp_app.c tcp.c \
-	tcp_options.c rbtree.c
+	tcp_options.c tcp_rtt.c rbtree.c
 
 # Build using pkg-config variables if possible
 ifeq ($(shell pkg-config --exists libdpdk && echo 0),0)

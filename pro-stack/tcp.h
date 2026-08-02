@@ -204,12 +204,28 @@ struct tcp_stream {
         bool timestamps_ok;
         /** Latest peer TSval to echo as TSecr on the next outbound segment. */
         uint32_t ts_recent;
+        /** True after @c ts_recent was seeded by a SYN or accepted data. */
+        bool ts_recent_valid;
+        /**
+         * Local Timestamp-clock value when @c ts_recent was last updated.
+         * PAWS invalidates a stale value after a sufficiently long idle period.
+         */
+        uint32_t ts_recent_age_ms;
         /** Most recent locally emitted TSval. */
         uint32_t ts_last_val;
-        /*
-         * TODO(RTT/RTO): add RTTM probe, SRTT, RTTVAR, and adaptive RTO state
-         * when replacing the current fixed data retransmission timeout.
-         */
+        /** Timestamp fields decoded from the segment currently in ingress. */
+        bool rx_timestamp_present;
+        uint32_t rx_tsecr;
+        /** RFC 6298 RTT estimators and current data/FIN RTO, in ms. */
+        uint32_t srtt_ms;
+        uint32_t rttvar_ms;
+        uint32_t rto_ms;
+        /** One unambiguous Timestamp RTTM probe for the current flight. */
+        bool rtt_probe_valid;
+        uint32_t rtt_probe_end_seq;
+        uint32_t rtt_probe_tsval;
+        /** Karn guard: suppress samples until the retransmitted flight ends. */
+        bool rtt_retransmitting;
 
         TCP_STATUS status; /**< Current connection state. */
 

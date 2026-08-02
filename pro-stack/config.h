@@ -76,8 +76,12 @@
 #define TCP_SNDBUF_APP_HIWAT TCP_SNDBUF_SIZE
 /** Default MSS used when slicing sndbuf for TX (no option negotiation yet). */
 #define TCP_DEFAULT_MSS 1460
-/** Data-path initial RTO (ms). */
-#define TCP_DATA_RTO_MS 2000
+/** RFC 6298 initial data/FIN RTO before a valid RTT sample (ms). */
+#define TCP_RTO_INITIAL_MS 1000
+/** RFC 6298 lower bound for the calculated data/FIN RTO (ms). */
+#define TCP_RTO_MIN_MS 1000
+/** Safety cap for exponential data/FIN RTO backoff (ms). */
+#define TCP_RTO_MAX_MS 60000
 /** First SYN retransmit timeout (ms). */
 #define TCP_SYN_RTO_MS 1000
 /** Give up after this many data RTOs. */

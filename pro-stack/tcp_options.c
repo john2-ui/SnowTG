@@ -25,13 +25,25 @@
 #define TCP_OPT_TIMESTAMP_PADDED_LEN 12
 
 #define TCP_MIN_MSS 536
+/* RFC 7323 §4.3.3: invalidate TS.Recent after 24 idle days. */
+#define TCP_PAWS_IDLE_MS (24U * 24U * 60U * 60U * 1000U)
+
+uint32_t tcp_options_now_ms(void) {
+        uint64_t cycles = rte_get_timer_cycles();
+
+        return (uint32_t)(cycles * 1000 / rte_get_timer_hz());
+}
 
 static uint32_t tcp_options_ts_now(struct nsock *sk) {
-        uint64_t cycles = rte_get_timer_cycles();
-        uint32_t now = (uint32_t)(cycles * 1000 / rte_get_timer_hz());
+        uint32_t now = tcp_options_now_ms();
 
         sk->u.tcp.ts_last_val = now;
         return now;
+}
+
+/** @brief Modulo-2^32 sequence comparison used by the PAWS left-edge test. */
+static bool tcp_options_seq_at_or_after(uint32_t seq, uint32_t boundary) {
+        return (int32_t)(seq - boundary) >= 0;
 }
 
 static int tcp_options_append(struct tcp_fragment *f, const void *data,
@@ -93,7 +105,11 @@ static void tcp_options_finish(struct tcp_fragment *f) {
 void tcp_options_reset_state(struct nsock *sk) {
         sk->u.tcp.timestamps_ok = false;
         sk->u.tcp.ts_recent = 0;
+        sk->u.tcp.ts_recent_valid = false;
+        sk->u.tcp.ts_recent_age_ms = 0;
         sk->u.tcp.ts_last_val = 0;
+        sk->u.tcp.rx_timestamp_present = false;
+        sk->u.tcp.rx_tsecr = 0;
 }
 
 int tcp_options_parse(const struct rte_tcp_hdr *hdr,
@@ -184,8 +200,11 @@ void tcp_options_negotiate_syn(struct nsock *sk,
         sk->u.tcp.snd_wscale = peer->wscale;
         sk->u.tcp.wscale_ok = peer->wscale_present;
         sk->u.tcp.timestamps_ok = peer->timestamp_present;
-        if (peer->timestamp_present)
+        if (peer->timestamp_present) {
                 sk->u.tcp.ts_recent = peer->tsval;
+                sk->u.tcp.ts_recent_valid = true;
+                sk->u.tcp.ts_recent_age_ms = tcp_options_now_ms();
+        }
 }
 
 int tcp_options_apply_syn(struct nsock *sk, struct tcp_fragment *f,
@@ -219,22 +238,45 @@ int tcp_options_apply_established(struct nsock *sk, struct tcp_fragment *f) {
 }
 
 int tcp_options_process_inbound(struct nsock *sk,
-                                const struct tcp_options_rx *rx, bool is_rst) {
+                                const struct tcp_options_rx *rx, bool is_rst,
+                                uint32_t seg_seq, uint16_t seg_len,
+                                bool has_fin, bool seq_acceptable) {
+        sk->u.tcp.rx_timestamp_present = rx->timestamp_present;
+        sk->u.tcp.rx_tsecr = rx->tsecr;
+
         if (is_rst || !sk->u.tcp.timestamps_ok)
                 return 0;
         if (!rx->timestamp_present)
                 return -1;
 
         /*
-         * TODO(PAWS): apply the RFC 7323 serial timestamp comparison only
-         * after sequence acceptability is centralized for every TCP state.
+         * RFC 7323 §5.2 PAWS.  The signed subtraction is a serial comparison
+         * in the modulo-2^32 Timestamp space.  A segment that starts left of
+         * RCV.NXT is a duplicate/overlap and keeps the RFC left-edge exception.
+         * Its Timestamp must therefore not cause a PAWS drop.
          */
-        sk->u.tcp.ts_recent = rx->tsval;
+        if (sk->u.tcp.ts_recent_valid &&
+            (uint32_t)(tcp_options_now_ms() - sk->u.tcp.ts_recent_age_ms) >
+                TCP_PAWS_IDLE_MS)
+                sk->u.tcp.ts_recent_valid = false;
+
+        if (seq_acceptable && (seg_len > 0 || has_fin) &&
+            tcp_options_seq_at_or_after(seg_seq, sk->u.tcp.recv_ack) &&
+            sk->u.tcp.ts_recent_valid &&
+            (int32_t)(rx->tsval - sk->u.tcp.ts_recent) < 0)
+                return -2;
 
         /*
-         * TODO(RTT/RTO): use rx->tsecr to identify a non-retransmitted
-         * measurement probe and update the existing fixed data RTO.
+         * TS.Recent follows accepted in-order receive progress only.  Pure
+         * ACKs and out-of-order data must not poison the value echoed as TSecr.
          */
+        if (seq_acceptable && (seg_len > 0 || has_fin) &&
+            seg_seq == sk->u.tcp.recv_ack) {
+                sk->u.tcp.ts_recent = rx->tsval;
+                sk->u.tcp.ts_recent_valid = true;
+                sk->u.tcp.ts_recent_age_ms = tcp_options_now_ms();
+        }
+
         return 0;
 }
 
