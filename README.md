@@ -36,7 +36,7 @@ pro-stack/
 
 ### 核心抽象
 
-**统一 socket** `struct nsock`（[socket.h](pro-stack/socket.h)）：由 packet worker 独占，持有本地地址、协议队列、ops、owner slot/generation 和传输私有状态。应用 fd 表只保存 `{id, generation, owner_lcore, protocol}` 句柄，不保存 `nsock `*；所有 BSD API 经 [socket_owner.c](pro-stack/socket_owner.c) 的 MPSC command ring 提交。UDP bind、TCP bind/listener/4-tuple 仍走 DPDK hash。
+**统一 socket** `struct nsock`（[socket.h](pro-stack/socket.h)）：由 packet worker 独占，持有本地地址、协议队列、ops、owner slot/generation 和传输私有状态。应用 fd 表只保存 `{id, generation, owner_lcore, protocol}` 句柄，不保存 `nsock` *；所有 BSD API 经 [socket_owner.c](pro-stack/socket_owner.c) 的 MPSC command ring 提交。UDP bind、TCP bind/listener/4-tuple 仍走 DPDK hash。
 
 **ops 向量** `struct sock_ops`（[sock_ops.h](pro-stack/sock_ops.h)）：`ingress / tx_flush / send / recv / close / connect / listen / accept`。`sock_ops_lookup(proto)` 按 IP 协议号查表；`main.c` 的派发与 worker 循环对协议完全无感。
 
@@ -221,17 +221,17 @@ flowchart LR
 #### P1 — 完备 TCP（选项、拥塞、校验、API）
 
 
-| 功能              | 位置                               | 说明 / 目标设计                                                                              |
-| --------------- | -------------------------------- | -------------------------------------------------------------------------------------- |
-| TCP 选项          | [tcp.c](pro-stack/tcp.c) ~2104   | 解析/协商 MSS、窗口缩放、SACK、时间戳                                                                |
-| 拥塞控制            | —                                | 无 cwnd/ssthresh。目标：至少 Reno（慢启动 / 拥塞避免 / 快重传快恢复）                                        |
-| 协商 MSS / 选项驱动分段 | [tcp.c](pro-stack/tcp.c) 选项 TODO | 发送已按 `TCP_DEFAULT_MSS` 切段；目标：握手协商 MSS 后按协商值切                                           |
-| RTT → RTO       | —                                | 数据路径固定 RTO + 退避，无 SRTT/RTTVAR                                                          |
-| 重复 ACK / 快重传    | —                                | 依赖 ACK 处理与 SACK（可选）                                                                    |
-| RX 校验和          | [main.c](pro-stack/main.c)、[tcp.c](pro-stack/tcp.c)、[udp.c](pro-stack/udp.c) | IPv4、TCP 与 UDP RX 已软件校验；IPv4 UDP 的零校验和按 RFC 768 接受 |
-| socket 选项       | —                                | `SO_REUSEADDR`、非阻塞、`TCP_NODELAY` 等                                                     |
-| 多连接应用调度         | [tcp_app.c](pro-stack/tcp_app.c) | 示例 echo server 在一个连接的阻塞 `nrecv` 循环中不会再 `accept`。目标：非阻塞 recv + poll/ready queue，或连接任务调度 |
-| 接收交付抽象          | 见上文                              | ESTABLISHED 已用 `tcp_rx_blob`；目标：统一 stream buffer，FIN_* 等状态同样走重组交付                      |
+| 功能              | 位置                                                                           | 说明 / 目标设计                                                                              |
+| --------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| TCP 选项          | [tcp.c](pro-stack/tcp.c) ~2104                                               | 解析/协商 MSS、窗口缩放、SACK、时间戳                                                                |
+| 拥塞控制            | —                                                                            | 无 cwnd/ssthresh。目标：至少 Reno（慢启动 / 拥塞避免 / 快重传快恢复）                                        |
+| 协商 MSS / 选项驱动分段 | [tcp.c](pro-stack/tcp.c) 选项 TODO                                             | 发送已按 `TCP_DEFAULT_MSS` 切段；目标：握手协商 MSS 后按协商值切                                           |
+| RTT → RTO       | —                                                                            | 数据路径固定 RTO + 退避，无 SRTT/RTTVAR                                                          |
+| 重复 ACK / 快重传    | —                                                                            | 依赖 ACK 处理与 SACK（可选）                                                                    |
+| RX 校验和          | [main.c](pro-stack/main.c)、[tcp.c](pro-stack/tcp.c)、[udp.c](pro-stack/udp.c) | IPv4、TCP 与 UDP RX 已软件校验；IPv4 UDP 的零校验和按 RFC 768 接受                                     |
+| socket 选项       | —                                                                            | `SO_REUSEADDR`、非阻塞、`TCP_NODELAY` 等                                                     |
+| 多连接应用调度         | [tcp_app.c](pro-stack/tcp_app.c)                                             | 示例 echo server 在一个连接的阻塞 `nrecv` 循环中不会再 `accept`。目标：非阻塞 recv + poll/ready queue，或连接任务调度 |
+| 接收交付抽象          | 见上文                                                                          | ESTABLISHED 已用 `tcp_rx_blob`；目标：统一 stream buffer，FIN_* 等状态同样走重组交付                      |
 
 
 
@@ -239,17 +239,17 @@ flowchart LR
 #### P2 — ARP / ICMP / 网络层
 
 
-| 功能             | 位置                                 | 说明 / 目标设计                                               |
-| -------------- | ---------------------------------- | ------------------------------------------------------- |
-| ARP 缓存老化 / 淘汰  | [arp.c](pro-stack/arp.c) ~58       | 表项永不过期。目标：TTL + 容量淘汰；MAC 变更时更新                          |
-| 无故 ARP / 冲突检测  | —                                  | 无                                                       |
-| ARP 解析策略       | [main.c](pro-stack/main.c) sweep   | 现状 /24 全扫偏重。目标：按需 ARP + 老化；sweep 降级或限速                  |
-| ICMP echo 负载   | [icmp.c](pro-stack/icmp.c) ~80     | reply 应回显请求负载                                           |
-| 非 echo ICMP    | [icmp.c](pro-stack/icmp.c) ~94     | destination unreachable / time exceeded 等，并向 UDP/TCP 上报 |
-| IP 分片重组        | [main.c](pro-stack/main.c) ~69     | 分片直送 L4。目标：IP 层重组后再交 L4                                 |
-| UDP 发送分片 | [udp.c](pro-stack/udp.c) ~204 | RX 校验和已实现；超 MTU 不分片                                        |
-| IPv6           | [main.c](pro-stack/main.c) ~62     | 仅 ARP + IPv4                                            |
-| 路由 / 多接口       | —                                  | 单接口、无路由表                                                |
+| 功能            | 位置                               | 说明 / 目标设计                                               |
+| ------------- | -------------------------------- | ------------------------------------------------------- |
+| ARP 缓存老化 / 淘汰 | [arp.c](pro-stack/arp.c) ~58     | 表项永不过期。目标：TTL + 容量淘汰；MAC 变更时更新                          |
+| 无故 ARP / 冲突检测 | —                                | 无                                                       |
+| ARP 解析策略      | [main.c](pro-stack/main.c) sweep | 现状 /24 全扫偏重。目标：按需 ARP + 老化；sweep 降级或限速                  |
+| ICMP echo 负载  | [icmp.c](pro-stack/icmp.c) ~80   | reply 应回显请求负载                                           |
+| 非 echo ICMP   | [icmp.c](pro-stack/icmp.c) ~94   | destination unreachable / time exceeded 等，并向 UDP/TCP 上报 |
+| IP 分片重组       | [main.c](pro-stack/main.c) ~69   | 分片直送 L4。目标：IP 层重组后再交 L4                                 |
+| UDP 发送分片      | [udp.c](pro-stack/udp.c) ~204    | RX 校验和已实现；超 MTU 不分片                                     |
+| IPv6          | [main.c](pro-stack/main.c) ~62   | 仅 ARP + IPv4                                            |
+| 路由 / 多接口      | —                                | 单接口、无路由表                                                |
 
 
 

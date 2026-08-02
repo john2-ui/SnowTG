@@ -43,16 +43,17 @@
 #include <time.h>
 
 /*
- * Stable connection identity for lifecycle and diagnostic logs.  A passive
- * child legitimately has fd=-1 before accept(), so sock/generation identify
- * the TCB while fd remains an application-facing convenience.
+ * Stable connection identity for lifecycle and diagnostic logs.  Application
+ * fds live in a separate handle table and can be reused, so sock/generation
+ * identify the TCB.
  */
-#define TCP_SK_FMT                                                             \
-        "sock=%u gen=%u fd=%d state=%s local=" IP_FMT ":%u peer=" IP_FMT ":%u"
+#define TCP_ID_FMT "sock=%u gen=%u"
+#define TCP_ID_ARG(sk) (sk)->id, (sk)->generation
+#define TCP_SK_FMT TCP_ID_FMT " state=%s local=" IP_FMT ":%u peer=" IP_FMT ":%u"
 #define TCP_SK_ARG(sk)                                                         \
-        (sk)->id, (sk)->generation, (sk)->fd,                                  \
-            tcp_status_str((sk)->u.tcp.status), IP_ARG((sk)->local_ip),        \
-            rte_be_to_cpu_16((sk)->local_port), IP_ARG((sk)->u.tcp.remote_ip), \
+        TCP_ID_ARG(sk), tcp_status_str((sk)->u.tcp.status),                    \
+            IP_ARG((sk)->local_ip), rte_be_to_cpu_16((sk)->local_port),        \
+            IP_ARG((sk)->u.tcp.remote_ip),                                     \
             rte_be_to_cpu_16((sk)->u.tcp.remote_port)
 
 static void tcp_drain_send(struct nsock *sk);
@@ -425,8 +426,8 @@ static int tcp_deliver_payload(struct nsock *sk, const uint8_t *data,
         b->off = 0;
 
         if (rte_ring_sp_enqueue(sk->recv_buf, b) != 0) {
-                LOG_ERROR("tcp recv_buf full fd=%d, dropping %u bytes", sk->fd,
-                          len);
+                LOG_ERROR("tcp recv_buf full " TCP_ID_FMT ", dropping %u bytes",
+                          TCP_ID_ARG(sk), len);
                 rte_free(b->data);
                 rte_free(b);
                 return -1;
@@ -472,26 +473,28 @@ static int tcp_ofo_link(struct nsock *sk, uint32_t seq, const uint8_t *data,
                 return 0;
 
         if (len > tcp_rcv_wnd(sk)) {
-                LOG_WARN("tcp ofo no rcvbuf space fd=%d, drop seq=%u len=%u",
-                         sk->fd, seq, len);
+                LOG_WARN("tcp ofo no rcvbuf space " TCP_ID_FMT
+                         ", drop seq=%u len=%u",
+                         TCP_ID_ARG(sk), seq, len);
                 return -1;
         }
 
         if (sk->u.tcp.ofo_count >= TCP_OFO_MAX_SEGS) {
-                LOG_WARN("tcp ofo full fd=%d, drop seq=%u len=%u", sk->fd, seq,
-                         len);
+                LOG_WARN("tcp ofo full " TCP_ID_FMT ", drop seq=%u len=%u",
+                         TCP_ID_ARG(sk), seq, len);
                 return -1;
         }
 
         if (len > TCP_OFO_MAX_BYTES - sk->u.tcp.ofo_bytes) {
-                LOG_WARN("tcp ofo byte cap fd=%d, drop seq=%u len=%u", sk->fd,
-                         seq, len);
+                LOG_WARN("tcp ofo byte cap " TCP_ID_FMT ", drop seq=%u len=%u",
+                         TCP_ID_ARG(sk), seq, len);
                 return -1;
         }
 
         if (tcp_ofo_global_reserve(len) != 0) {
-                LOG_WARN("tcp ofo global cap fd=%d, drop seq=%u len=%u", sk->fd,
-                         seq, len);
+                LOG_WARN("tcp ofo global cap " TCP_ID_FMT
+                         ", drop seq=%u len=%u",
+                         TCP_ID_ARG(sk), seq, len);
                 return -1;
         }
 
@@ -1068,8 +1071,8 @@ static struct tcp_fragment *tcp_fragment_alloc(void) {
  */
 static int tcp_enqueue_fragment(struct nsock *sk, struct tcp_fragment *f) {
         if (rte_ring_mp_enqueue(sk->send_buf, f) != 0) {
-                LOG_ERROR("tcp send_buf full for fd=%d flags=0x%02x", sk->fd,
-                          f->tcp_flags);
+                LOG_ERROR("tcp send_buf full for " TCP_ID_FMT " flags=0x%02x",
+                          TCP_ID_ARG(sk), f->tcp_flags);
                 if (f->payload)
                         rte_free(f->payload);
                 rte_free(f);
@@ -1552,10 +1555,11 @@ static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
         unsigned int accepted = rte_ring_count(listener->u.tcp.accept_queue);
         if (listener->u.tcp.syn_pending + accepted >= listener->u.tcp.backlog) {
                 tcp_send_reset_reply(eth, iphdr, hdr);
-                LOG_WARN("tcp backlog full listen_fd=%d syn_pending=%u "
+                LOG_WARN("tcp backlog full listener_" TCP_ID_FMT
+                         " syn_pending=%u "
                          "accepted=%u backlog=%u; drop SYN from " IP_FMT ":%u",
-                         listener->fd, listener->u.tcp.syn_pending, accepted,
-                         listener->u.tcp.backlog, IP_ARG(remote_ip),
+                         TCP_ID_ARG(listener), listener->u.tcp.syn_pending,
+                         accepted, listener->u.tcp.backlog, IP_ARG(remote_ip),
                          rte_be_to_cpu_16(remote_port));
                 return 0;
         }
@@ -1564,9 +1568,9 @@ static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
             remote_ip, listener->local_ip, remote_port, listener->local_port);
         if (child == NULL) {
                 tcp_send_reset_reply(eth, iphdr, hdr);
-                LOG_ERROR("tcp stream create failed listen_fd=%d peer " IP_FMT
-                          ":%u",
-                          listener->fd, IP_ARG(remote_ip),
+                LOG_ERROR("tcp stream create failed listener_" TCP_ID_FMT
+                          " peer " IP_FMT ":%u",
+                          TCP_ID_ARG(listener), IP_ARG(remote_ip),
                           rte_be_to_cpu_16(remote_port));
                 return 0;
         }
@@ -1658,8 +1662,9 @@ static int tcp_state_syn_sent(struct nsock *sk, struct rte_tcp_hdr *hdr,
         tcp_rtt_reset(sk);
         tcp_stream_set_status(sk, TCP_STATUS_ESTABLISHED);
 
-        LOG_INFO("tcp handshake done (active) fd=%d peer " IP_FMT ":%u", sk->fd,
-                 IP_ARG(sk->u.tcp.remote_ip),
+        LOG_INFO("tcp handshake done (active) " TCP_ID_FMT " peer " IP_FMT
+                 ":%u",
+                 TCP_ID_ARG(sk), IP_ARG(sk->u.tcp.remote_ip),
                  rte_be_to_cpu_16(sk->u.tcp.remote_port));
 
         /* Complete the CONNECT command parked by tcp_connect(). */
@@ -1757,11 +1762,11 @@ static int tcp_state_syn_recv(struct nsock *sk, struct rte_tcp_hdr *hdr,
                         listener->u.tcp.syn_pending--;
                 if (rte_ring_mp_enqueue(listener->u.tcp.accept_queue, sk) ==
                     0) {
-                        LOG_INFO("tcp accept_queue enqueue peer " IP_FMT
-                                 ":%u listen_fd=%d",
+                        LOG_INFO("tcp accept_queue enqueue listener_" TCP_ID_FMT
+                                 " peer " IP_FMT ":%u",
+                                 TCP_ID_ARG(listener),
                                  IP_ARG(sk->u.tcp.remote_ip),
-                                 rte_be_to_cpu_16(sk->u.tcp.remote_port),
-                                 listener->fd);
+                                 rte_be_to_cpu_16(sk->u.tcp.remote_port));
                         /* Satisfy one or more owner-parked ACCEPT commands. */
                         socket_owner_wake_accept(listener);
                 } else {
@@ -1769,9 +1774,9 @@ static int tcp_state_syn_recv(struct nsock *sk, struct rte_tcp_hdr *hdr,
                             rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
 
                         LOG_ERROR(
-                            "tcp accept_queue full listen_fd=%d peer " IP_FMT
-                            ":%u; sent RST and free child TCB",
-                            listener->fd, IP_ARG(sk->u.tcp.remote_ip),
+                            "tcp accept_queue full listener_" TCP_ID_FMT
+                            " peer " IP_FMT ":%u; sent RST and free child TCB",
+                            TCP_ID_ARG(listener), IP_ARG(sk->u.tcp.remote_ip),
                             rte_be_to_cpu_16(sk->u.tcp.remote_port));
 
                         tcp_send_reset_for_stream(sk, eth->src_addr.addr_bytes);
@@ -2028,7 +2033,7 @@ static int tcp_state_closing(struct nsock *sk, struct rte_tcp_hdr *hdr,
                 return 0;
         }
 
-        LOG_INFO("tcp CLOSING rx ACK -> TIME_WAIT fd=%d", sk->fd);
+        LOG_INFO("tcp CLOSING rx ACK -> TIME_WAIT " TCP_ID_FMT, TCP_ID_ARG(sk));
         tcp_enter_time_wait(sk);
         return 0;
 }
@@ -2317,12 +2322,14 @@ int tcp_ingress(struct rte_mbuf *mbuf) {
                         if (tcp_rst_acceptable(sk, tcp_hdr))
                                 tcp_abort_on_rst(sk);
                         else
-                                LOG_WARN("tcp ignored unacceptable RST fd=%d "
-                                         "state=%s seq=%u ack=%u",
-                                         sk->fd,
-                                         tcp_status_str(sk->u.tcp.status),
-                                         ntohl(tcp_hdr->sent_seq),
-                                         ntohl(tcp_hdr->recv_ack));
+                                LOG_WARN(
+                                    "tcp ignored unacceptable RST " TCP_ID_FMT
+                                    " "
+                                    "state=%s seq=%u ack=%u",
+                                    TCP_ID_ARG(sk),
+                                    tcp_status_str(sk->u.tcp.status),
+                                    ntohl(tcp_hdr->sent_seq),
+                                    ntohl(tcp_hdr->recv_ack));
 
                         rte_pktmbuf_free(mbuf);
                         return 0;
@@ -2578,8 +2585,9 @@ static int tcp_rst_acceptable(const struct nsock *sk,
 static void tcp_abort_on_rst(struct nsock *sk) {
         TCP_STATUS old = sk->u.tcp.status;
 
-        LOG_WARN("tcp accepted RST fd=%d state=%s peer " IP_FMT ":%u", sk->fd,
-                 tcp_status_str(old), IP_ARG(sk->u.tcp.remote_ip),
+        LOG_WARN("tcp accepted RST " TCP_ID_FMT " state=%s peer " IP_FMT ":%u",
+                 TCP_ID_ARG(sk), tcp_status_str(old),
+                 IP_ARG(sk->u.tcp.remote_ip),
                  rte_be_to_cpu_16(sk->u.tcp.remote_port));
         rte_timer_stop(&sk->u.tcp.timer);
 
@@ -2836,8 +2844,9 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
                                       sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
                 if (tcp_enqueue_fragment(sk, fin_f) == 0) {
                         sk->u.tcp.sent_seq += 1;
-                        LOG_INFO("tcp FIN re-queue after data GBN fd=%d seq=%u",
-                                 sk->fd, sk->u.tcp.sent_seq - 1);
+                        LOG_INFO("tcp FIN re-queue after data GBN " TCP_ID_FMT
+                                 " seq=%u",
+                                 TCP_ID_ARG(sk), sk->u.tcp.sent_seq - 1);
                 }
         }
         return 0;
@@ -3155,8 +3164,8 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
         if (addr == NULL)
                 return -1;
         if (sk->u.tcp.status != TCP_STATUS_CLOSED) {
-                LOG_ERROR("tcp_connect: fd=%d status=%s", sk->fd,
-                          tcp_status_str(sk->u.tcp.status));
+                LOG_ERROR("tcp_connect: " TCP_ID_FMT " status=%s",
+                          TCP_ID_ARG(sk), tcp_status_str(sk->u.tcp.status));
                 return -1;
         }
 
@@ -3169,9 +3178,9 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
         if (sk->local_port == 0) {
                 sk->local_port = tcp_alloc_ephemeral_port();
                 if (sk->local_port == 0) {
-                        LOG_ERROR(
-                            "tcp_connect: fd=%d local port allocation failed",
-                            sk->fd);
+                        LOG_ERROR("tcp_connect: " TCP_ID_FMT
+                                  " local port allocation failed",
+                                  TCP_ID_ARG(sk));
                         return -1;
                 }
                 if (nsock_bind_local(sk, g_net.local_ip, sk->local_port) != 0)
@@ -3204,7 +3213,8 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
             tcp_make_fragment(sk, RTE_TCP_SYN_FLAG, sk->u.tcp.sent_seq, 0);
         (void)tcp_options_apply_syn(sk, syn_f, true, true, 0);
         if (tcp_enqueue_fragment(sk, syn_f) != 0) {
-                LOG_ERROR("tcp_connect: SYN enqueue failed fd=%d", sk->fd);
+                LOG_ERROR("tcp_connect: SYN enqueue failed " TCP_ID_FMT,
+                          TCP_ID_ARG(sk));
                 nsock_tcp_conn_unregister(sk);
                 return -1;
         }
@@ -3212,9 +3222,10 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
         tcp_stream_set_status(sk, TCP_STATUS_SYN_SENT);
         tcp_arm_syn_timer(sk, TCP_SYN_RTO_MS);
 
-        LOG_INFO("tcp connect SYN_SENT fd=%d " IP_FMT ":%u -> " IP_FMT ":%u",
-                 sk->fd, IP_ARG(sk->local_ip), rte_be_to_cpu_16(sk->local_port),
-                 IP_ARG(sk->u.tcp.remote_ip),
+        LOG_INFO("tcp connect SYN_SENT " TCP_ID_FMT " " IP_FMT ":%u -> " IP_FMT
+                 ":%u",
+                 TCP_ID_ARG(sk), IP_ARG(sk->local_ip),
+                 rte_be_to_cpu_16(sk->local_port), IP_ARG(sk->u.tcp.remote_ip),
                  rte_be_to_cpu_16(sk->u.tcp.remote_port));
 
         errno = EINPROGRESS;
@@ -3258,9 +3269,10 @@ int tcp_listen(struct nsock *sk, int backlog) {
         sk->u.tcp.accept_queue =
             rte_ring_create(name, ring_sz, rte_socket_id(), 0);
         if (sk->u.tcp.accept_queue == NULL) {
-                LOG_ERROR("tcp_listen: accept_queue create failed fd=%d "
+                LOG_ERROR("tcp_listen: accept_queue create failed " TCP_ID_FMT
+                          " "
                           "backlog=%d ring_sz=%u",
-                          sk->fd, backlog, ring_sz);
+                          TCP_ID_ARG(sk), backlog, ring_sz);
                 sk->u.tcp.status = TCP_STATUS_CLOSED;
                 return -1;
         }

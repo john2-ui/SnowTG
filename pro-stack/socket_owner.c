@@ -21,8 +21,8 @@
 static struct socket_owner g_owner;
 static bool g_owner_ready;
 
-#define OWNER_SK_FMT "sock=%u gen=%u fd=%d"
-#define OWNER_SK_ARG(sk) (sk)->id, (sk)->generation, (sk)->fd
+#define OWNER_SK_FMT "sock=%u gen=%u"
+#define OWNER_SK_ARG(sk) (sk)->id, (sk)->generation
 
 static const char *sock_cmd_type_str(enum sock_cmd_type type) {
         switch (type) {

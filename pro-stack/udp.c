@@ -25,6 +25,9 @@
 #include <rte_udp.h>
 #include <string.h>
 
+#define UDP_SK_FMT "sock=%u gen=%u"
+#define UDP_SK_ARG(sk) (sk)->id, (sk)->generation
+
 static struct rte_ipv4_hdr *udp_ipv4_header(struct rte_mbuf *mbuf) {
         struct rte_ether_hdr *eth =
             rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
@@ -120,7 +123,8 @@ int udp_ingress(struct rte_mbuf *mbuf) {
         arp_table_add(ip->src_addr, eth->src_addr.addr_bytes);
 
         if (rte_ring_mp_enqueue(sk->recv_buf, mbuf) != 0) {
-                LOG_ERROR("recv_buf full for fd=%d, dropping packet", sk->fd);
+                LOG_ERROR("recv_buf full for " UDP_SK_FMT ", dropping packet",
+                          UDP_SK_ARG(sk));
                 rte_pktmbuf_free(mbuf);
                 return -1;
         }
@@ -194,7 +198,8 @@ ssize_t udp_sendto(struct nsock *sk, const void *buf, size_t len,
                 return -1;
         }
         if (dest_addr == NULL) {
-                LOG_ERROR("udp_sendto: fd=%d missing dest", sk->fd);
+                LOG_ERROR("udp_sendto: " UDP_SK_FMT " missing dest",
+                          UDP_SK_ARG(sk));
                 return -1;
         }
 
@@ -213,15 +218,17 @@ ssize_t udp_sendto(struct nsock *sk, const void *buf, size_t len,
                 return -1;
 
         if (rte_ring_mp_enqueue(sk->send_buf, mbuf) != 0) {
-                LOG_ERROR("send_buf full for fd=%d", sk->fd);
+                LOG_ERROR("send_buf full for " UDP_SK_FMT, UDP_SK_ARG(sk));
                 rte_pktmbuf_free(mbuf);
                 return -1;
         }
-        LOG_INFO(
-            "udp_sendto fd=%d " IP_FMT ":%u -> " IP_FMT ":%u len=%zu data=%.*s",
-            sk->fd, IP_ARG(sk->local_ip), rte_be_to_cpu_16(sk->local_port),
-            IP_ARG(daddr->sin_addr.s_addr), rte_be_to_cpu_16(daddr->sin_port),
-            len, (int)len, (const char *)buf);
+        LOG_INFO("udp_sendto " UDP_SK_FMT " " IP_FMT ":%u -> " IP_FMT
+                 ":%u len=%zu data=%.*s",
+                 UDP_SK_ARG(sk), IP_ARG(sk->local_ip),
+                 rte_be_to_cpu_16(sk->local_port),
+                 IP_ARG(daddr->sin_addr.s_addr),
+                 rte_be_to_cpu_16(daddr->sin_port), len, (int)len,
+                 (const char *)buf);
         return (ssize_t)len;
 }
 
