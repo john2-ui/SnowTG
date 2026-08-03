@@ -416,6 +416,20 @@ Phase A 可先实现单 worker + 单 reactor，验证事件语义和状态机；
    `npoll` 获取 ready 子集。两者是同一语义的不同 API 外观。  
 5. 禁止扫描所有 in-flight fd 的纯忙询；它只可作为小规模原型的临时方案。
 
+实现边界：
+
+- `traffic-gen/` 仅包含 `pro-stack/owner_io.h`，通过
+  `owner_io_socket_create`、`owner_io_bind`、`owner_io_connect`、
+  `owner_io_send`、`owner_io_recv`、`owner_io_sendto`、
+  `owner_io_recvfrom` 和 `owner_io_close` 操作 generation handle。
+- 这些调用只能发生在 handle 对应的 owner lcore；它们直接调用 transport
+  probe，绝不创建 `sock_cmd`、进入 command ring 或等待 condvar。
+- `pro-stack/socket_owner.*` 继续服务公开 `n*` BSD 兼容接口和对象生命周期；
+  上层不包含该内部头文件，也不访问 `nsock`/TCB。
+- `owner_io_ready_burst` 消费 owner-local ready queue。每 socket 以
+  `ready_mask + ready_queued` 合并事件，队列项仅保存 generation handle；
+  已回收或复用的 slot 事件会被安全丢弃。
+
 事件位定义：
 
 ```c
