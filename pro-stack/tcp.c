@@ -21,6 +21,7 @@
 #include "tcp_rtt.h"
 
 #include <errno.h>
+#include <inttypes.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <pthread.h>
@@ -33,6 +34,7 @@
 #include <rte_lcore.h>
 #include <rte_malloc.h>
 #include <rte_mbuf_core.h>
+#include <rte_random.h>
 #include <rte_ring.h>
 #include <rte_tcp.h>
 #include <rte_timer.h>
@@ -1140,7 +1142,20 @@ static uint64_t tcp_ms_to_cycles(uint64_t ms) {
  * @return Available port in network byte order, or 0 when exhausted.
  */
 static uint16_t tcp_alloc_ephemeral_port(void) {
-        static uint16_t next = TCP_EPHEMERAL_PORT_MIN;
+        static uint16_t next;
+        const uint32_t port_count =
+            TCP_EPHEMERAL_PORT_MAX - TCP_EPHEMERAL_PORT_MIN + 1U;
+
+        /*
+         * EAL seeds rte_rand() during startup.  Selecting a different initial
+         * slot for every process avoids immediately reusing 49152 after an
+         * abrupt traffic-generator restart, while later allocations retain
+         * the deterministic round-robin scan and local collision check.
+         */
+        if (next == 0)
+                next =
+                    TCP_EPHEMERAL_PORT_MIN + (uint16_t)rte_rand_max(port_count);
+
         for (int i = 0;
              i < (TCP_EPHEMERAL_PORT_MAX - TCP_EPHEMERAL_PORT_MIN + 1); i++) {
                 uint16_t p = next++;
@@ -1192,16 +1207,19 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                         struct tcp_fragment *syn_f = tcp_make_fragment(
                             sk, RTE_TCP_SYN_FLAG, sk->u.tcp.sent_seq, 0);
                         (void)tcp_options_apply_syn(sk, syn_f, true, true, 0);
+                        /*
+                         * The timer for the next retry backs off from the
+                         * fixed initial SYN RTO: 1s, 2s, 4s, and so on.
+                         */
+                        uint64_t delay_ms = (uint64_t)TCP_SYN_RTO_MS
+                                            << (sk->u.tcp.retries - 1);
                         if (tcp_enqueue_fragment(sk, syn_f) == 0) {
                                 LOG_TCP_INFO(TCP_SK_FMT
                                              " event=rto-retransmit kind=syn "
-                                             "retry=%u rto_ms=%u",
+                                             "retry=%u next_rto_ms=%" PRIu64,
                                              TCP_SK_ARG(sk), sk->u.tcp.retries,
-                                             TCP_SYN_RTO_MS);
+                                             delay_ms);
                         }
-                        /* Backoff: 1s, 2s, 4s, ... from TCP_SYN_RTO_MS. */
-                        uint64_t delay_ms = (uint64_t)TCP_SYN_RTO_MS
-                                            << (sk->u.tcp.retries - 1);
                         tcp_arm_syn_timer(sk, delay_ms);
                         return;
                 }
@@ -1275,17 +1293,17 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                         (void)tcp_options_apply_syn(
                             sk, syn_ack_f, sk->u.tcp.wscale_ok,
                             sk->u.tcp.timestamps_ok, sk->u.tcp.ts_recent);
-                        if (tcp_enqueue_fragment(sk, syn_ack_f) == 0) {
-                                LOG_TCP_INFO(
-                                    TCP_SK_FMT " event=rto-retransmit "
-                                               "kind=syn-ack retry=%u seq=%u "
-                                               "ack=%u rto_ms=%u",
-                                    TCP_SK_ARG(sk), sk->u.tcp.retries,
-                                    sk->u.tcp.sent_seq, sk->u.tcp.recv_ack,
-                                    TCP_SYN_RTO_MS);
-                        }
                         uint64_t delay_ms = (uint64_t)TCP_SYN_RTO_MS
                                             << (sk->u.tcp.retries - 1);
+                        if (tcp_enqueue_fragment(sk, syn_ack_f) == 0) {
+                                LOG_TCP_INFO(TCP_SK_FMT
+                                             " event=rto-retransmit "
+                                             "kind=syn-ack retry=%u seq=%u "
+                                             "ack=%u next_rto_ms=%" PRIu64,
+                                             TCP_SK_ARG(sk), sk->u.tcp.retries,
+                                             sk->u.tcp.sent_seq,
+                                             sk->u.tcp.recv_ack, delay_ms);
+                        }
                         tcp_arm_syn_timer(sk, delay_ms);
                         return;
                 }
