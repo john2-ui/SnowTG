@@ -2,6 +2,7 @@ CC ?= cc
 
 CFLAGS ?= -O2 -g
 TEST_CFLAGS := $(CFLAGS) -std=c11 -Wall -Wextra -Werror -Wpedantic
+OWNER_IO_CFLAGS := $(TEST_CFLAGS) -D_GNU_SOURCE
 # tcp.c is compiled as a test seam and contains existing GNU variadic logging
 # macros, so build it with the project's GNU dialect without elevating its
 # unrelated legacy warnings to test failures.
@@ -16,16 +17,20 @@ BUILD_DIR := build
 RBTREE_TEST := $(BUILD_DIR)/test_rbtree
 OFO_TEST := $(BUILD_DIR)/test_ofo
 PAWS_TEST := $(BUILD_DIR)/test_tcp_paws
+OWNER_IO_TEST := $(BUILD_DIR)/test_owner_io
 
-.PHONY: all test clean
+.PHONY: all test test-owner-io clean
 
 all: test
 
 # Compilation and execution both must succeed for the test target to pass.
-test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST)
+test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(OWNER_IO_TEST)
 	$(RBTREE_TEST)
 	$(OFO_TEST)
 	$(PAWS_TEST)
+	$(OWNER_IO_TEST) --in-memory --no-huge
+
+test-owner-io: $(OWNER_IO_TEST)
 
 $(RBTREE_TEST): test_rbtree.c ../pro-stack/rbtree.c ../pro-stack/rbtree.h | $(BUILD_DIR)
 	$(CC) $(TEST_CFLAGS) test_rbtree.c ../pro-stack/rbtree.c -o $@
@@ -40,6 +45,13 @@ $(PAWS_TEST): test_tcp_paws.c ../pro-stack/tcp_options.c \
 		../pro-stack/tcp_options.h ../pro-stack/tcp.h | $(BUILD_DIR)
 	$(CC) $(PAWS_CFLAGS) $(DPDK_CFLAGS) test_tcp_paws.c \
 		../pro-stack/tcp_options.c -o $@ $(DPDK_LIBS)
+
+$(OWNER_IO_TEST): test_owner_io.c ../pro-stack/build/libpro-stack.a | $(BUILD_DIR)
+	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) -I../pro-stack test_owner_io.c \
+		../pro-stack/build/libpro-stack.a -o $@ $(DPDK_LIBS)
+
+../pro-stack/build/libpro-stack.a:
+	$(MAKE) -C ../pro-stack library
 
 $(BUILD_DIR):
 	mkdir -p $@

@@ -13,9 +13,11 @@
 #include "arp.h"
 #include "log.h"
 #include "net_context.h"
+#include "owner_io.h"
 #include "pkt_frame.h"
 #include "ring.h"
 #include "socket.h"
+#include "socket_owner_internal.h"
 
 #include <errno.h>
 #include <netinet/in.h>
@@ -134,6 +136,7 @@ int udp_ingress(struct rte_mbuf *mbuf) {
          * application thread that would dereference sk.
          */
         socket_owner_wake_recv(sk);
+        socket_owner_ready_post(sk, OWNER_IO_EV_READ);
         return 0;
 }
 
@@ -141,6 +144,9 @@ int udp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
         struct rte_mbuf *mbuf;
         if (rte_ring_sc_dequeue(sk->send_buf, (void **)&mbuf) < 0)
                 return 0;
+
+        /* A queue slot became available for a non-blocking sender. */
+        socket_owner_ready_post(sk, OWNER_IO_EV_WRITE);
 
         struct rte_ether_hdr *eth =
             rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
@@ -214,12 +220,15 @@ ssize_t udp_sendto(struct nsock *sk, const void *buf, size_t len,
         struct rte_mbuf *mbuf = udp_build_pkt(
             g_net.mp, dst_mac, sk->local_ip, daddr->sin_addr.s_addr,
             sk->local_port, daddr->sin_port, buf, (uint16_t)len);
-        if (mbuf == NULL)
+        if (mbuf == NULL) {
+                errno = ENOBUFS;
                 return -1;
+        }
 
         if (rte_ring_mp_enqueue(sk->send_buf, mbuf) != 0) {
                 LOG_ERROR("send_buf full for " UDP_SK_FMT, UDP_SK_ARG(sk));
                 rte_pktmbuf_free(mbuf);
+                errno = EAGAIN;
                 return -1;
         }
         LOG_INFO("udp_sendto " UDP_SK_FMT " " IP_FMT ":%u -> " IP_FMT

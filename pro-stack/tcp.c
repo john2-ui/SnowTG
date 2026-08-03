@@ -11,10 +11,12 @@
 #include "config.h"
 #include "log.h"
 #include "net_context.h"
+#include "owner_io.h"
 #include "pkt_frame.h"
 #include "rbtree.h"
 #include "ring.h"
 #include "socket.h"
+#include "socket_owner_internal.h"
 #include "tcp_options.h"
 #include "tcp_rtt.h"
 
@@ -1209,6 +1211,7 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                 tcp_stream_set_status(sk, TCP_STATUS_CLOSED);
                 tcp_drain_send(sk);
                 socket_owner_complete_connect(sk, ETIMEDOUT);
+                socket_owner_ready_post(sk, OWNER_IO_EV_ERROR);
                 if (sk->app_closed) {
                         tcp_drain_recv(sk);
                         nsock_free(sk);
@@ -1434,6 +1437,7 @@ static void tcp_process_peer_ack(struct nsock *sk, uint32_t ack) {
 #ifndef TCP_TESTING
         socket_owner_wake_send(sk);
 #endif
+        socket_owner_ready_post(sk, OWNER_IO_EV_WRITE);
 }
 
 /**
@@ -1487,6 +1491,7 @@ static void tcp_update_snd_wnd(struct nsock *sk, uint32_t seg_seq,
 #ifndef TCP_TESTING
         socket_owner_wake_send(sk);
 #endif
+        socket_owner_ready_post(sk, OWNER_IO_EV_WRITE);
 }
 
 #ifdef TCP_TESTING
@@ -1669,6 +1674,7 @@ static int tcp_state_syn_sent(struct nsock *sk, struct rte_tcp_hdr *hdr,
 
         /* Complete the CONNECT command parked by tcp_connect(). */
         socket_owner_complete_connect(sk, 0);
+        socket_owner_ready_post(sk, OWNER_IO_EV_CONNECTED);
         return 0;
 }
 
@@ -1902,8 +1908,20 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
          * All TCP receive state and the cumulative ACK have been committed.
          * A resumed recv may now safely send a window-update ACK.
          */
-        if (wake_recv)
+        /*
+         * OFO drain can deliver bytes even when this input segment carried no
+         * directly deliverable payload.  The ready event must reflect either
+         * source of newly readable data.
+         */
+        if (rte_ring_count(sk->recv_buf) != 0)
+                wake_recv = 1;
+        if (wake_recv) {
                 socket_owner_wake_recv(sk);
+                uint32_t events = OWNER_IO_EV_READ;
+                if (sk->u.tcp.status == TCP_STATUS_CLOSE_WAIT)
+                        events |= OWNER_IO_EV_HUP;
+                socket_owner_ready_post(sk, events);
+        }
 
         return 0;
 }
@@ -2609,6 +2627,7 @@ static void tcp_abort_on_rst(struct nsock *sk) {
 
         /* RST completes every command parked on this owner-side socket. */
         socket_owner_abort_waiters(sk, ECONNRESET);
+        socket_owner_ready_post(sk, OWNER_IO_EV_ERROR | OWNER_IO_EV_HUP);
         if (sk->app_closed)
                 nsock_free(sk);
 }
