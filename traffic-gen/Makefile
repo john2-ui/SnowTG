@@ -1,5 +1,5 @@
 APP := traffic-gen
-SRCS := main_tg.c reactor.c
+SRCS := main_tg.c reactor.c flow.c conn_pool.c
 
 PKGCONF := pkg-config --define-prefix
 DPDK_PC := $(shell $(PKGCONF) --path libdpdk)
