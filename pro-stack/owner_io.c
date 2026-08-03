@@ -11,6 +11,17 @@ static struct nsock *owner_io_resolve(struct nsock_handle handle) {
         return socket_owner_resolve_local(handle);
 }
 
+/* The owner-local API currently exposes IPv4 endpoints only. */
+static int owner_io_validate_ipv4_addr(const struct sockaddr *addr,
+                                       socklen_t addrlen) {
+        if (addr == NULL || addrlen < sizeof(struct sockaddr_in) ||
+            addr->sa_family != AF_INET) {
+                errno = EINVAL;
+                return -1;
+        }
+        return 0;
+}
+
 int owner_io_socket_create(uint8_t protocol, struct nsock_handle *out) {
         if (out == NULL) {
                 errno = EINVAL;
@@ -42,11 +53,8 @@ int owner_io_bind(struct nsock_handle handle, const struct sockaddr *addr,
         struct nsock *sk = owner_io_resolve(handle);
         if (sk == NULL)
                 return -1;
-        if (addr == NULL || addrlen < sizeof(struct sockaddr_in) ||
-            addr->sa_family != AF_INET) {
-                errno = EINVAL;
+        if (owner_io_validate_ipv4_addr(addr, addrlen) != 0)
                 return -1;
-        }
 
         const struct sockaddr_in *sin = (const struct sockaddr_in *)addr;
         int rc = nsock_bind_local(sk, sin->sin_addr.s_addr, sin->sin_port);
@@ -61,6 +69,8 @@ int owner_io_connect(struct nsock_handle handle, const struct sockaddr *addr,
                      socklen_t addrlen) {
         struct nsock *sk = owner_io_resolve(handle);
         if (sk == NULL)
+                return -1;
+        if (owner_io_validate_ipv4_addr(addr, addrlen) != 0)
                 return -1;
         if (sk->ops->connect == NULL) {
                 errno = EOPNOTSUPP;
@@ -96,11 +106,13 @@ ssize_t owner_io_sendto(struct nsock_handle handle, const void *buf, size_t len,
         struct nsock *sk = owner_io_resolve(handle);
         if (sk == NULL)
                 return -1;
-        if ((buf == NULL && len != 0) || addr == NULL ||
+        if ((buf == NULL && len != 0) ||
             sk->ops->sendto == NULL) {
                 errno = buf == NULL && len != 0 ? EINVAL : EOPNOTSUPP;
                 return -1;
         }
+        if (owner_io_validate_ipv4_addr(addr, addrlen) != 0)
+                return -1;
         return sk->ops->sendto(sk, buf, len, MSG_DONTWAIT, addr, addrlen);
 }
 
@@ -113,7 +125,17 @@ ssize_t owner_io_recvfrom(struct nsock_handle handle, void *buf, size_t len,
                 errno = buf == NULL && len != 0 ? EINVAL : EOPNOTSUPP;
                 return -1;
         }
-        return sk->ops->recvfrom(sk, buf, len, MSG_DONTWAIT, addr, addrlen);
+        if (addr != NULL &&
+            (addrlen == NULL || *addrlen < sizeof(struct sockaddr_in))) {
+                errno = EINVAL;
+                return -1;
+        }
+
+        ssize_t result =
+            sk->ops->recvfrom(sk, buf, len, MSG_DONTWAIT, addr, addrlen);
+        if (result >= 0 && addr != NULL)
+                *addrlen = sizeof(struct sockaddr_in);
+        return result;
 }
 
 int owner_io_close(struct nsock_handle handle) {

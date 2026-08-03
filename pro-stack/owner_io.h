@@ -36,11 +36,12 @@ struct owner_io_event {
  * The returned handle is owner-local and is never associated with a BSD fd.
  */
 int owner_io_socket_create(uint8_t protocol, struct nsock_handle *out);
-/** Bind an owner-local socket to an IPv4 endpoint without blocking. */
+/** Bind an owner-local socket to a valid IPv4 endpoint without blocking. */
 int owner_io_bind(struct nsock_handle handle, const struct sockaddr *addr,
                   socklen_t addrlen);
 /**
- * Start a non-blocking connection; TCP returns -1/EINPROGRESS while handshaking.
+ * Start a non-blocking connection to a valid IPv4 endpoint; TCP returns
+ * -1/EINPROGRESS while handshaking.
  */
 int owner_io_connect(struct nsock_handle handle, const struct sockaddr *addr,
                      socklen_t addrlen);
@@ -48,10 +49,17 @@ int owner_io_connect(struct nsock_handle handle, const struct sockaddr *addr,
 ssize_t owner_io_send(struct nsock_handle handle, const void *buf, size_t len);
 /** Try a connected receive; returns -1/EAGAIN when no payload is ready. */
 ssize_t owner_io_recv(struct nsock_handle handle, void *buf, size_t len);
-/** Try a datagram send; returns -1/EAGAIN when the local queue is full. */
+/**
+ * Try a datagram send to a valid IPv4 endpoint; returns -1/EAGAIN when the
+ * local queue is full.
+ */
 ssize_t owner_io_sendto(struct nsock_handle handle, const void *buf, size_t len,
                         const struct sockaddr *addr, socklen_t addrlen);
-/** Try a datagram receive; returns -1/EAGAIN when no datagram is queued. */
+/**
+ * Try a datagram receive; returns -1/EAGAIN when no datagram is queued.
+ * When @p addr is non-NULL, @p addrlen must point to storage at least as
+ * large as @c sockaddr_in and is updated with the peer address size.
+ */
 ssize_t owner_io_recvfrom(struct nsock_handle handle, void *buf, size_t len,
                           struct sockaddr *addr, socklen_t *addrlen);
 /** Initiate owner-local transport teardown and invalidate future operations. */

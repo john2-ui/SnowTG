@@ -27,6 +27,27 @@ int main(int argc, char **argv) {
         assert(errno == EAGAIN);
         assert(sk->recv_wait_head == NULL);
 
+        struct sockaddr addr_buf;
+        socklen_t short_addr_len = sizeof(sa_family_t);
+        errno = 0;
+        assert(owner_io_recvfrom(handle, buf, sizeof(buf), &addr_buf,
+                                 &short_addr_len) == -1);
+        assert(errno == EINVAL);
+
+        struct sockaddr_in invalid_peer = {
+            .sin_family = AF_UNSPEC,
+        };
+        errno = 0;
+        assert(owner_io_sendto(handle, buf, sizeof(buf),
+                               (struct sockaddr *)&invalid_peer,
+                               sizeof(invalid_peer)) == -1);
+        assert(errno == EINVAL);
+        errno = 0;
+        assert(owner_io_sendto(handle, buf, sizeof(buf),
+                               (struct sockaddr *)&invalid_peer,
+                               sizeof(sa_family_t)) == -1);
+        assert(errno == EINVAL);
+
         socket_owner_ready_post(sk, OWNER_IO_EV_READ);
         socket_owner_ready_post(sk, OWNER_IO_EV_WRITE);
         struct owner_io_event event[2];
@@ -53,6 +74,10 @@ int main(int argc, char **argv) {
             .sin_port = rte_cpu_to_be_16(80),
             .sin_addr.s_addr = rte_cpu_to_be_32(0x7f000001),
         };
+        errno = 0;
+        assert(owner_io_connect(tcp_handle, (struct sockaddr *)&peer,
+                                sizeof(sa_family_t)) == -1);
+        assert(errno == EINVAL);
         errno = 0;
         assert(owner_io_connect(tcp_handle, (struct sockaddr *)&peer,
                                 sizeof(peer)) == -1);
