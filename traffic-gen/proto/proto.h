@@ -24,6 +24,7 @@ enum tg_proto_result {
 struct tg_proto_ops {
         const char *name;
 
+        int (*init)(struct tg_txn *txn);
         int (*build_request)(const void *class_config, uint8_t *buffer,
                              size_t buffer_cap, size_t *request_len_out);
         void (*on_tx_accepted)(struct tg_txn *txn, size_t bytes);

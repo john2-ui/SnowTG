@@ -18,19 +18,36 @@ RBTREE_TEST := $(BUILD_DIR)/test_rbtree
 OFO_TEST := $(BUILD_DIR)/test_ofo
 PAWS_TEST := $(BUILD_DIR)/test_tcp_paws
 OWNER_IO_TEST := $(BUILD_DIR)/test_owner_io
+HTTP_CLIENT_TEST := $(BUILD_DIR)/test_http_client
+LLHTTP_DIR := ../third_party/llhttp
+HTTP_CLIENT_CFLAGS := $(TEST_CFLAGS) -I../traffic-gen/core \
+	-I../traffic-gen/proto -I../traffic-gen/proto/http \
+	-I$(LLHTTP_DIR)/include
+LLHTTP_CFLAGS := $(CFLAGS) -std=c11 -Wall -Wextra -Wno-unused-parameter \
+	-I$(LLHTTP_DIR)/include
+HTTP_CLIENT_OBJS := $(BUILD_DIR)/test_http_client.o \
+	$(BUILD_DIR)/tg_txn.o \
+	$(BUILD_DIR)/tg_http_client.o \
+	$(BUILD_DIR)/llhttp.o \
+	$(BUILD_DIR)/llhttp_api.o \
+	$(BUILD_DIR)/llhttp_http.o
 
-.PHONY: all test test-owner-io clean
+.PHONY: all test test-owner-io test-http-client clean
 
 all: test
 
 # Compilation and execution both must succeed for the test target to pass.
-test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(OWNER_IO_TEST)
+test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(OWNER_IO_TEST) \
+	$(HTTP_CLIENT_TEST)
 	$(RBTREE_TEST)
 	$(OFO_TEST)
 	$(PAWS_TEST)
 	$(OWNER_IO_TEST) --in-memory --no-huge
+	$(HTTP_CLIENT_TEST)
 
 test-owner-io: $(OWNER_IO_TEST)
+
+test-http-client: $(HTTP_CLIENT_TEST)
 
 $(RBTREE_TEST): test_rbtree.c ../pro-stack/rbtree.c ../pro-stack/rbtree.h | $(BUILD_DIR)
 	$(CC) $(TEST_CFLAGS) test_rbtree.c ../pro-stack/rbtree.c -o $@
@@ -49,6 +66,35 @@ $(PAWS_TEST): test_tcp_paws.c ../pro-stack/tcp_options.c \
 $(OWNER_IO_TEST): test_owner_io.c ../pro-stack/build/libpro-stack.a | $(BUILD_DIR)
 	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) -I../pro-stack test_owner_io.c \
 		../pro-stack/build/libpro-stack.a -o $@ $(DPDK_LIBS)
+
+$(HTTP_CLIENT_TEST): $(HTTP_CLIENT_OBJS)
+	$(CC) $(HTTP_CLIENT_OBJS) -o $@
+
+$(BUILD_DIR)/test_http_client.o: test_http_client.c \
+		../traffic-gen/core/txn.h \
+		../traffic-gen/proto/http/http_client.h | $(BUILD_DIR)
+	$(CC) $(HTTP_CLIENT_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/tg_txn.o: ../traffic-gen/core/txn.c \
+		../traffic-gen/core/txn.h ../traffic-gen/proto/proto.h | $(BUILD_DIR)
+	$(CC) $(HTTP_CLIENT_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/tg_http_client.o: ../traffic-gen/proto/http/http_client.c \
+		../traffic-gen/proto/http/http_client.h \
+		../traffic-gen/core/txn.h $(LLHTTP_DIR)/include/llhttp.h | $(BUILD_DIR)
+	$(CC) $(HTTP_CLIENT_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/llhttp.o: $(LLHTTP_DIR)/src/llhttp.c \
+		$(LLHTTP_DIR)/include/llhttp.h | $(BUILD_DIR)
+	$(CC) $(LLHTTP_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/llhttp_api.o: $(LLHTTP_DIR)/src/api.c \
+		$(LLHTTP_DIR)/include/llhttp.h | $(BUILD_DIR)
+	$(CC) $(LLHTTP_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/llhttp_http.o: $(LLHTTP_DIR)/src/http.c \
+		$(LLHTTP_DIR)/include/llhttp.h | $(BUILD_DIR)
+	$(CC) $(LLHTTP_CFLAGS) -c $< -o $@
 
 ../pro-stack/build/libpro-stack.a:
 	$(MAKE) -C ../pro-stack library

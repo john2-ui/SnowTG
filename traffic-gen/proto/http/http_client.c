@@ -1,16 +1,31 @@
 #include "http_client.h"
 
+#include "../../../third_party/llhttp/include/llhttp.h"
 #include "../../core/txn.h"
 
 #include <errno.h>
 #include <stdio.h>
-#include <string.h>
+#include <stdlib.h>
 
 const struct tg_http_config tg_http_bootstrap_config = {
     .method = "GET",
     .path = "/",
     .connection_close = true,
 };
+
+struct tg_http_parser {
+        llhttp_t parser;
+        bool message_complete;
+        uint64_t body_received;
+};
+
+static struct tg_http_parser *tg_http_parser(struct tg_txn *txn) {
+        return txn == NULL ? NULL : txn->proto_ctx;
+}
+
+static struct tg_http_parser *tg_http_context(llhttp_t *parser) {
+        return parser == NULL ? NULL : parser->data;
+}
 
 static int tg_http_build_request(const void *class_config, uint8_t *buffer,
                                  size_t buffer_cap, size_t *request_len_out) {
@@ -43,32 +58,137 @@ static int tg_http_build_request(const void *class_config, uint8_t *buffer,
         return 0;
 }
 
-static void tg_http_on_tx_accepted(struct tg_txn *txn,
-                                   __attribute__((unused)) size_t bytes) {
-        (void)txn;
+static int tg_http_on_message_begin(llhttp_t *parser) {
+        struct tg_http_parser *context = tg_http_context(parser);
+
+        if (context == NULL)
+                return -1;
+        if (context->message_complete) {
+                llhttp_set_error_reason(parser,
+                                        "multiple HTTP responses unsupported");
+                return -1;
+        }
+
+        return 0;
 }
 
-static enum tg_proto_result
-tg_http_on_rx(__attribute__((unused)) struct tg_txn *txn,
-              __attribute__((unused)) const uint8_t *data,
-              __attribute__((unused)) size_t len) {
-        /*
-         * This bootstrap adapter deliberately accepts arbitrary response bytes
-         * so the existing TCP echo peer remains a valid transport regression
-         * target.  llhttp-based HTTP response validation comes later.
-         */
-        return TG_PROTO_MORE;
+static int tg_http_on_headers_complete(llhttp_t *parser) {
+        unsigned int major = llhttp_get_http_major(parser);
+        unsigned int minor = llhttp_get_http_minor(parser);
+        int status_code = llhttp_get_status_code(parser);
+
+        if (major != 1U || (minor != 0U && minor != 1U)) {
+                llhttp_set_error_reason(parser,
+                                        "only HTTP/1.0 and HTTP/1.1 supported");
+                return -1;
+        }
+        if (status_code < 200 || status_code >= 300) {
+                llhttp_set_error_reason(parser,
+                                        "HTTP response status is not 2xx");
+                return -1;
+        }
+
+        return 0;
 }
 
-static enum tg_proto_result
-tg_http_on_eof(__attribute__((unused)) struct tg_txn *txn) {
-        return TG_PROTO_COMPLETE;
+static int tg_http_on_body(llhttp_t *parser, const char *data, size_t len) {
+        struct tg_http_parser *context = tg_http_context(parser);
+
+        if (context == NULL || (data == NULL && len != 0))
+                return -1;
+        if (len > UINT64_MAX - context->body_received) {
+                llhttp_set_error_reason(parser,
+                                        "HTTP body byte counter overflow");
+                return -1;
+        }
+
+        context->body_received += len;
+        return 0;
 }
 
-static void tg_http_reset(__attribute__((unused)) struct tg_txn *txn) {}
+static int tg_http_on_message_complete(llhttp_t *parser) {
+        struct tg_http_parser *context = tg_http_context(parser);
+
+        if (context == NULL)
+                return -1;
+
+        context->message_complete = true;
+        return 0;
+}
+
+static const llhttp_settings_t tg_http_llhttp_settings = {
+    .on_message_begin = tg_http_on_message_begin,
+    .on_headers_complete = tg_http_on_headers_complete,
+    .on_body = tg_http_on_body,
+    .on_message_complete = tg_http_on_message_complete,
+};
+
+static int tg_http_init(struct tg_txn *txn) {
+        struct tg_http_parser *context;
+
+        if (txn == NULL) {
+                errno = EINVAL;
+                return -1;
+        }
+
+        context = calloc(1, sizeof(*context));
+        if (context == NULL) {
+                return -1;
+        }
+
+        llhttp_init(&context->parser, HTTP_RESPONSE, &tg_http_llhttp_settings);
+        context->parser.data = context;
+        txn->proto_ctx = context;
+        return 0;
+}
+
+static void tg_http_on_tx_accepted(__attribute__((unused)) struct tg_txn *txn,
+                                   __attribute__((unused)) size_t bytes) {}
+
+static enum tg_proto_result tg_http_on_rx(struct tg_txn *txn,
+                                          const uint8_t *data, size_t len) {
+        struct tg_http_parser *context = tg_http_parser(txn);
+        llhttp_errno_t error;
+
+        if (context == NULL || (data == NULL && len != 0))
+                return TG_PROTO_FAILED;
+
+        if (context->message_complete)
+                return len == 0 ? TG_PROTO_COMPLETE : TG_PROTO_FAILED;
+
+        error = llhttp_execute(&context->parser, (const char *)data, len);
+        if (error != HPE_OK)
+                return TG_PROTO_FAILED;
+
+        return context->message_complete ? TG_PROTO_COMPLETE : TG_PROTO_MORE;
+}
+
+static enum tg_proto_result tg_http_on_eof(struct tg_txn *txn) {
+        struct tg_http_parser *context = tg_http_parser(txn);
+
+        if (context == NULL)
+                return TG_PROTO_FAILED;
+        if (context->message_complete)
+                return TG_PROTO_COMPLETE;
+        if (!llhttp_message_needs_eof(&context->parser))
+                return TG_PROTO_FAILED;
+
+        return llhttp_finish(&context->parser) == HPE_OK &&
+                       context->message_complete
+                   ? TG_PROTO_COMPLETE
+                   : TG_PROTO_FAILED;
+}
+
+static void tg_http_reset(struct tg_txn *txn) {
+        if (txn == NULL)
+                return;
+        free(txn->proto_ctx);
+        txn->proto_ctx = NULL;
+}
 
 const struct tg_proto_ops tg_http_proto_ops = {
     .name = "http",
+    .init = tg_http_init,
     .build_request = tg_http_build_request,
     .on_tx_accepted = tg_http_on_tx_accepted,
     .on_rx = tg_http_on_rx,

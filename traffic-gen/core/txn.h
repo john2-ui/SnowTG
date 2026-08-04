@@ -16,6 +16,7 @@
 struct tg_txn {
         const struct tg_proto_ops *proto;
         const void *class_config;
+        void *proto_ctx;
 
         uint8_t request[TG_TXN_REQUEST_CAP];
         size_t request_len;

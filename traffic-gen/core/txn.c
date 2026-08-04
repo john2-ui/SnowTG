@@ -16,6 +16,11 @@ int tg_txn_init(struct tg_txn *txn, const struct tg_proto_ops *proto,
         txn->proto = proto;
         txn->class_config = class_config;
 
+        if (proto->init != NULL && proto->init(txn) != 0) {
+                tg_txn_reset(txn);
+                return -1;
+        }
+
         if (proto->build_request(class_config, txn->request,
                                  sizeof(txn->request), &request_len) != 0 ||
             request_len == 0 || request_len > sizeof(txn->request)) {

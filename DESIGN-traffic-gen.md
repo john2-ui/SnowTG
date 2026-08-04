@@ -199,7 +199,7 @@ traffic-gen/
 ├── proto/
 │   ├── proto.h             # 编译期注册的 L7 插件接口
 │   └── http/
-│       └── http_client.h/.c # HTTP bootstrap request 与响应判定
+│       └── http_client.h/.c # llhttp 驱动的 HTTP request/response 插件
 ├── scenario.h/.c           # 后续：剧本加载与校验
 ├── scheduler.h/.c          # 后续：混合调度、限速、并发水位
 ├── stats.h/.c              # 后续：per-lcore 计数与汇总
@@ -307,6 +307,9 @@ keep-alive 后可扩展为一个 flow 串行承载多个 txn。
 struct tg_proto_ops {
     const char *name;
 
+    /* 初始化插件私有 transaction state。 */
+    int (*init)(struct tg_txn *txn);
+
     /* 根据 class 配置构造请求字节。 */
     int (*build_request)(const void *class_cfg,
                          uint8_t *buf, size_t buf_cap,
@@ -322,15 +325,19 @@ struct tg_proto_ops {
 ```
 
 返回值 `TG_PROTO_MORE`、`TG_PROTO_COMPLETE` 和 `TG_PROTO_FAILED` 分别表示
-继续接收、事务完成和协议失败。HTTP bootstrap 阶段为兼容 TCP echo 回归，
-仅在 EOF 完成事务；后续接入 llhttp 后再增加 HTTP status、header 与 body
-framing 判定。
+继续接收、事务完成和协议失败。HTTP 插件使用 vendored llhttp 9.4.3（MIT）解析
+字节流；`proto_ctx` 持有每事务独立的 parser state，llhttp callback 负责 HTTP
+framing，插件在 headers complete 阶段要求 HTTP/1.0 或 HTTP/1.1 的 2xx status。
+
+当前支持 `Content-Length`、chunked 与 EOF-delimited response body，并在完整 message
+后完成短连接事务。保持严格解析，不启用 llhttp 的 lenient flags。暂不支持
+HTTP upgrade、response pipeline 或在同一 flow 上复用下一个 keep-alive transaction。
 
 ### 4.5 协议子集范围
 
 | 协议 | 阶段 | 子集范围 | 成功判定（示例） |
 |------|------|----------|------------------|
-| HTTP/1.1 | Phase A | `GET`/`POST` 固定模板，解析状态行 | `HTTP/1.x 2xx` |
+| HTTP/1.x | Phase A | `GET`/`POST` 固定模板；llhttp 解析 Content-Length、chunked 与 EOF body | `HTTP/1.0`/`1.1` 2xx 且完整 message |
 | DNS | Phase A | 单问题 A/AAAA 查询（UDP） | 响应 QR=1 且 rcode=0 |
 | Redis | Phase B | `PING` / 简单 `GET`/`SET`（RESP） | `+PONG` 或批量回复完整 |
 | MQTT | Phase B | CONNECT + PINGREQ 或单次 PUBLISH | CONNACK / PUBACK |
