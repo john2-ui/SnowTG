@@ -1,6 +1,7 @@
-#include "conn_pool.h"
-#include "flow.h"
-#include "reactor.h"
+#include "core/flow.h"
+#include "core/flow_pool.h"
+#include "core/reactor.h"
+#include "proto/http/http_client.h"
 
 #include "../pro-stack/arp.h"
 #include "../pro-stack/config.h"
@@ -26,17 +27,9 @@
 #include <stdlib.h>
 #include <sys/socket.h>
 
-#define POOL_CAPACITY 1024U
+#define TG_FLOW_POOL_CAPACITY 1024U
 
 static const uint32_t tg_local_ip = MAKE_IPV4_ADDR(192, 168, 21, 2);
-/*
- * The initial peer is the TCP echo service configured in config.h.  HTTP/1.0
- * avoids a Host dependency while keeping the first request syntactically
- * valid when pointed at an HTTP server.
- */
-static const char tg_bootstrap_request[] = "GET / HTTP/1.0\r\n"
-                                           "Connection: close\r\n"
-                                           "\r\n";
 
 /**
  * Per-packet-worker traffic-generator state.
@@ -47,7 +40,7 @@ static const char tg_bootstrap_request[] = "GET / HTTP/1.0\r\n"
  */
 struct tg_shard {
         struct tg_flow_map flow_map;
-        struct tg_conn_pool conn_pool;
+        struct tg_flow_pool flow_pool;
 
         /**
          * This temporary bootstrap flag limits the initial connection test to
@@ -79,10 +72,10 @@ static void tg_scheduler_tick(void *ctx, unsigned int budget) {
          */
         shard->startup_attempted = true;
 
-        if (tg_flow_start_tcp(&shard->flow_map, &shard->conn_pool,
+        if (tg_flow_start_tcp(&shard->flow_map, &shard->flow_pool,
                               (const struct sockaddr *)&peer, sizeof(peer),
-                              tg_bootstrap_request,
-                              sizeof(tg_bootstrap_request) - 1U) != 0) {
+                              &tg_http_proto_ops,
+                              &tg_http_bootstrap_config) != 0) {
                 LOG_ERROR("traffic-gen TCP startup connect failed: errno=%d",
                           errno);
                 return;
@@ -125,7 +118,7 @@ static void tg_on_event(void *ctx, const struct owner_io_event *event) {
          * tg_flow_on_event() may recycle the object for ERROR or HUP.  The
          * caller must not dereference flow after this invocation.
          */
-        tg_flow_on_event(&shard->flow_map, &shard->conn_pool, flow,
+        tg_flow_on_event(&shard->flow_map, &shard->flow_pool, flow,
                          event->events);
 }
 
@@ -165,9 +158,8 @@ int main(int argc, char *argv[]) {
         if (tg_flow_map_init(&shard.flow_map, worker_lcore) != 0)
                 rte_exit(EXIT_FAILURE, "traffic-gen flow map init failed\n");
 
-        if (tg_conn_pool_init(&shard.conn_pool, POOL_CAPACITY) != 0)
-                rte_exit(EXIT_FAILURE,
-                         "traffic-gen connection pool init failed\n");
+        if (tg_flow_pool_init(&shard.flow_pool, TG_FLOW_POOL_CAPACITY) != 0)
+                rte_exit(EXIT_FAILURE, "traffic-gen flow pool init failed\n");
 
         struct tg_reactor reactor;
         tg_reactor_init(&reactor, tg_scheduler_tick, tg_on_event, &shard);

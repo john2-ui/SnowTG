@@ -1,9 +1,14 @@
 APP := traffic-gen
-SRCS := main_tg.c reactor.c flow.c conn_pool.c
+SRCS := main_tg.c \
+	core/reactor.c \
+	core/flow.c \
+	core/flow_pool.c \
+	core/txn.c \
+	proto/http/http_client.c
 
 PKGCONF := pkg-config --define-prefix
 DPDK_PC := $(shell $(PKGCONF) --path libdpdk)
-CFLAGS += -O3 -I../pro-stack $(shell $(PKGCONF) --cflags libdpdk)
+CFLAGS += -O3 -I. -Icore -Iproto -I../pro-stack $(shell $(PKGCONF) --cflags libdpdk)
 CFLAGS += -DALLOW_EXPERIMENTAL_API
 LDFLAGS := $(shell $(PKGCONF) --static --libs libdpdk)
 

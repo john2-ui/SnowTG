@@ -50,7 +50,7 @@
 /** Well-known port used by the TCP echo server / client peer. */
 #define TCP_APP_PORT 8888
 /** Peer IPv4 for the TCP client (network order via MAKE_IPV4_ADDR). */
-#define TCP_CLIENT_PEER_IP MAKE_IPV4_ADDR(192, 168, 21, 105)
+#define TCP_CLIENT_PEER_IP MAKE_IPV4_ADDR(192, 168, 21, 106)
 
 /** Number of mbufs in the packet pool. */
 #define NUM_MBUFS (4096 - 1)

@@ -185,22 +185,25 @@ flowchart TB
 
 ## 4. 模块设计
 
-建议目录（实现阶段再落地，本文只定边界）：
+当前目录与后续扩展边界：
 
 ```text
 traffic-gen/
-├── main_tg.c           # 与 EAL / lcore 对接的入口（或挂入现有 main 的 app 入口）
-├── scenario.h/.c       # 剧本加载与校验
-├── scheduler.h/.c      # 混合调度、限速、并发水位
-├── conn_pool.h/.c      # 连接/事务对象池与状态机
-├── stats.h/.c          # 无锁或 per-lcore 计数 + 汇总
-├── report.h/.c         # 定时打印 / 结束时摘要
-└── proto/
-    ├── proto.h         # 插件接口
-    ├── http_client.c   # HTTP/1.1 子集
-    ├── dns_client.c    # DNS 查询子集
-    ├── redis_client.c  # 后期
-    └── mqtt_client.c   # 后期
+├── main_tg.c              # EAL、NIC 与 owner-worker 入口
+├── Makefile
+├── core/
+│   ├── reactor.h/.c        # owner-local tick 与 ready-event bridge
+│   ├── flow.h/.c           # TCP transport、handle map 与生命周期
+│   ├── flow_pool.h/.c      # 预分配 owner-local flow pool
+│   └── txn.h/.c            # 一次 L7 请求/响应事务
+├── proto/
+│   ├── proto.h             # 编译期注册的 L7 插件接口
+│   └── http/
+│       └── http_client.h/.c # HTTP bootstrap request 与响应判定
+├── scenario.h/.c           # 后续：剧本加载与校验
+├── scheduler.h/.c          # 后续：混合调度、限速、并发水位
+├── stats.h/.c              # 后续：per-lcore 计数与汇总
+└── report.h/.c             # 后续：周期性报表
 ```
 
 与 `pro-stack` 的集成方式二选一（实现时定一种即可）：
@@ -293,27 +296,35 @@ IDLE → SENDING → RECVING → IDLE
 
 ### 4.4 L7 插件接口
 
-统一 C 接口示意：
+`core/flow.c` 拥有 socket、非阻塞 I/O、ready event 和回收顺序；
+`tg_txn` 持有一次请求/响应的字节与插件引用；插件只处理字节流或数据报，
+不得调用 `owner_io_*`。当前短连接模型中一个 flow 嵌入一个 txn；HTTP
+keep-alive 后可扩展为一个 flow 串行承载多个 txn。
+
+统一 C 接口：
 
 ```c
 struct tg_proto_ops {
     const char *name;
 
-    /* 根据剧本 class 配置构造请求字节；返回长度或 -1 */
+    /* 根据 class 配置构造请求字节。 */
     int (*build_request)(const void *class_cfg,
-                         uint8_t *buf, size_t buf_cap);
+                         uint8_t *buf, size_t buf_cap,
+                         size_t *request_len_out);
 
-    /* 喂入响应字节；返回：1 完成成功，0 需更多数据，-1 失败 */
-    int (*feed_response)(void *txn_ctx,
-                         const uint8_t *data, size_t len);
-
-    /* 事务上下文创建 / 销毁（插件私有） */
-    void *(*txn_create)(const void *class_cfg);
-    void  (*txn_destroy)(void *txn_ctx);
+    /* 传输层已接收发送字节、收到响应字节或看到 EOF 时的通知。 */
+    void (*on_tx_accepted)(struct tg_txn *txn, size_t bytes);
+    enum tg_proto_result (*on_rx)(struct tg_txn *txn,
+                                  const uint8_t *data, size_t len);
+    enum tg_proto_result (*on_eof)(struct tg_txn *txn);
+    void (*reset)(struct tg_txn *txn);
 };
 ```
 
-传输与 L7 解耦：`conn_pool` 只负责 fd 与收发；插件只认字节流/数据报。
+返回值 `TG_PROTO_MORE`、`TG_PROTO_COMPLETE` 和 `TG_PROTO_FAILED` 分别表示
+继续接收、事务完成和协议失败。HTTP bootstrap 阶段为兼容 TCP echo 回归，
+仅在 EOF 完成事务；后续接入 llhttp 后再增加 HTTP status、header 与 body
+framing 判定。
 
 ### 4.5 协议子集范围
 
