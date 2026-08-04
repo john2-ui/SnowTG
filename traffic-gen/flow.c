@@ -5,6 +5,7 @@
 #include <netinet/in.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/types.h>
 
 /** Return true when @p handle can address an entry in @p map. */
 static bool tg_flow_handle_valid_for_map(const struct tg_flow_map *map,
@@ -153,11 +154,13 @@ static void tg_flow_start_cleanup(struct tg_flow_map *map,
 }
 
 int tg_flow_start_tcp(struct tg_flow_map *map, struct tg_conn_pool *pool,
-                      const struct sockaddr *peer, socklen_t peer_len) {
+                      const struct sockaddr *peer, socklen_t peer_len,
+                      const void *request, size_t request_len) {
         struct tg_flow *flow;
         struct nsock_handle handle;
 
-        if (map == NULL || pool == NULL || peer == NULL) {
+        if (map == NULL || pool == NULL || peer == NULL || request == NULL ||
+            request_len == 0 || request_len > sizeof(flow->request)) {
                 errno = EINVAL;
                 return -1;
         }
@@ -166,6 +169,13 @@ int tg_flow_start_tcp(struct tg_flow_map *map, struct tg_conn_pool *pool,
         if (flow == NULL) {
                 return -1;
         }
+
+        /*
+         * A flow owns its request bytes because a future scheduler may build
+         * requests in temporary storage before starting a connection.
+         */
+        memcpy(flow->request, request, request_len);
+        flow->request_len = request_len;
 
         if (owner_io_socket_create(IPPROTO_TCP, &handle) != 0) {
                 tg_flow_start_cleanup(map, pool, flow, false);
@@ -201,6 +211,87 @@ int tg_flow_start_tcp(struct tg_flow_map *map, struct tg_conn_pool *pool,
 
         tg_flow_start_cleanup(map, pool, flow, true);
         return -1;
+}
+
+/**
+ * Push pending application bytes into the owner-local TCP send buffer.
+ *
+ * @return 0 when blocked by normal backpressure or finished, or -1 for a
+ *         terminal transport failure.  A successful return with every byte
+ *         accepted transitions the flow to TG_FLOW_RECEIVING.
+ */
+static int tg_flow_send_pending(struct tg_flow *flow) {
+        while (flow->request_offset < flow->request_len) {
+                size_t remaining = flow->request_len - flow->request_offset;
+                ssize_t sent = owner_io_send(
+                    flow->handle, flow->request + flow->request_offset,
+                    remaining);
+                if (sent > 0) {
+                        flow->request_offset += (size_t)sent;
+                        continue;
+                }
+
+                if (sent < 0 && errno == EAGAIN)
+                        return 0;
+
+                /*
+                 * tcp_send() returns zero only for a zero-length request,
+                 * which cannot occur while request_offset < request_len.
+                 */
+                if (sent == 0)
+                        errno = EIO;
+                return -1;
+        }
+
+        flow->state = TG_FLOW_RECEIVING;
+        return 0;
+}
+
+/**
+ * Drain every currently readable TCP byte into the flow response prefix.
+ *
+ * The owner-ready queue coalesces READ notifications.  The reactor therefore
+ * must continue reading until EAGAIN; stopping after one read could leave
+ * bytes queued without another readiness notification.
+ *
+ * @return 0 on EAGAIN or EOF, or -1 for a terminal receive error.
+ */
+static int tg_flow_drain_receive(struct tg_flow *flow, bool *eof_out) {
+        uint8_t chunk[1024];
+
+        *eof_out = false;
+
+        for (;;) {
+                ssize_t received =
+                    owner_io_recv(flow->handle, chunk, sizeof(chunk));
+
+                if (received > 0) {
+                        size_t bytes = (size_t)received;
+                        size_t retained = 0;
+
+                        flow->response_bytes += bytes;
+
+                        if (flow->response_len < sizeof(flow->response)) {
+                                retained =
+                                    sizeof(flow->response) - flow->response_len;
+                                if (retained > bytes)
+                                        retained = bytes;
+
+                                memcpy(flow->response + flow->response_len,
+                                       chunk, retained);
+                                flow->response_len += retained;
+                        }
+                        continue;
+                }
+
+                if (received == 0) {
+                        *eof_out = true;
+                        return 0;
+                }
+                if (errno == EAGAIN)
+                        return 0;
+                return -1;
+        }
 }
 
 /**
@@ -247,16 +338,51 @@ void tg_flow_on_event(struct tg_flow_map *map, struct tg_conn_pool *pool,
         }
 
         /*
-         * This bootstrap stage has no HTTP response reader yet.  Therefore a
-         * peer FIN is terminal and the flow is recycled immediately.
+         * CONNECTED provides the first send opportunity.  Subsequent WRITE
+         * notifications mean TCP ACK/window progress freed local sndbuf space.
+         */
+        if (flow->state == TG_FLOW_SENDING &&
+            (events & (OWNER_IO_EV_CONNECTED | OWNER_IO_EV_WRITE))) {
+                if (tg_flow_send_pending(flow) != 0) {
+                        flow->state = TG_FLOW_FAILED;
+                        tg_flow_recycle(map, pool, flow);
+                        return;
+                }
+        }
+        /*
+         * TCP is full duplex: a peer may send response or error bytes before
+         * all request bytes have entered the local send buffer.  Drain READ in
+         * both SENDING and RECEIVING states; only WRITE advances the pending
+         * request.
          *
-         * Once READ/HTTP parsing exists, a HUP combined with READ must first
-         * drain owner_io_recv() to EOF before the flow is marked complete.
+         * For HUP | READ, drain first so queued response bytes are retained
+         * before EOF completes the flow.
+         */
+        if ((flow->state == TG_FLOW_SENDING ||
+             flow->state == TG_FLOW_RECEIVING) &&
+            (events & (OWNER_IO_EV_READ | OWNER_IO_EV_HUP))) {
+                bool eof;
+
+                if (tg_flow_drain_receive(flow, &eof) != 0) {
+                        flow->state = TG_FLOW_FAILED;
+                        tg_flow_recycle(map, pool, flow);
+                        return;
+                }
+
+                if (eof) {
+                        flow->state = TG_FLOW_DONE;
+                        tg_flow_recycle(map, pool, flow);
+                        return;
+                }
+        }
+
+        /*
+         * A TCP HUP must expose EOF after queued response bytes are drained.
+         * Reaching this branch means the transport contract was not met, so
+         * retire the flow instead of keeping it indefinitely.
          */
         if (events & OWNER_IO_EV_HUP) {
                 flow->state = TG_FLOW_FAILED;
                 tg_flow_recycle(map, pool, flow);
-                return;
         }
-
 }

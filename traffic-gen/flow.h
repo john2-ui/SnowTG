@@ -13,7 +13,13 @@
 #include "../pro-stack/owner_io.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
+
+/** Maximum application request size accepted by the bootstrap flow. */
+#define TG_FLOW_REQUEST_CAP 1024U
+/** Maximum response prefix retained for bootstrap protocol validation. */
+#define TG_FLOW_RESPONSE_CAP 4096U
 
 /** Lifecycle state of one protocol transaction. */
 enum tg_flow_state {
@@ -55,7 +61,27 @@ struct tg_flow {
         /** True while this object is checked out from its connection pool. */
         bool in_use;
 
-        /* TODO: Add send buffer, receive buffer, deadline, and parser state. */
+        /**
+         * Owner-local application bytes awaiting admission to the TCP sndbuf.
+         *
+         * request_offset counts bytes accepted by owner_io_send(), not bytes
+         * acknowledged by the peer.
+         */
+        uint8_t request[TG_FLOW_REQUEST_CAP];
+        size_t request_len;
+        size_t request_offset;
+
+        /**
+         * Prefix of the received response retained for the future HTTP parser.
+         *
+         * response_bytes counts every byte drained from TCP, including bytes
+         * beyond the retained prefix.
+         */
+        uint8_t response[TG_FLOW_RESPONSE_CAP];
+        size_t response_len;
+        uint64_t response_bytes;
+
+        /* TODO: Add deadline, parser state, and per-flow statistics. */
 };
 
 /**
@@ -92,19 +118,21 @@ int tg_flow_map_remove(struct tg_flow_map *map, struct tg_flow *flow);
 /**
  * Create and start one non-blocking TCP flow on the current owner lcore.
  *
- * The returned flow is registered in @p map before the TCP handshake starts.
- * A successful asynchronous start leaves the flow in TG_FLOW_CONNECTING.
+ * The request is copied into the flow before the TCP handshake starts.  The
+ * returned flow is registered in @p map and enters TG_FLOW_CONNECTING.
  *
  * @return 0 when the connection attempt started, or -1 with errno set.
  */
 int tg_flow_start_tcp(struct tg_flow_map *map, struct tg_conn_pool *pool,
-                      const struct sockaddr *peer, socklen_t peer_len);
+                      const struct sockaddr *peer, socklen_t peer_len,
+                      const void *request, size_t request_len);
 
 /**
  * Advance or tear down a flow from one coalesced readiness-event mask.
  *
  * The caller must have resolved @p flow through the matching owner-local map.
- * ERROR and HUP recycle the flow during this connection-validation stage.
+ * ERROR recycles the flow immediately.  READ and HUP drain response bytes
+ * until EAGAIN or EOF before the flow is completed and recycled.
  */
 void tg_flow_on_event(struct tg_flow_map *map, struct tg_conn_pool *pool,
                       struct tg_flow *flow, uint32_t events);

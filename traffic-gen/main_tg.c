@@ -29,6 +29,14 @@
 #define POOL_CAPACITY 1024U
 
 static const uint32_t tg_local_ip = MAKE_IPV4_ADDR(192, 168, 21, 2);
+/*
+ * The initial peer is the TCP echo service configured in config.h.  HTTP/1.0
+ * avoids a Host dependency while keeping the first request syntactically
+ * valid when pointed at an HTTP server.
+ */
+static const char tg_bootstrap_request[] = "GET / HTTP/1.0\r\n"
+                                           "Connection: close\r\n"
+                                           "\r\n";
 
 /**
  * Per-packet-worker traffic-generator state.
@@ -72,8 +80,9 @@ static void tg_scheduler_tick(void *ctx, unsigned int budget) {
         shard->startup_attempted = true;
 
         if (tg_flow_start_tcp(&shard->flow_map, &shard->conn_pool,
-                              (const struct sockaddr *)&peer,
-                              sizeof(peer)) != 0) {
+                              (const struct sockaddr *)&peer, sizeof(peer),
+                              tg_bootstrap_request,
+                              sizeof(tg_bootstrap_request) - 1U) != 0) {
                 LOG_ERROR("traffic-gen TCP startup connect failed: errno=%d",
                           errno);
                 return;
