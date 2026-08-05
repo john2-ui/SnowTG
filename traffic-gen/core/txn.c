@@ -1,8 +1,18 @@
+/**
+ * @file txn.c
+ * @brief Implements protocol-neutral transaction initialization and dispatch.
+ *
+ * This module is the boundary between nonblocking transport and byte-only
+ * protocol plugins.  It owns no socket state and relies on plugin callbacks
+ * to allocate, consume, and release protocol-specific parser context.
+ */
+
 #include "txn.h"
 
 #include <errno.h>
 #include <string.h>
 
+/** @copydoc tg_txn_init */
 int tg_txn_init(struct tg_txn *txn, const struct tg_proto_ops *proto,
                 const void *class_config) {
         size_t request_len;
@@ -34,6 +44,7 @@ int tg_txn_init(struct tg_txn *txn, const struct tg_proto_ops *proto,
         return 0;
 }
 
+/** @copydoc tg_txn_reset */
 void tg_txn_reset(struct tg_txn *txn) {
         if (txn == NULL)
                 return;
@@ -43,12 +54,14 @@ void tg_txn_reset(struct tg_txn *txn) {
         memset(txn, 0, sizeof(*txn));
 }
 
+/** @copydoc tg_txn_on_tx_accepted */
 void tg_txn_on_tx_accepted(struct tg_txn *txn, size_t bytes) {
         if (txn != NULL && txn->proto != NULL &&
             txn->proto->on_tx_accepted != NULL)
                 txn->proto->on_tx_accepted(txn, bytes);
 }
 
+/** @copydoc tg_txn_on_rx */
 enum tg_proto_result tg_txn_on_rx(struct tg_txn *txn, const uint8_t *data,
                                   size_t len) {
         if (txn == NULL || txn->proto == NULL || txn->proto->on_rx == NULL)
@@ -58,6 +71,7 @@ enum tg_proto_result tg_txn_on_rx(struct tg_txn *txn, const uint8_t *data,
         return txn->proto->on_rx(txn, data, len);
 }
 
+/** @copydoc tg_txn_on_eof */
 enum tg_proto_result tg_txn_on_eof(struct tg_txn *txn) {
         if (txn == NULL || txn->proto == NULL || txn->proto->on_eof == NULL)
                 return TG_PROTO_FAILED;

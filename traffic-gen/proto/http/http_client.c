@@ -1,3 +1,12 @@
+/**
+ * @file http_client.c
+ * @brief Implements the byte-only HTTP/1.x short-connection protocol plugin.
+ *
+ * The plugin serializes one HTTP/1.0 request and uses llhttp to validate one
+ * HTTP/1.0 or HTTP/1.1 2xx response.  Socket ownership, I/O retries, and
+ * flow reclamation remain outside this module in the transport layer.
+ */
+
 #include "http_client.h"
 
 #include "../../../third_party/llhttp/include/llhttp.h"
@@ -7,26 +16,35 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+/** @brief Conservative GET configuration for legacy bootstrap callers. */
 const struct tg_http_config tg_http_bootstrap_config = {
     .method = "GET",
     .path = "/",
     .connection_close = true,
 };
 
+/**
+ * @brief Per-transaction llhttp parser context owned through @c proto_ctx.
+ */
 struct tg_http_parser {
         llhttp_t parser;
         bool message_complete;
         uint64_t body_received;
 };
 
+/** @brief Retrieves a transaction's plugin-private HTTP parser context. */
 static struct tg_http_parser *tg_http_parser(struct tg_txn *txn) {
         return txn == NULL ? NULL : txn->proto_ctx;
 }
 
+/** @brief Retrieves the context attached to an llhttp parser callback. */
 static struct tg_http_parser *tg_http_context(llhttp_t *parser) {
         return parser == NULL ? NULL : parser->data;
 }
 
+/**
+ * @brief Serializes one connection-close HTTP/1.0 request into caller storage.
+ */
 static int tg_http_build_request(const void *class_config, uint8_t *buffer,
                                  size_t buffer_cap, size_t *request_len_out) {
         const struct tg_http_config *config = class_config;
@@ -58,6 +76,7 @@ static int tg_http_build_request(const void *class_config, uint8_t *buffer,
         return 0;
 }
 
+/** @brief Rejects a second response message on the same short connection. */
 static int tg_http_on_message_begin(llhttp_t *parser) {
         struct tg_http_parser *context = tg_http_context(parser);
 
@@ -72,6 +91,7 @@ static int tg_http_on_message_begin(llhttp_t *parser) {
         return 0;
 }
 
+/** @brief Accepts only HTTP/1.x responses with a successful 2xx status. */
 static int tg_http_on_headers_complete(llhttp_t *parser) {
         unsigned int major = llhttp_get_http_major(parser);
         unsigned int minor = llhttp_get_http_minor(parser);
@@ -91,6 +111,7 @@ static int tg_http_on_headers_complete(llhttp_t *parser) {
         return 0;
 }
 
+/** @brief Counts parsed response-body bytes with overflow protection. */
 static int tg_http_on_body(llhttp_t *parser, const char *data, size_t len) {
         struct tg_http_parser *context = tg_http_context(parser);
 
@@ -106,6 +127,7 @@ static int tg_http_on_body(llhttp_t *parser, const char *data, size_t len) {
         return 0;
 }
 
+/** @brief Marks the single expected HTTP response as complete. */
 static int tg_http_on_message_complete(llhttp_t *parser) {
         struct tg_http_parser *context = tg_http_context(parser);
 
@@ -116,6 +138,7 @@ static int tg_http_on_message_complete(llhttp_t *parser) {
         return 0;
 }
 
+/** @brief Callback table that constrains llhttp to this client's semantics. */
 static const llhttp_settings_t tg_http_llhttp_settings = {
     .on_message_begin = tg_http_on_message_begin,
     .on_headers_complete = tg_http_on_headers_complete,
@@ -123,6 +146,8 @@ static const llhttp_settings_t tg_http_llhttp_settings = {
     .on_message_complete = tg_http_on_message_complete,
 };
 
+/** @brief Allocates and initializes an llhttp response parser for a
+ * transaction. */
 static int tg_http_init(struct tg_txn *txn) {
         struct tg_http_parser *context;
 
@@ -142,9 +167,11 @@ static int tg_http_init(struct tg_txn *txn) {
         return 0;
 }
 
+/** @brief Accepts transport progress; HTTP has no transmit-side state today. */
 static void tg_http_on_tx_accepted(__attribute__((unused)) struct tg_txn *txn,
                                    __attribute__((unused)) size_t bytes) {}
 
+/** @brief Parses an arbitrary response chunk and reports message progress. */
 static enum tg_proto_result tg_http_on_rx(struct tg_txn *txn,
                                           const uint8_t *data, size_t len) {
         struct tg_http_parser *context = tg_http_parser(txn);
@@ -163,6 +190,9 @@ static enum tg_proto_result tg_http_on_rx(struct tg_txn *txn,
         return context->message_complete ? TG_PROTO_COMPLETE : TG_PROTO_MORE;
 }
 
+/**
+ * @brief Completes an EOF-delimited response only when llhttp permits it.
+ */
 static enum tg_proto_result tg_http_on_eof(struct tg_txn *txn) {
         struct tg_http_parser *context = tg_http_parser(txn);
 
@@ -179,6 +209,7 @@ static enum tg_proto_result tg_http_on_eof(struct tg_txn *txn) {
                    : TG_PROTO_FAILED;
 }
 
+/** @brief Releases the llhttp context held by a resetting transaction. */
 static void tg_http_reset(struct tg_txn *txn) {
         if (txn == NULL)
                 return;
@@ -186,6 +217,7 @@ static void tg_http_reset(struct tg_txn *txn) {
         txn->proto_ctx = NULL;
 }
 
+/** @brief HTTP implementation of the generic @ref tg_proto_ops contract. */
 const struct tg_proto_ops tg_http_proto_ops = {
     .name = "http",
     .init = tg_http_init,

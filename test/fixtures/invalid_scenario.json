@@ -1,0 +1,8 @@
+{
+  "name": "invalid",
+  "duration_sec": 1,
+  "max_concurrency": 1,
+  "target_cps": 1,
+  "classes": [],
+  "unexpected": true
+}

@@ -3,7 +3,12 @@
 
 /**
  * @file proto.h
- * @brief L7 protocol operations for owner-local traffic-generator transactions.
+ * @brief Protocol-plugin contract for owner-local traffic-generator
+ * transactions.
+ *
+ * Plugins construct and interpret application bytes only.  The flow layer
+ * performs all nonblocking socket operations and maps plugin outcomes into
+ * flow lifecycle results.
  */
 
 #include <stddef.h>
@@ -11,15 +16,22 @@
 
 struct tg_txn;
 
+/** @brief Progress status returned by a protocol plugin callback. */
 enum tg_proto_result {
+        /** @brief More bytes or EOF processing are required. */
         TG_PROTO_MORE = 0,
+        /** @brief Exactly one complete, valid response was observed. */
         TG_PROTO_COMPLETE,
+        /** @brief The request or response violates plugin requirements. */
         TG_PROTO_FAILED,
 };
 
 /**
- * Protocol plugins only transform and judge transaction bytes.  Transport I/O
- * remains in core/flow.c so plugins never access owner_io_* APIs directly.
+ * @brief Vtable defining the byte-oriented lifecycle of one protocol plugin.
+ *
+ * Protocol plugins never access @c owner_io_* APIs directly.  @p class_config
+ * remains owned by the compiled scenario; @p txn provides plugin-private
+ * storage through its @c proto_ctx field.
  */
 struct tg_proto_ops {
         const char *name;

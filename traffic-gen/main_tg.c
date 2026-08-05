@@ -1,7 +1,19 @@
+/**
+ * @file main_tg.c
+ * @brief Initializes and runs the single-owner DPDK traffic-generator process.
+ *
+ * Startup compiles the scenario into immutable plan data, provisions one
+ * owner-local shard, and connects the reactor to the protocol stack worker.
+ * The main lcore continuously transfers NIC RX and TX bursts through stack
+ * rings while the owner worker runs TCP, flow, and scheduler work.
+ */
+
 #include "core/flow.h"
 #include "core/flow_pool.h"
 #include "core/reactor.h"
-#include "proto/http/http_client.h"
+#include "core/scenario.h"
+#include "core/scheduler.h"
+#include "core/stats.h"
 
 #include "../pro-stack/arp.h"
 #include "../pro-stack/config.h"
@@ -13,7 +25,6 @@
 #include "../pro-stack/socket_owner.h"
 #include "../pro-stack/stack_runtime.h"
 
-#include <rte_byteorder.h>
 #include <rte_eal.h>
 #include <rte_ethdev.h>
 #include <rte_launch.h>
@@ -23,12 +34,14 @@
 #include <rte_timer.h>
 
 #include <errno.h>
-#include <netinet/in.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <sys/socket.h>
 
-#define TG_FLOW_POOL_CAPACITY 1024U
+/** @brief Scenario loaded when no application scenario path is supplied. */
+#define TG_DEFAULT_SCENARIO_PATH "scenarios/bootstrap_http.json"
 
+/** @brief Source IPv4 address used by the current single-port test topology. */
 static const uint32_t tg_local_ip = MAKE_IPV4_ADDR(192, 168, 21, 2);
 
 /**
@@ -41,48 +54,83 @@ static const uint32_t tg_local_ip = MAKE_IPV4_ADDR(192, 168, 21, 2);
 struct tg_shard {
         struct tg_flow_map flow_map;
         struct tg_flow_pool flow_pool;
-
-        /**
-         * This temporary bootstrap flag limits the initial connection test to
-         * one attempt.  TODO:The future CPS scheduler replaces this field.
-         */
-        bool startup_attempted;
+        struct tg_plan plan;
+        struct tg_scheduler scheduler;
+        struct tg_stats stats;
+        bool scheduling_stop_reported;
 };
 
 /**
- * Run per-turn flow scheduling on the socket owner lcore.
+ * @brief Reconciles scheduler and statistics after one admitted flow ends.
  *
- * This bootstrap scheduler starts one hard-coded TCP connection.  A CPS token
- * bucket and concurrency watermark will replace the single-attempt policy.
+ * This observer is invoked before the flow is reset, so transaction byte
+ * counters and protocol identity remain available to the statistics module.
  */
-static void tg_scheduler_tick(void *ctx, unsigned int budget) {
+static void tg_on_flow_finished(void *ctx, const struct tg_flow *flow,
+                                enum tg_flow_result result) {
         struct tg_shard *shard = ctx;
-        struct sockaddr_in peer = {
-            .sin_family = AF_INET,
-            .sin_port = rte_cpu_to_be_16(TCP_APP_PORT),
-            .sin_addr = {.s_addr = TCP_CLIENT_PEER_IP},
-        };
 
-        if (shard == NULL || budget == 0 || shard->startup_attempted)
+        if (shard == NULL)
                 return;
+        tg_scheduler_on_flow_finished(&shard->scheduler);
+        tg_stats_on_flow_finished(&shard->stats, flow, result);
+}
 
-        /*
-         * Mark before starting so a persistent configuration error does not
-         * allocate and close one failed flow on every worker turn.
-         */
-        shard->startup_attempted = true;
+/**
+ * @brief Scheduler admission callback that starts one TCP flow for a class.
+ *
+ * A synchronous setup failure is counted but does not consume an active-flow
+ * slot.  The scheduler itself still consumes the CPS token for the attempt.
+ */
+static int tg_start_class(void *ctx, const struct tg_class_plan *class_plan) {
+        struct tg_shard *shard = ctx;
 
+        if (shard == NULL || class_plan == NULL)
+                return -1;
         if (tg_flow_start_tcp(&shard->flow_map, &shard->flow_pool,
-                              (const struct sockaddr *)&peer, sizeof(peer),
-                              &tg_http_proto_ops,
-                              &tg_http_bootstrap_config) != 0) {
-                LOG_ERROR("traffic-gen TCP startup connect failed: errno=%d",
-                          errno);
-                return;
+                              (const struct sockaddr *)&class_plan->peer,
+                              sizeof(class_plan->peer), class_plan->proto,
+                              &class_plan->http_config, tg_on_flow_finished,
+                              shard) != 0) {
+                tg_stats_on_start_failure(&shard->stats);
+                LOG_ERROR("traffic-gen start failed class=%s errno=%d",
+                          class_plan->name, errno);
+                return -1;
         }
+        tg_stats_on_admitted(&shard->stats);
+        return 0;
+}
 
-        LOG_INFO("traffic-gen TCP connect started: " IP_FMT ":%u",
-                 IP_ARG(peer.sin_addr.s_addr), TCP_APP_PORT);
+/**
+ * @brief Runs bounded plan scheduling and owner-local periodic reporting.
+ * @param ctx Pointer to the worker's @ref tg_shard.
+ * @param budget Maximum flow-start attempts for this worker turn.
+ */
+static void tg_shard_tick(void *ctx, unsigned int budget) {
+        struct tg_shard *shard = ctx;
+        uint64_t now_cycles;
+
+        if (shard == NULL || budget == 0)
+                return;
+        now_cycles = rte_get_timer_cycles();
+        (void)tg_scheduler_tick(&shard->scheduler, now_cycles, budget,
+                                tg_start_class, shard);
+        if (tg_stats_report_due(&shard->stats, now_cycles, rte_get_timer_hz(),
+                                shard->plan.report_interval_sec)) {
+                LOG_INFO("traffic-gen stats active=%u started=%" PRIu64
+                         " done=%" PRIu64 " success=%" PRIu64 " fail=%" PRIu64
+                         " tx=%" PRIu64 " rx=%" PRIu64,
+                         shard->stats.concurrency, shard->stats.txns_started,
+                         shard->stats.txns_done, shard->stats.txns_success,
+                         shard->stats.txns_fail, shard->stats.bytes_tx,
+                         shard->stats.bytes_rx);
+        }
+        if (tg_scheduler_is_stopped(&shard->scheduler) &&
+            !shard->scheduling_stop_reported) {
+                shard->scheduling_stop_reported = true;
+                LOG_INFO("traffic-gen plan duration elapsed; draining %u flows",
+                         shard->stats.concurrency);
+        }
 }
 
 /**
@@ -122,9 +170,39 @@ static void tg_on_event(void *ctx, const struct owner_io_event *event) {
                          event->events);
 }
 
+/**
+ * @brief Initializes DPDK, scenario state, and the owner-worker runtime.
+ * @param argc EAL arguments followed by an optional scenario JSON path.
+ * @param argv EAL and application argument vector.
+ * @return Never returns during normal operation; failures exit through DPDK.
+ */
 int main(int argc, char *argv[]) {
-        if (rte_eal_init(argc, argv) < 0)
+        const char *scenario_path;
+        int eal_args;
+        struct tg_shard shard = {0};
+
+        eal_args = rte_eal_init(argc, argv);
+        if (eal_args < 0)
                 rte_exit(EXIT_FAILURE, "rte_eal_init() failed\n");
+        argc -= eal_args;
+        argv += eal_args;
+        if (argc > 2)
+                rte_exit(EXIT_FAILURE, "usage: traffic-gen [scenario.json]\n");
+        scenario_path = argc == 2 ? argv[1] : TG_DEFAULT_SCENARIO_PATH;
+        if (tg_plan_load_file(&shard.plan, scenario_path) != 0)
+                rte_exit(EXIT_FAILURE, "scenario load failed (%s): errno=%d\n",
+                         scenario_path, errno);
+        if (shard.plan.max_concurrency > NSOCK_ID_MAX)
+                rte_exit(EXIT_FAILURE,
+                         "scenario max_concurrency exceeds socket capacity\n");
+        if (tg_scheduler_init(&shard.scheduler, &shard.plan,
+                              rte_get_timer_hz()) != 0)
+                rte_exit(EXIT_FAILURE, "scheduler init failed\n");
+        tg_stats_init(&shard.stats);
+        LOG_INFO("traffic-gen scenario=%s classes=%u cps=%u concurrency=%u",
+                 shard.plan.name, shard.plan.class_count, shard.plan.target_cps,
+                 shard.plan.max_concurrency);
+
         if (socket_registry_init() != 0)
                 rte_exit(EXIT_FAILURE, "socket registry init failed\n");
 
@@ -136,6 +214,17 @@ int main(int argc, char *argv[]) {
 
         net_context_set_mempool(mp);
         port_init(0, mp);
+        {
+                unsigned int available =
+                    mp == NULL ? 0 : rte_mempool_avail_count(mp);
+                unsigned int in_use =
+                    mp == NULL ? 0 : rte_mempool_in_use_count(mp);
+
+                LOG_INFO(
+                    "traffic-gen mbuf pool after port init: mp=%p avail=%u "
+                    "in_use=%u",
+                    (void *)mp, available, in_use);
+        }
         net_context_init(0, tg_local_ip);
         struct inout_ring *ring = ring_instance();
         arp_table_instance();
@@ -149,20 +238,15 @@ int main(int argc, char *argv[]) {
         if (socket_owner_init(worker_lcore) != 0)
                 rte_exit(EXIT_FAILURE, "socket owner init failed\n");
 
-        /*
-         * Both member initializers clear their own storage, but the bootstrap
-         * scheduler flag is owned by this enclosing object and must start
-         * false explicitly.
-         */
-        struct tg_shard shard = {0};
         if (tg_flow_map_init(&shard.flow_map, worker_lcore) != 0)
                 rte_exit(EXIT_FAILURE, "traffic-gen flow map init failed\n");
 
-        if (tg_flow_pool_init(&shard.flow_pool, TG_FLOW_POOL_CAPACITY) != 0)
+        if (tg_flow_pool_init(&shard.flow_pool, shard.plan.max_concurrency) !=
+            0)
                 rte_exit(EXIT_FAILURE, "traffic-gen flow pool init failed\n");
 
         struct tg_reactor reactor;
-        tg_reactor_init(&reactor, tg_scheduler_tick, tg_on_event, &shard);
+        tg_reactor_init(&reactor, tg_shard_tick, tg_on_event, &shard);
         /*
          * stack_runtime_worker_entry() invokes tg_reactor_run() once per
          * owner-worker turn, after RX ingress and TCP timer processing and
