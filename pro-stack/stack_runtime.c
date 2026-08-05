@@ -15,12 +15,22 @@
 #include <rte_ring.h>
 #include <rte_timer.h>
 
+#include <stdatomic.h>
+
 static stack_runtime_reactor_fn g_reactor;
 static void *g_reactor_ctx;
+static atomic_bool g_stop_requested;
 
 void stack_runtime_set_reactor(stack_runtime_reactor_fn fn, void *ctx) {
         g_reactor = fn;
         g_reactor_ctx = ctx;
+        atomic_store(&g_stop_requested, false);
+}
+
+void stack_runtime_request_stop(void) { atomic_store(&g_stop_requested, true); }
+
+int stack_runtime_stop_requested(void) {
+        return atomic_load(&g_stop_requested);
 }
 
 static int ipv4_rx_validate(const struct rte_mbuf *mbuf,
@@ -99,7 +109,7 @@ int stack_runtime_worker_entry(void *arg) {
             rte_get_timer_hz() * TIMER_MANAGE_INTERVAL_MS / 1000;
 
         LOG_INFO("packet worker started on lcore %u", rte_lcore_id());
-        while (1) {
+        while (!stack_runtime_stop_requested()) {
                 struct rte_mbuf *mbufs[BURST_SIZE];
                 socket_owner_process_commands();
 
@@ -125,4 +135,5 @@ int stack_runtime_worker_entry(void *arg) {
                                 sk->ops->tx_flush(sk, mp);
                 }
         }
+        return 0;
 }

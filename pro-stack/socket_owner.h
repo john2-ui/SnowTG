@@ -36,6 +36,8 @@
 struct nsock;
 struct rte_ring;
 struct rte_mempool;
+/** Called after an owner-local socket has released all resources. */
+typedef void (*nsock_release_fn)(void *ctx);
 
 /** Stable cross-lcore name for a socket; it never contains a raw pointer. */
 struct nsock_handle {

@@ -42,6 +42,7 @@ struct tg_scheduler {
         uint64_t token_numerator;
         uint64_t selection_cursor;
         uint32_t active;
+        uint32_t live_sockets;
         bool started;
         bool stopped;
 };
@@ -74,6 +75,10 @@ unsigned int tg_scheduler_tick(struct tg_scheduler *scheduler,
  * @param scheduler Owner-local scheduler that admitted the completed flow.
  */
 void tg_scheduler_on_flow_finished(struct tg_scheduler *scheduler);
+/** Records allocation of a socket that remains live through TCP teardown. */
+void tg_scheduler_on_socket_created(struct tg_scheduler *scheduler);
+/** Releases a socket-lifecycle slot after nsock_free() finishes. */
+void tg_scheduler_on_socket_released(struct tg_scheduler *scheduler);
 
 /**
  * @brief Reports whether plan duration has permanently stopped admissions.

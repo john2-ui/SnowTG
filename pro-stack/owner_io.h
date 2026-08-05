@@ -25,6 +25,9 @@ enum owner_io_events {
         OWNER_IO_EV_HUP = 1u << 4,
 };
 
+/** Invoked on the owner worker after owner-local socket destruction. */
+typedef void (*owner_io_release_fn)(void *ctx);
+
 struct owner_io_event {
         struct nsock_handle handle;
         uint32_t events;
@@ -36,6 +39,14 @@ struct owner_io_event {
  * The returned handle is owner-local and is never associated with a BSD fd.
  */
 int owner_io_socket_create(uint8_t protocol, struct nsock_handle *out);
+/**
+ * Create an owner-local socket whose TCP queues are embedded lists rather than
+ * per-socket DPDK rings. This is intended for same-lcore reactors only.
+ */
+int owner_io_socket_create_local(uint8_t protocol, struct nsock_handle *out);
+/** Register a callback invoked only after this socket is finally destroyed. */
+int owner_io_set_release_observer(struct nsock_handle handle,
+                                  owner_io_release_fn fn, void *ctx);
 /** Bind an owner-local socket to a valid IPv4 endpoint without blocking. */
 int owner_io_bind(struct nsock_handle handle, const struct sockaddr *addr,
                   socklen_t addrlen);

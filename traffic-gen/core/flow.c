@@ -152,7 +152,10 @@ int tg_flow_start_tcp(struct tg_flow_map *map, struct tg_flow_pool *pool,
                       const struct sockaddr *peer, socklen_t peer_len,
                       const struct tg_proto_ops *proto,
                       const void *class_config, tg_flow_finish_fn on_finish,
-                      void *on_finish_ctx) {
+                      void *on_finish_ctx,
+                      tg_flow_socket_created_fn on_socket_created,
+                      owner_io_release_fn on_socket_released,
+                      void *socket_lifecycle_ctx) {
         struct tg_flow *flow;
         struct nsock_handle handle;
 
@@ -171,10 +174,17 @@ int tg_flow_start_tcp(struct tg_flow_map *map, struct tg_flow_pool *pool,
                 (void)tg_flow_pool_put(pool, flow);
                 return -1;
         }
-        if (owner_io_socket_create(IPPROTO_TCP, &handle) != 0) {
+        if (owner_io_socket_create_local(IPPROTO_TCP, &handle) != 0) {
                 tg_flow_start_cleanup(map, pool, flow, false);
                 return -1;
         }
+        if (owner_io_set_release_observer(handle, on_socket_released,
+                                          socket_lifecycle_ctx) != 0) {
+                tg_flow_start_cleanup(map, pool, flow, true);
+                return -1;
+        }
+        if (on_socket_created != NULL)
+                on_socket_created(socket_lifecycle_ctx);
         if (tg_flow_map_insert(map, flow, handle) != 0) {
                 flow->handle = handle;
                 tg_flow_start_cleanup(map, pool, flow, true);

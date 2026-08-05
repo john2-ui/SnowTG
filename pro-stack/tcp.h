@@ -64,7 +64,8 @@ typedef enum _TCP_STATUS {
 struct tcp_rx_blob {
         unsigned char *data;
         size_t len;
-        size_t off; /**< bytes already consumed by short recv */
+        size_t off;               /**< bytes already consumed by short recv */
+        struct tcp_rx_blob *next; /**< Owner-local RX queue linkage. */
 };
 
 /**
@@ -172,6 +173,15 @@ struct tcp_stream {
         uint32_t rcvbuf_size;
         uint32_t rcvbuf_used;
         struct tcp_rx_blob *rx_current; /**< Owner-held short-read blob. */
+        /** Owner-local replacement for nsock.recv_buf when enabled. */
+        struct tcp_rx_blob *rx_queue_head;
+        struct tcp_rx_blob *rx_queue_tail;
+        uint32_t rx_queue_count;
+
+        /** Owner-local replacement for nsock.send_buf when enabled. */
+        struct tcp_fragment *tx_queue_head;
+        struct tcp_fragment *tx_queue_tail;
+        uint32_t tx_queue_count;
 
         /*
          * Send-side flow control: most recently accepted peer advertised
@@ -275,8 +285,9 @@ struct tcp_fragment {
         int opt_len; /**< Option length in 32-bit words. */
         uint32_t options[TCP_MAX_OPTIONS]; /**< TCP options payload. */
 
-        unsigned char *payload; /**< Optional payload bytes (may be NULL). */
-        size_t payload_len;     /**< Payload length in bytes. */
+        unsigned char *payload;    /**< Optional payload bytes (may be NULL). */
+        size_t payload_len;        /**< Payload length in bytes. */
+        struct tcp_fragment *next; /**< Owner-local TX queue linkage. */
 };
 
 /**

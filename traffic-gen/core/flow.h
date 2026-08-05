@@ -63,6 +63,8 @@ enum tg_flow_result {
  */
 typedef void (*tg_flow_finish_fn)(void *ctx, const struct tg_flow *flow,
                                   enum tg_flow_result result);
+/** Observes creation of an owner-local TCP socket before connect begins. */
+typedef void (*tg_flow_socket_created_fn)(void *ctx);
 
 /**
  * @brief Owner-local map from socket id to active generation-qualified flow.
@@ -147,7 +149,10 @@ int tg_flow_start_tcp(struct tg_flow_map *map, struct tg_flow_pool *pool,
                       const struct sockaddr *peer, socklen_t peer_len,
                       const struct tg_proto_ops *proto,
                       const void *class_config, tg_flow_finish_fn on_finish,
-                      void *on_finish_ctx);
+                      void *on_finish_ctx,
+                      tg_flow_socket_created_fn on_socket_created,
+                      owner_io_release_fn on_socket_released,
+                      void *socket_lifecycle_ctx);
 
 /**
  * @brief Advances a flow from a coalesced owner-I/O readiness mask.

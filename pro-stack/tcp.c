@@ -429,7 +429,7 @@ static int tcp_deliver_payload(struct nsock *sk, const uint8_t *data,
         b->len = len;
         b->off = 0;
 
-        if (rte_ring_sp_enqueue(sk->recv_buf, b) != 0) {
+        if (nsock_tcp_rx_enqueue(sk, b) != 0) {
                 LOG_ERROR("tcp recv_buf full " TCP_ID_FMT ", dropping %u bytes",
                           TCP_ID_ARG(sk), len);
                 rte_free(b->data);
@@ -1074,7 +1074,7 @@ static struct tcp_fragment *tcp_fragment_alloc(void) {
  * @return 0 on success, or -1 if send_buf is full.
  */
 static int tcp_enqueue_fragment(struct nsock *sk, struct tcp_fragment *f) {
-        if (rte_ring_mp_enqueue(sk->send_buf, f) != 0) {
+        if (nsock_tcp_tx_enqueue(sk, f) != 0) {
                 LOG_ERROR("tcp send_buf full for " TCP_ID_FMT " flags=0x%02x",
                           TCP_ID_ARG(sk), f->tcp_flags);
                 if (f->payload)
@@ -1614,7 +1614,15 @@ static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
                                     child->u.tcp.timestamps_ok,
                                     child->u.tcp.ts_recent);
         child->u.tcp.recv_ack = f->recv_ack;
-        rte_ring_mp_enqueue(child->send_buf, f);
+        if (nsock_tcp_tx_enqueue(child, f) != 0) {
+                if (f->payload != NULL)
+                        rte_free(f->payload);
+                rte_free(f);
+                tcp_stream_set_status(child, TCP_STATUS_CLOSED);
+                nsock_free(child);
+                listener->u.tcp.syn_pending--;
+                return 0;
+        }
         /* Independent SYN+ACK RTO; stopped when the final ACK arrives. */
         child->u.tcp.retries = 0;
         tcp_arm_syn_timer(child, TCP_SYN_RTO_MS);
@@ -1931,7 +1939,7 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
          * directly deliverable payload.  The ready event must reflect either
          * source of newly readable data.
          */
-        if (rte_ring_count(sk->recv_buf) != 0)
+        if (nsock_tcp_rx_count(sk) != 0)
                 wake_recv = 1;
         /*
          * An OFO FIN may advance the stream to CLOSE_WAIT without adding a
@@ -2803,7 +2811,8 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
         /* Drain send_buf so ACK-of-FIN + our FIN leave in the same pass. */
         for (;;) {
                 struct tcp_fragment *f = NULL;
-                if (rte_ring_sc_dequeue(sk->send_buf, (void **)&f) < 0)
+                f = nsock_tcp_tx_dequeue(sk);
+                if (f == NULL)
                         break;
 
                 uint32_t peer_ip = sk->u.tcp.remote_ip;
@@ -2823,8 +2832,7 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
                         struct inout_ring *ring = ring_instance();
                         rte_ring_mp_enqueue_burst(ring->out, (void **)&arp, 1,
                                                   NULL);
-                        /* send_buf is multi-producer (worker + app lcore). */
-                        rte_ring_mp_enqueue(sk->send_buf, f);
+                        (void)nsock_tcp_tx_enqueue(sk, f);
                         return 0;
                 }
 
@@ -2965,7 +2973,8 @@ ssize_t tcp_recv(struct nsock *sk, void *buf, size_t len,
                 return 0;
 
         if (b == NULL) {
-                if (rte_ring_sc_dequeue(sk->recv_buf, (void **)&b) != 0) {
+                b = nsock_tcp_rx_dequeue(sk);
+                if (b == NULL) {
                         /*
                          * CLOSE_WAIT means the peer FIN has been consumed.
                          * Once all previously queued bytes are drained, the
@@ -3031,7 +3040,7 @@ static void tcp_drain_send(struct nsock *sk) {
          * tcp_tx_flush_sndbuf(), ACK processing, and the retransmission timer.
          */
         pthread_mutex_lock(&sk->mutex);
-        while (rte_ring_sc_dequeue(sk->send_buf, (void **)&f) == 0) {
+        while ((f = nsock_tcp_tx_dequeue(sk)) != NULL) {
                 if (f->payload)
                         rte_free(f->payload);
                 rte_free(f);
@@ -3046,7 +3055,7 @@ static void tcp_drain_send(struct nsock *sk) {
  */
 static void tcp_drain_recv(struct nsock *sk) {
         struct tcp_rx_blob *b;
-        while (rte_ring_sc_dequeue(sk->recv_buf, (void **)&b) == 0) {
+        while ((b = nsock_tcp_rx_dequeue(sk)) != NULL) {
                 rte_free(b->data);
                 rte_free(b);
         }

@@ -22,13 +22,15 @@ static int owner_io_validate_ipv4_addr(const struct sockaddr *addr,
         return 0;
 }
 
-int owner_io_socket_create(uint8_t protocol, struct nsock_handle *out) {
+static int owner_io_socket_create_mode(uint8_t protocol,
+                                       enum nsock_io_mode io_mode,
+                                       struct nsock_handle *out) {
         if (out == NULL) {
                 errno = EINVAL;
                 return -1;
         }
 
-        struct nsock *sk = nsock_alloc(-1, protocol);
+        struct nsock *sk = nsock_alloc_mode(-1, protocol, io_mode);
         if (sk == NULL) {
                 errno = EPROTONOSUPPORT;
                 return -1;
@@ -45,6 +47,24 @@ int owner_io_socket_create(uint8_t protocol, struct nsock_handle *out) {
         sk->app_visible = false;
         sk->app_closed = false;
         *out = socket_owner_handle(sk);
+        return 0;
+}
+
+int owner_io_socket_create(uint8_t protocol, struct nsock_handle *out) {
+        return owner_io_socket_create_mode(protocol, NSOCK_IO_RINGS, out);
+}
+
+int owner_io_socket_create_local(uint8_t protocol, struct nsock_handle *out) {
+        return owner_io_socket_create_mode(protocol, NSOCK_IO_OWNER_LOCAL, out);
+}
+
+int owner_io_set_release_observer(struct nsock_handle handle,
+                                  owner_io_release_fn fn, void *ctx) {
+        struct nsock *sk = owner_io_resolve(handle);
+
+        if (sk == NULL)
+                return -1;
+        nsock_set_release_observer(sk, fn, ctx);
         return 0;
 }
 
@@ -106,8 +126,7 @@ ssize_t owner_io_sendto(struct nsock_handle handle, const void *buf, size_t len,
         struct nsock *sk = owner_io_resolve(handle);
         if (sk == NULL)
                 return -1;
-        if ((buf == NULL && len != 0) ||
-            sk->ops->sendto == NULL) {
+        if ((buf == NULL && len != 0) || sk->ops->sendto == NULL) {
                 errno = buf == NULL && len != 0 ? EINVAL : EOPNOTSUPP;
                 return -1;
         }

@@ -119,6 +119,16 @@ void tg_scheduler_on_flow_finished(struct tg_scheduler *scheduler) {
                 scheduler->active--;
 }
 
+void tg_scheduler_on_socket_created(struct tg_scheduler *scheduler) {
+        if (scheduler != NULL)
+                scheduler->live_sockets++;
+}
+
+void tg_scheduler_on_socket_released(struct tg_scheduler *scheduler) {
+        if (scheduler != NULL && scheduler->live_sockets != 0)
+                scheduler->live_sockets--;
+}
+
 /** @copydoc tg_scheduler_is_stopped */
 bool tg_scheduler_is_stopped(const struct tg_scheduler *scheduler) {
         return scheduler != NULL && scheduler->stopped;

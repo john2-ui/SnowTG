@@ -46,6 +46,17 @@ enum nsock_registry_flags {
 };
 
 /**
+ * Queue implementation selected when a socket is allocated.
+ *
+ * Owner-local sockets never cross an lcore boundary, so their TCP queues can
+ * be embedded FIFO lists rather than individually allocated DPDK rings.
+ */
+enum nsock_io_mode {
+        NSOCK_IO_RINGS = 0,
+        NSOCK_IO_OWNER_LOCAL,
+};
+
+/**
  * @brief One userspace socket, shared by every transport.
  *
  * The worker lcore delivers packets through @c recv_buf; the application lcore
@@ -67,6 +78,9 @@ struct nsock {
 
         struct rte_ring *recv_buf; /**< Worker -> application packet ring. */
         struct rte_ring *send_buf; /**< Application -> worker packet ring. */
+        enum nsock_io_mode io_mode;
+        nsock_release_fn release_fn;
+        void *release_ctx;
 
         /**
          * Transitional protocol lock/condition.  Application APIs no longer
@@ -158,6 +172,19 @@ int nsock_tcp_local_taken(uint32_t ip, uint16_t port);
  * @return Initialized socket, or NULL on allocation failure.
  */
 struct nsock *nsock_alloc(int fd, uint8_t protocol);
+/** Allocate a socket with an explicit queue implementation. */
+struct nsock *nsock_alloc_mode(int fd, uint8_t protocol,
+                               enum nsock_io_mode io_mode);
+/** Install a one-shot final-release observer owned by the packet worker. */
+void nsock_set_release_observer(struct nsock *sk, nsock_release_fn fn,
+                                void *ctx);
+
+/** TCP queue helpers that select the socket's configured I/O mode. */
+int nsock_tcp_rx_enqueue(struct nsock *sk, struct tcp_rx_blob *blob);
+struct tcp_rx_blob *nsock_tcp_rx_dequeue(struct nsock *sk);
+uint32_t nsock_tcp_rx_count(const struct nsock *sk);
+int nsock_tcp_tx_enqueue(struct nsock *sk, struct tcp_fragment *fragment);
+struct tcp_fragment *nsock_tcp_tx_dequeue(struct nsock *sk);
 /**
  * Retire @p sk from its owner and indexes, then release all object storage.
  * Must be called by the owning packet worker.

@@ -35,7 +35,9 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/socket.h>
 
 /** @brief Scenario loaded when no application scenario path is supplied. */
@@ -43,6 +45,57 @@
 
 /** @brief Source IPv4 address used by the current single-port test topology. */
 static const uint32_t tg_local_ip = MAKE_IPV4_ADDR(192, 168, 21, 2);
+
+/**
+ * Parse application arguments after EAL has consumed its arguments.
+ *
+ * The worker count is intentionally validated here even while the runtime is
+ * still single-owner.  This reserves the stable CLI shape without allowing
+ * an unimplemented worker count to create unpolled NIC queues.
+ */
+static int tg_parse_app_args(int argc, char *argv[], unsigned int *workers_out,
+                             const char **scenario_out) {
+        bool workers_seen = false;
+        const char *scenario_path = NULL;
+        unsigned int workers = 1;
+
+        if (workers_out == NULL || scenario_out == NULL) {
+                errno = EINVAL;
+                return -1;
+        }
+
+        for (int i = 1; i < argc; i++) {
+                if (strcmp(argv[i], "--workers") == 0) {
+                        char *end = NULL;
+                        unsigned long value;
+
+                        if (workers_seen || ++i == argc) {
+                                errno = EINVAL;
+                                return -1;
+                        }
+                        errno = 0;
+                        value = strtoul(argv[i], &end, 10);
+                        if (errno != 0 || end == argv[i] || *end != '\0' ||
+                            value == 0 || value > UINT_MAX) {
+                                errno = EINVAL;
+                                return -1;
+                        }
+                        workers = (unsigned int)value;
+                        workers_seen = true;
+                        continue;
+                }
+                if (argv[i][0] == '-' || scenario_path != NULL) {
+                        errno = EINVAL;
+                        return -1;
+                }
+                scenario_path = argv[i];
+        }
+
+        *workers_out = workers;
+        *scenario_out = scenario_path == NULL ? TG_DEFAULT_SCENARIO_PATH
+                                               : scenario_path;
+        return 0;
+}
 
 /**
  * Per-packet-worker traffic-generator state.
@@ -67,24 +120,27 @@ struct tg_shard {
  * Transactions still in flight are deliberately retained in @p active and are
  * not counted as completed until their flow observer runs.
  */
-static void tg_report_duration_stats(const struct tg_stats *stats) {
+static void tg_report_duration_stats(const struct tg_shard *shard) {
         uint64_t success_rate_hundredths = 0;
+        const struct tg_stats *stats;
 
-        if (stats == NULL)
+        if (shard == NULL)
                 return;
+        stats = &shard->stats;
         if (stats->txns_done != 0)
                 success_rate_hundredths =
                     stats->txns_success * 10000U / stats->txns_done;
-        LOG_INFO("traffic-gen duration summary active=%u started=%" PRIu64
-                 " done=%" PRIu64 " success=%" PRIu64 " fail=%" PRIu64
-                 " success_rate=%" PRIu64 ".%02" PRIu64 "%%"
+        LOG_INFO("traffic-gen duration summary active=%u live_sockets=%u "
+                 "started=%" PRIu64 " done=%" PRIu64 " success=%" PRIu64
+                 " fail=%" PRIu64 " success_rate=%" PRIu64 ".%02" PRIu64 "%%"
                  " fail_connect=%" PRIu64 " fail_io=%" PRIu64
                  " fail_proto=%" PRIu64 " tx=%" PRIu64 " rx=%" PRIu64,
-                 stats->concurrency, stats->txns_started, stats->txns_done,
-                 stats->txns_success, stats->txns_fail,
-                 success_rate_hundredths / 100U, success_rate_hundredths % 100U,
-                 stats->fail_connect, stats->fail_io, stats->fail_proto,
-                 stats->bytes_tx, stats->bytes_rx);
+                 stats->concurrency, shard->scheduler.live_sockets,
+                 stats->txns_started, stats->txns_done, stats->txns_success,
+                 stats->txns_fail, success_rate_hundredths / 100U,
+                 success_rate_hundredths % 100U, stats->fail_connect,
+                 stats->fail_io, stats->fail_proto, stats->bytes_tx,
+                 stats->bytes_rx);
 }
 
 /**
@@ -103,6 +159,38 @@ static void tg_on_flow_finished(void *ctx, const struct tg_flow *flow,
         tg_stats_on_flow_finished(&shard->stats, flow, result);
 }
 
+static void tg_on_socket_created(void *ctx) {
+        struct tg_shard *shard = ctx;
+
+        if (shard != NULL)
+                tg_scheduler_on_socket_created(&shard->scheduler);
+}
+
+static void tg_on_socket_released(void *ctx) {
+        struct tg_shard *shard = ctx;
+
+        if (shard != NULL)
+                tg_scheduler_on_socket_released(&shard->scheduler);
+}
+
+static void tg_drain_tx_ring(struct inout_ring *ring) {
+        if (ring == NULL)
+                return;
+
+        for (;;) {
+                struct rte_mbuf *tx[BURST_SIZE];
+                unsigned int nb_tx = rte_ring_sc_dequeue_burst(
+                    ring->out, (void **)tx, BURST_SIZE, NULL);
+                if (nb_tx == 0)
+                        return;
+
+                unsigned int sent =
+                    rte_eth_tx_burst(g_net.port_id, 0, tx, nb_tx);
+                for (unsigned int i = sent; i < nb_tx; i++)
+                        rte_pktmbuf_free(tx[i]);
+        }
+}
+
 /**
  * @brief Scheduler admission callback that starts one TCP flow for a class.
  *
@@ -118,7 +206,8 @@ static int tg_start_class(void *ctx, const struct tg_class_plan *class_plan) {
                               (const struct sockaddr *)&class_plan->peer,
                               sizeof(class_plan->peer), class_plan->proto,
                               &class_plan->http_config, tg_on_flow_finished,
-                              shard) != 0) {
+                              shard, tg_on_socket_created,
+                              tg_on_socket_released, shard) != 0) {
                 tg_stats_on_start_failure(&shard->stats);
                 LOG_ERROR("traffic-gen start failed class=%s errno=%d",
                           class_plan->name, errno);
@@ -144,13 +233,14 @@ static void tg_shard_tick(void *ctx, unsigned int budget) {
                                 tg_start_class, shard);
         if (tg_stats_report_due(&shard->stats, now_cycles, rte_get_timer_hz(),
                                 shard->plan.report_interval_sec)) {
-                LOG_INFO("traffic-gen stats active=%u started=%" PRIu64
-                         " done=%" PRIu64 " success=%" PRIu64 " fail=%" PRIu64
-                         " tx=%" PRIu64 " rx=%" PRIu64,
-                         shard->stats.concurrency, shard->stats.txns_started,
-                         shard->stats.txns_done, shard->stats.txns_success,
-                         shard->stats.txns_fail, shard->stats.bytes_tx,
-                         shard->stats.bytes_rx);
+                LOG_INFO("traffic-gen stats active=%u live_sockets=%u "
+                         "started=%" PRIu64 " done=%" PRIu64 " success=%" PRIu64
+                         " fail=%" PRIu64 " tx=%" PRIu64 " rx=%" PRIu64,
+                         shard->stats.concurrency,
+                         shard->scheduler.live_sockets,
+                         shard->stats.txns_started, shard->stats.txns_done,
+                         shard->stats.txns_success, shard->stats.txns_fail,
+                         shard->stats.bytes_tx, shard->stats.bytes_rx);
         }
         if (tg_scheduler_is_stopped(&shard->scheduler) &&
             !shard->scheduling_stop_reported) {
@@ -161,8 +251,11 @@ static void tg_shard_tick(void *ctx, unsigned int budget) {
         if (tg_scheduler_is_stopped(&shard->scheduler) &&
             !shard->duration_stats_reported) {
                 shard->duration_stats_reported = true;
-                tg_report_duration_stats(&shard->stats);
+                tg_report_duration_stats(shard);
         }
+        if (tg_scheduler_is_stopped(&shard->scheduler) &&
+            shard->scheduler.active == 0 && shard->scheduler.live_sockets == 0)
+                stack_runtime_request_stop();
 }
 
 /**
@@ -211,6 +304,7 @@ static void tg_on_event(void *ctx, const struct owner_io_event *event) {
 int main(int argc, char *argv[]) {
         const char *scenario_path;
         int eal_args;
+        unsigned int worker_count;
         struct tg_shard shard = {0};
 
         eal_args = rte_eal_init(argc, argv);
@@ -218,9 +312,20 @@ int main(int argc, char *argv[]) {
                 rte_exit(EXIT_FAILURE, "rte_eal_init() failed\n");
         argc -= eal_args;
         argv += eal_args;
-        if (argc > 2)
-                rte_exit(EXIT_FAILURE, "usage: traffic-gen [scenario.json]\n");
-        scenario_path = argc == 2 ? argv[1] : TG_DEFAULT_SCENARIO_PATH;
+        if (tg_parse_app_args(argc, argv, &worker_count, &scenario_path) != 0)
+                rte_exit(EXIT_FAILURE,
+                         "usage: traffic-gen [--workers N] [scenario.json]\n");
+        /*
+         * Fail closed until the stack's process-global owner, socket-list,
+         * ARP, and I/O-ring state is made per worker.  Proceeding would create
+         * multiple owner shards that mutate the same TCB registry and route
+         * RX/TX through queue zero, violating both ownership and RSS affinity.
+         */
+        if (worker_count != 1)
+                rte_exit(EXIT_FAILURE,
+                         "--workers %u is unavailable: multi-worker stack "
+                         "runtime has not been isolated per lcore\n",
+                         worker_count);
         if (tg_plan_load_file(&shard.plan, scenario_path) != 0)
                 rte_exit(EXIT_FAILURE, "scenario load failed (%s): errno=%d\n",
                          scenario_path, errno);
@@ -245,7 +350,7 @@ int main(int argc, char *argv[]) {
                 rte_exit(EXIT_FAILURE, "rte_pktmbuf_pool_create() failed\n");
 
         net_context_set_mempool(mp);
-        port_init(0, mp);
+        port_init_queues(0, mp, (uint16_t)worker_count);
         {
                 unsigned int available =
                     mp == NULL ? 0 : rte_mempool_avail_count(mp);
@@ -289,7 +394,7 @@ int main(int argc, char *argv[]) {
                                   worker_lcore) < 0)
                 rte_exit(EXIT_FAILURE, "failed to launch owner worker\n");
 
-        while (1) {
+        while (!stack_runtime_stop_requested()) {
                 struct rte_mbuf *rx[BURST_SIZE];
                 unsigned int nb_rx =
                     rte_eth_rx_burst(g_net.port_id, 0, rx, BURST_SIZE);
@@ -310,4 +415,8 @@ int main(int argc, char *argv[]) {
                                 rte_pktmbuf_free(tx[i]);
                 }
         }
+        (void)rte_eal_wait_lcore(worker_lcore);
+        tg_drain_tx_ring(ring);
+        tg_plan_fini(&shard.plan);
+        return EXIT_SUCCESS;
 }

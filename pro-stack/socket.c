@@ -360,7 +360,100 @@ static int fd_take(int fd, struct nsock_handle *handle) {
         return 0;
 }
 
-struct nsock *nsock_alloc(int fd, uint8_t protocol) {
+int nsock_tcp_rx_enqueue(struct nsock *sk, struct tcp_rx_blob *blob) {
+        if (sk == NULL || blob == NULL)
+                return -1;
+        if (sk->io_mode == NSOCK_IO_RINGS)
+                return rte_ring_sp_enqueue(sk->recv_buf, blob);
+        if (sk->u.tcp.rx_queue_count >= RING_SIZE)
+                return -1;
+        blob->next = NULL;
+        if (sk->u.tcp.rx_queue_tail != NULL)
+                sk->u.tcp.rx_queue_tail->next = blob;
+        else
+                sk->u.tcp.rx_queue_head = blob;
+        sk->u.tcp.rx_queue_tail = blob;
+        sk->u.tcp.rx_queue_count++;
+        return 0;
+}
+
+struct tcp_rx_blob *nsock_tcp_rx_dequeue(struct nsock *sk) {
+        struct tcp_rx_blob *blob;
+
+        if (sk == NULL)
+                return NULL;
+        if (sk->io_mode == NSOCK_IO_RINGS) {
+                if (rte_ring_sc_dequeue(sk->recv_buf, (void **)&blob) != 0)
+                        return NULL;
+                return blob;
+        }
+        blob = sk->u.tcp.rx_queue_head;
+        if (blob == NULL)
+                return NULL;
+        sk->u.tcp.rx_queue_head = blob->next;
+        if (sk->u.tcp.rx_queue_head == NULL)
+                sk->u.tcp.rx_queue_tail = NULL;
+        blob->next = NULL;
+        sk->u.tcp.rx_queue_count--;
+        return blob;
+}
+
+uint32_t nsock_tcp_rx_count(const struct nsock *sk) {
+        if (sk == NULL)
+                return 0;
+        if (sk->io_mode == NSOCK_IO_RINGS)
+                return rte_ring_count(sk->recv_buf);
+        return sk->u.tcp.rx_queue_count;
+}
+
+int nsock_tcp_tx_enqueue(struct nsock *sk, struct tcp_fragment *fragment) {
+        if (sk == NULL || fragment == NULL)
+                return -1;
+        if (sk->io_mode == NSOCK_IO_RINGS)
+                return rte_ring_mp_enqueue(sk->send_buf, fragment);
+        if (sk->u.tcp.tx_queue_count >= RING_SIZE)
+                return -1;
+        fragment->next = NULL;
+        if (sk->u.tcp.tx_queue_tail != NULL)
+                sk->u.tcp.tx_queue_tail->next = fragment;
+        else
+                sk->u.tcp.tx_queue_head = fragment;
+        sk->u.tcp.tx_queue_tail = fragment;
+        sk->u.tcp.tx_queue_count++;
+        return 0;
+}
+
+struct tcp_fragment *nsock_tcp_tx_dequeue(struct nsock *sk) {
+        struct tcp_fragment *fragment;
+
+        if (sk == NULL)
+                return NULL;
+        if (sk->io_mode == NSOCK_IO_RINGS) {
+                if (rte_ring_sc_dequeue(sk->send_buf, (void **)&fragment) != 0)
+                        return NULL;
+                return fragment;
+        }
+        fragment = sk->u.tcp.tx_queue_head;
+        if (fragment == NULL)
+                return NULL;
+        sk->u.tcp.tx_queue_head = fragment->next;
+        if (sk->u.tcp.tx_queue_head == NULL)
+                sk->u.tcp.tx_queue_tail = NULL;
+        fragment->next = NULL;
+        sk->u.tcp.tx_queue_count--;
+        return fragment;
+}
+
+void nsock_set_release_observer(struct nsock *sk, nsock_release_fn fn,
+                                void *ctx) {
+        if (sk == NULL)
+                return;
+        sk->release_fn = fn;
+        sk->release_ctx = ctx;
+}
+
+struct nsock *nsock_alloc_mode(int fd, uint8_t protocol,
+                               enum nsock_io_mode io_mode) {
         const struct sock_ops *ops = sock_ops_lookup(protocol);
         if (ops == NULL) {
                 LOG_ERROR("nsock_alloc: unknown protocol %u", protocol);
@@ -382,33 +475,39 @@ struct nsock *nsock_alloc(int fd, uint8_t protocol) {
         sk->id = NSOCK_INVALID_ID;
         sk->protocol = protocol;
         sk->ops = ops;
+        sk->io_mode = io_mode;
 
-        /* Unique ring names so a second socket does not collide. */
-        static atomic_uint ring_id = 0;
-        unsigned int id = atomic_fetch_add(&ring_id, 1);
-        char recv_name[32], send_name[32];
-        snprintf(recv_name, sizeof(recv_name), "sock_recv_%u", id);
-        snprintf(send_name, sizeof(send_name), "sock_send_%u", id);
+        if (io_mode == NSOCK_IO_RINGS) {
+                /* Unique ring names so a second socket does not collide. */
+                static atomic_uint ring_id = 0;
+                unsigned int id = atomic_fetch_add(&ring_id, 1);
+                char recv_name[32], send_name[32];
+                snprintf(recv_name, sizeof(recv_name), "sock_recv_%u", id);
+                snprintf(send_name, sizeof(send_name), "sock_send_%u", id);
 
-        sk->recv_buf = rte_ring_create(recv_name, RING_SIZE, rte_socket_id(),
-                                       RING_F_SP_ENQ | RING_F_SC_DEQ);
-        sk->send_buf = rte_ring_create(send_name, RING_SIZE, rte_socket_id(),
-                                       RING_F_SC_DEQ);
-        if (sk->recv_buf == NULL || sk->send_buf == NULL) {
-                LOG_ERROR("rte_ring_create(nsock) failed");
-                if (sk->recv_buf)
-                        rte_ring_free(sk->recv_buf);
-                if (sk->send_buf)
-                        rte_ring_free(sk->send_buf);
-                rte_free(sk);
-                return NULL;
+                sk->recv_buf =
+                    rte_ring_create(recv_name, RING_SIZE, rte_socket_id(),
+                                    RING_F_SP_ENQ | RING_F_SC_DEQ);
+                sk->send_buf = rte_ring_create(send_name, RING_SIZE,
+                                               rte_socket_id(), RING_F_SC_DEQ);
+                if (sk->recv_buf == NULL || sk->send_buf == NULL) {
+                        LOG_ERROR("rte_ring_create(nsock) failed");
+                        if (sk->recv_buf)
+                                rte_ring_free(sk->recv_buf);
+                        if (sk->send_buf)
+                                rte_ring_free(sk->send_buf);
+                        rte_free(sk);
+                        return NULL;
+                }
         }
 
         if (pthread_mutex_init(&sk->mutex, NULL) != 0 ||
             pthread_cond_init(&sk->cond, NULL) != 0) {
                 LOG_ERROR("pthread init failed");
-                rte_ring_free(sk->recv_buf);
-                rte_ring_free(sk->send_buf);
+                if (sk->recv_buf != NULL)
+                        rte_ring_free(sk->recv_buf);
+                if (sk->send_buf != NULL)
+                        rte_ring_free(sk->send_buf);
                 rte_free(sk);
                 return NULL;
         }
@@ -417,8 +516,10 @@ struct nsock *nsock_alloc(int fd, uint8_t protocol) {
         if (protocol == IPPROTO_TCP) {
                 if (tcp_sndbuf_init(&sk->u.tcp.sndbuf, 0) != 0) {
                         LOG_ERROR("nsock_alloc: tcp_sndbuf_init failed");
-                        rte_ring_free(sk->recv_buf);
-                        rte_ring_free(sk->send_buf);
+                        if (sk->recv_buf != NULL)
+                                rte_ring_free(sk->recv_buf);
+                        if (sk->send_buf != NULL)
+                                rte_ring_free(sk->send_buf);
                         pthread_mutex_destroy(&sk->mutex);
                         pthread_cond_destroy(&sk->cond);
                         rte_free(sk);
@@ -453,7 +554,14 @@ struct nsock *nsock_alloc(int fd, uint8_t protocol) {
         return sk;
 }
 
+struct nsock *nsock_alloc(int fd, uint8_t protocol) {
+        return nsock_alloc_mode(fd, protocol, NSOCK_IO_RINGS);
+}
+
 void nsock_free(struct nsock *sk) {
+        nsock_release_fn release_fn;
+        void *release_ctx;
+
         if (sk == NULL)
                 return;
         if (sk->id != NSOCK_INVALID_ID && rte_lcore_id() != sk->owner_lcore) {
@@ -510,9 +618,15 @@ void nsock_free(struct nsock *sk) {
         pthread_mutex_unlock(&registry_lock);
         pthread_cond_destroy(&sk->cond);
         pthread_mutex_destroy(&sk->mutex);
-        rte_ring_free(sk->recv_buf);
-        rte_ring_free(sk->send_buf);
+        if (sk->recv_buf != NULL)
+                rte_ring_free(sk->recv_buf);
+        if (sk->send_buf != NULL)
+                rte_ring_free(sk->send_buf);
+        release_fn = sk->release_fn;
+        release_ctx = sk->release_ctx;
         rte_free(sk);
+        if (release_fn != NULL)
+                release_fn(release_ctx);
 }
 
 struct nsock *nsock_from_ip_port(uint32_t ip, uint16_t port, uint8_t protocol) {
