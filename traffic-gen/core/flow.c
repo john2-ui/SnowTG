@@ -159,7 +159,8 @@ int tg_flow_start_tcp(struct tg_flow_map *map, struct tg_flow_pool *pool,
         struct tg_flow *flow;
         struct nsock_handle handle;
 
-        if (map == NULL || pool == NULL || peer == NULL || proto == NULL) {
+        if (map == NULL || pool == NULL || peer == NULL || proto == NULL ||
+            (on_socket_created == NULL) != (on_socket_released == NULL)) {
                 errno = EINVAL;
                 return -1;
         }
@@ -178,13 +179,18 @@ int tg_flow_start_tcp(struct tg_flow_map *map, struct tg_flow_pool *pool,
                 tg_flow_start_cleanup(map, pool, flow, false);
                 return -1;
         }
-        if (owner_io_set_release_observer(handle, on_socket_released,
+        if (on_socket_created != NULL)
+                on_socket_created(socket_lifecycle_ctx);
+        if (on_socket_released != NULL &&
+            owner_io_set_release_observer(handle, on_socket_released,
                                           socket_lifecycle_ctx) != 0) {
+                int saved_errno = errno;
+
+                on_socket_released(socket_lifecycle_ctx);
+                errno = saved_errno;
                 tg_flow_start_cleanup(map, pool, flow, true);
                 return -1;
         }
-        if (on_socket_created != NULL)
-                on_socket_created(socket_lifecycle_ctx);
         if (tg_flow_map_insert(map, flow, handle) != 0) {
                 flow->handle = handle;
                 tg_flow_start_cleanup(map, pool, flow, true);

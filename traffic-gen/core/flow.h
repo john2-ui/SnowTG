@@ -142,6 +142,8 @@ int tg_flow_map_remove(struct tg_flow_map *map, struct tg_flow *flow);
  *
  * A successful return means the flow was admitted; connection completion may
  * still be pending.  Synchronous failures fully reclaim the pool object.
+ * Socket lifecycle callbacks are optional, but must be provided as a pair so
+ * created/released accounting cannot become unbalanced.
  *
  * @return 0 on admission; -1 with @c errno set if no flow or socket is usable.
  */

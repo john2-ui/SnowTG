@@ -92,8 +92,8 @@ static int tg_parse_app_args(int argc, char *argv[], unsigned int *workers_out,
         }
 
         *workers_out = workers;
-        *scenario_out = scenario_path == NULL ? TG_DEFAULT_SCENARIO_PATH
-                                               : scenario_path;
+        *scenario_out =
+            scenario_path == NULL ? TG_DEFAULT_SCENARIO_PATH : scenario_path;
         return 0;
 }
 
