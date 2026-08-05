@@ -187,7 +187,7 @@ flowchart LR
 2. **整体设计与开发**：以流量发生器为目标的事件模型、调度器、L7 插件和可复现实测。
 
 第一类中的位置标注为源码 `TODO`（约数，以注释为准）；第二类的完整设计、
-验收口径和分期见 [DESIGN-traffic-gen.md](DESIGN-traffic-gen.md)。
+验收口径和分期见 [DESIGN-traffic-gen.md](docs/DESIGN-traffic-gen.md)。
 
 ### A. 完善 `pro-stack` 的 TODO
 
@@ -199,7 +199,7 @@ flowchart LR
 
 #### Socket owner 后续 TODO
 
-以下事项是单 owner 架构落地后的剩余工作，详细背景和约束见 [DevLog ARC-002](DevLog.md#arc-002socket-单-owner代际句柄与命令队列)。
+以下事项是单 owner 架构落地后的剩余工作，详细背景和约束见 [DevLog ARC-002](docs/DevLog.md#arc-002socket-单-owner代际句柄与命令队列)。
 
 ##### P0 — 正确性与回归门槛
 
@@ -273,7 +273,7 @@ flowchart LR
 ### B. 整体设计与开发的 TODO
 
 本类工作将协议栈能力组织为可配置、可扩展、可复现的产品闭环；详细架构以
-[DESIGN-traffic-gen.md](DESIGN-traffic-gen.md) 为准。
+[DESIGN-traffic-gen.md](docs/DESIGN-traffic-gen.md) 为准。
 
 #### P0 — 非阻塞事件模型与最小流量发生器
 

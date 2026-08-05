@@ -58,7 +58,34 @@ struct tg_shard {
         struct tg_scheduler scheduler;
         struct tg_stats stats;
         bool scheduling_stop_reported;
+        bool duration_stats_reported;
 };
+
+/**
+ * @brief Prints one cumulative statistics snapshot when scheduling ends.
+ *
+ * Transactions still in flight are deliberately retained in @p active and are
+ * not counted as completed until their flow observer runs.
+ */
+static void tg_report_duration_stats(const struct tg_stats *stats) {
+        uint64_t success_rate_hundredths = 0;
+
+        if (stats == NULL)
+                return;
+        if (stats->txns_done != 0)
+                success_rate_hundredths =
+                    stats->txns_success * 10000U / stats->txns_done;
+        LOG_INFO("traffic-gen duration summary active=%u started=%" PRIu64
+                 " done=%" PRIu64 " success=%" PRIu64 " fail=%" PRIu64
+                 " success_rate=%" PRIu64 ".%02" PRIu64 "%%"
+                 " fail_connect=%" PRIu64 " fail_io=%" PRIu64
+                 " fail_proto=%" PRIu64 " tx=%" PRIu64 " rx=%" PRIu64,
+                 stats->concurrency, stats->txns_started, stats->txns_done,
+                 stats->txns_success, stats->txns_fail,
+                 success_rate_hundredths / 100U, success_rate_hundredths % 100U,
+                 stats->fail_connect, stats->fail_io, stats->fail_proto,
+                 stats->bytes_tx, stats->bytes_rx);
+}
 
 /**
  * @brief Reconciles scheduler and statistics after one admitted flow ends.
@@ -130,6 +157,11 @@ static void tg_shard_tick(void *ctx, unsigned int budget) {
                 shard->scheduling_stop_reported = true;
                 LOG_INFO("traffic-gen plan duration elapsed; draining %u flows",
                          shard->stats.concurrency);
+        }
+        if (tg_scheduler_is_stopped(&shard->scheduler) &&
+            !shard->duration_stats_reported) {
+                shard->duration_stats_reported = true;
+                tg_report_duration_stats(&shard->stats);
         }
 }
 
