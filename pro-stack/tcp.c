@@ -1685,10 +1685,10 @@ static int tcp_state_syn_sent(struct nsock *sk, struct rte_tcp_hdr *hdr,
         tcp_rtt_reset(sk);
         tcp_stream_set_status(sk, TCP_STATUS_ESTABLISHED);
 
-        LOG_INFO("tcp handshake done (active) " TCP_ID_FMT " peer " IP_FMT
-                 ":%u",
-                 TCP_ID_ARG(sk), IP_ARG(sk->u.tcp.remote_ip),
-                 rte_be_to_cpu_16(sk->u.tcp.remote_port));
+        LOG_TCP_INFO("tcp handshake done (active) " TCP_ID_FMT " peer " IP_FMT
+                     ":%u",
+                     TCP_ID_ARG(sk), IP_ARG(sk->u.tcp.remote_ip),
+                     rte_be_to_cpu_16(sk->u.tcp.remote_port));
 
         /* Complete the CONNECT command parked by tcp_connect(). */
         socket_owner_complete_connect(sk, 0);
@@ -2105,11 +2105,11 @@ static int tcp_state_fin_wait_1(struct nsock *sk, struct rte_tcp_hdr *hdr,
                     tcp_make_fragment(sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
                                       sk->u.tcp.recv_ack);
                 if (tcp_enqueue_fragment(sk, ack_f) == 0) {
-                        LOG_INFO("tcp FIN_WAIT_1 ACK peer FIN " IP_FMT
-                                 ":%u ack=%u",
-                                 IP_ARG(sk->u.tcp.remote_ip),
-                                 rte_be_to_cpu_16(sk->u.tcp.remote_port),
-                                 sk->u.tcp.recv_ack);
+                        LOG_TCP_INFO("tcp FIN_WAIT_1 ACK peer FIN " IP_FMT
+                                     ":%u ack=%u",
+                                     IP_ARG(sk->u.tcp.remote_ip),
+                                     rte_be_to_cpu_16(sk->u.tcp.remote_port),
+                                     sk->u.tcp.recv_ack);
                 }
 
                 if (ack_ok) {
@@ -3259,11 +3259,12 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
         tcp_stream_set_status(sk, TCP_STATUS_SYN_SENT);
         tcp_arm_syn_timer(sk, TCP_SYN_RTO_MS);
 
-        LOG_INFO("tcp connect SYN_SENT " TCP_ID_FMT " " IP_FMT ":%u -> " IP_FMT
-                 ":%u",
-                 TCP_ID_ARG(sk), IP_ARG(sk->local_ip),
-                 rte_be_to_cpu_16(sk->local_port), IP_ARG(sk->u.tcp.remote_ip),
-                 rte_be_to_cpu_16(sk->u.tcp.remote_port));
+        LOG_TCP_INFO("tcp connect SYN_SENT " TCP_ID_FMT " " IP_FMT
+                     ":%u -> " IP_FMT ":%u",
+                     TCP_ID_ARG(sk), IP_ARG(sk->local_ip),
+                     rte_be_to_cpu_16(sk->local_port),
+                     IP_ARG(sk->u.tcp.remote_ip),
+                     rte_be_to_cpu_16(sk->u.tcp.remote_port));
 
         errno = EINPROGRESS;
         return -1;

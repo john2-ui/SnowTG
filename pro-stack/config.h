@@ -53,7 +53,7 @@
 #define TCP_CLIENT_PEER_IP MAKE_IPV4_ADDR(192, 168, 21, 106)
 
 /** Number of mbufs in the packet pool. */
-#define NUM_MBUFS (4096 - 1)
+#define NUM_MBUFS (16384 - 1)
 /** Maximum packets pulled/pushed per burst. */
 #define BURST_SIZE 32
 /** Depth of the rx/tx software rings. */

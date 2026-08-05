@@ -392,31 +392,42 @@ HTTP/DNS scenario 插件。
 
 ### TCP 包级日志与排查
 
-默认构建会启用 TCP 包级 `TRACE` 日志（`LOG_LEVEL=LOG_LVL_TRACE`、
-`TCP_LOG_PACKETS=1`），运行时可看到 RX/TX 的 SYN、ACK、FIN、RST 与数据段，
-以及 ACK 推进、窗口缩放、owner waiter 的 park/wake。若只需调试级别而不输出
-每一包：
+默认构建关闭 `LOG_TCP_INFO`、`LOG_TCP_DEBUG` 和 `LOG_TCP_TRACE`，避免 traffic
+generator 的连接生命周期、ACK/窗口变化和逐包日志淹没运行统计；TCP 的 `ERROR`
+和 `WARN` 仍然输出。全局默认等级为 `LOG_LVL_INFO`，因此 owner 等模块的
+高频 `DEBUG` 也不会打印。
+协议栈排查时可通过编译期开关重新启用相应日志。若只需连接生命周期和重传日志，
+而不输出每一包：
 
 ```bash
 cd pro-stack
 make clean
-make LOG_LEVEL=LOG_LVL_DEBUG TCP_LOG_PACKETS=0
+make LOG_LEVEL=LOG_LVL_DEBUG TCP_LOG_INFO_ENABLED=1 TCP_LOG_PACKETS=0
 ```
 
-进行逐包排查时，使用 `TRACE`：
+若还需要 ACK、窗口、发送队列等高频调试信息，额外开启
+`TCP_LOG_DEBUG_ENABLED=1`。该选项在高 CPS 流量下会产生大量输出：
 
 ```bash
-cd pro-stack
-make clean
-make LOG_LEVEL=LOG_LVL_TRACE TCP_LOG_PACKETS=1
+make LOG_LEVEL=LOG_LVL_DEBUG TCP_LOG_INFO_ENABLED=1 \
+    TCP_LOG_DEBUG_ENABLED=1 TCP_LOG_PACKETS=0
 ```
 
-若只需生命周期、重传和错误日志，关闭逐包输出：
+进行逐包排查时，启用 `TRACE` 和 packet log：
 
 ```bash
 cd pro-stack
 make clean
-make TCP_LOG_PACKETS=0
+make LOG_LEVEL=LOG_LVL_TRACE TCP_LOG_INFO_ENABLED=1 \
+    TCP_LOG_DEBUG_ENABLED=1 TCP_LOG_TRACE_ENABLED=1 TCP_LOG_PACKETS=1
+```
+
+仅保留 TCP `ERROR` / `WARN` 时，使用默认配置：
+
+```bash
+cd pro-stack
+make clean
+make
 ```
 
 构建变量变更不会自动触发重新编译，因此切换日志配置前必须执行

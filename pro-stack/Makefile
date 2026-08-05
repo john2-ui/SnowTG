@@ -1,10 +1,17 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2010-2014 Intel Corporation
 
-# TCP packet traces are enabled by default. Override, for example:
-#   make LOG_LEVEL=LOG_LVL_INFO TCP_LOG_PACKETS=0
-LOG_LEVEL ?= LOG_LVL_TRACE
-TCP_LOG_PACKETS ?= 1
+# TCP INFO and TRACE logs are disabled by default for traffic generation.
+# Enable the required category explicitly while debugging, for example:
+#   make LOG_LEVEL=LOG_LVL_TRACE TCP_LOG_INFO_ENABLED=1 \
+#       TCP_LOG_DEBUG_ENABLED=1 TCP_LOG_TRACE_ENABLED=1 TCP_LOG_PACKETS=1
+# INFO keeps normal traffic-generator statistics visible without per-flow
+# owner and transport DEBUG output. Explicit debugging commands override it.
+LOG_LEVEL ?= LOG_LVL_INFO
+TCP_LOG_PACKETS ?= 0
+TCP_LOG_INFO_ENABLED ?= 0
+TCP_LOG_DEBUG_ENABLED ?= 0
+TCP_LOG_TRACE_ENABLED ?= 0
 
 STACK_SRCS := net_context.c ring.c arp.c udp.c icmp.c port.c socket.c \
 	socket_owner.c pkt_frame.c tcp.c tcp_options.c tcp_rtt.c rbtree.c \
@@ -27,6 +34,9 @@ PC_FILE := $(shell $(PKGCONF) --path libdpdk)
 CFLAGS += -O3 $(shell $(PKGCONF) --cflags libdpdk)
 CFLAGS += -DALLOW_EXPERIMENTAL_API
 CFLAGS += -DLOG_LEVEL=$(LOG_LEVEL) -DTCP_LOG_PACKETS=$(TCP_LOG_PACKETS)
+CFLAGS += -DTCP_LOG_INFO_ENABLED=$(TCP_LOG_INFO_ENABLED)
+CFLAGS += -DTCP_LOG_DEBUG_ENABLED=$(TCP_LOG_DEBUG_ENABLED)
+CFLAGS += -DTCP_LOG_TRACE_ENABLED=$(TCP_LOG_TRACE_ENABLED)
 LDFLAGS_STATIC = $(shell $(PKGCONF) --static --libs libdpdk)
 
 build/libpro-stack.a: $(STACK_OBJS) | build
@@ -66,6 +76,9 @@ endif
 CFLAGS += -O3
 CFLAGS += -DALLOW_EXPERIMENTAL_API
 CFLAGS += -DLOG_LEVEL=$(LOG_LEVEL) -DTCP_LOG_PACKETS=$(TCP_LOG_PACKETS)
+CFLAGS += -DTCP_LOG_INFO_ENABLED=$(TCP_LOG_INFO_ENABLED)
+CFLAGS += -DTCP_LOG_DEBUG_ENABLED=$(TCP_LOG_DEBUG_ENABLED)
+CFLAGS += -DTCP_LOG_TRACE_ENABLED=$(TCP_LOG_TRACE_ENABLED)
 CFLAGS += $(WERROR_FLAGS)
 
 include $(RTE_SDK)/mk/rte.extapp.mk

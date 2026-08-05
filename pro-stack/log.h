@@ -151,9 +151,54 @@ static inline void net_log_emit(const char *module, unsigned int level,
 
 #define LOG_TCP_ERROR(fmt, ...) LOG_MOD_ERROR("TCP", fmt, ##__VA_ARGS__)
 #define LOG_TCP_WARN(fmt, ...) LOG_MOD_WARN("TCP", fmt, ##__VA_ARGS__)
+
+/**
+ * TCP state-transition and packet-path messages are verbose during traffic
+ * generation.  Keep TCP errors and warnings enabled while compiling INFO,
+ * DEBUG, and TRACE calls out by default.  Define the needed option as 1 in
+ * CFLAGS when diagnosing TCP behavior.
+ */
+#ifndef TCP_LOG_INFO_ENABLED
+#define TCP_LOG_INFO_ENABLED 0
+#endif
+
+#ifndef TCP_LOG_TRACE_ENABLED
+#define TCP_LOG_TRACE_ENABLED 0
+#endif
+
+#ifndef TCP_LOG_DEBUG_ENABLED
+#define TCP_LOG_DEBUG_ENABLED 0
+#endif
+
+#if TCP_LOG_INFO_ENABLED
 #define LOG_TCP_INFO(fmt, ...) LOG_MOD_INFO("TCP", fmt, ##__VA_ARGS__)
+#else
+#define LOG_TCP_INFO(fmt, ...)                                                 \
+        do {                                                                   \
+                if (0)                                                         \
+                        LOG_MOD_INFO("TCP", fmt, ##__VA_ARGS__);               \
+        } while (0)
+#endif
+
+#if TCP_LOG_DEBUG_ENABLED
 #define LOG_TCP_DEBUG(fmt, ...) LOG_MOD_DEBUG("TCP", fmt, ##__VA_ARGS__)
+#else
+#define LOG_TCP_DEBUG(fmt, ...)                                                \
+        do {                                                                   \
+                if (0)                                                         \
+                        LOG_MOD_DEBUG("TCP", fmt, ##__VA_ARGS__);              \
+        } while (0)
+#endif
+
+#if TCP_LOG_TRACE_ENABLED
 #define LOG_TCP_TRACE(fmt, ...) LOG_MOD_TRACE("TCP", fmt, ##__VA_ARGS__)
+#else
+#define LOG_TCP_TRACE(fmt, ...)                                                \
+        do {                                                                   \
+                if (0)                                                         \
+                        LOG_MOD_TRACE("TCP", fmt, ##__VA_ARGS__);              \
+        } while (0)
+#endif
 
 #define LOG_OWNER_ERROR(fmt, ...) LOG_MOD_ERROR("OWNER", fmt, ##__VA_ARGS__)
 #define LOG_OWNER_WARN(fmt, ...) LOG_MOD_WARN("OWNER", fmt, ##__VA_ARGS__)

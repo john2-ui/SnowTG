@@ -6,8 +6,10 @@
 
 #include <rte_arp.h>
 #include <rte_eal.h>
+#include <rte_errno.h>
 #include <rte_ethdev.h>
 #include <rte_malloc.h>
+#include <rte_mempool.h>
 #include <string.h>
 
 static struct arp_table *arpt = NULL;
@@ -72,7 +74,15 @@ struct rte_mbuf *arp_build_pkt(struct rte_mempool *mp, uint16_t opcode,
 
         struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mp);
         if (mbuf == NULL) {
-                LOG_ERROR("rte_pktmbuf_alloc() failed");
+                unsigned int available =
+                    mp == NULL ? 0 : rte_mempool_avail_count(mp);
+                unsigned int in_use =
+                    mp == NULL ? 0 : rte_mempool_in_use_count(mp);
+
+                LOG_ERROR("rte_pktmbuf_alloc() failed mp=%p avail=%u "
+                          "in_use=%u rte_errno=%d (%s)",
+                          (void *)mp, available, in_use, rte_errno,
+                          rte_strerror(rte_errno));
                 return NULL;
         }
 
