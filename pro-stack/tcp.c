@@ -1933,7 +1933,12 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
          */
         if (rte_ring_count(sk->recv_buf) != 0)
                 wake_recv = 1;
-        if (wake_recv) {
+        /*
+         * An OFO FIN may advance the stream to CLOSE_WAIT without adding a
+         * payload blob to recv_buf.  Publish HUP in that case so event-driven
+         * consumers observe EOF even when there are no readable bytes.
+         */
+        if (wake_recv || sk->u.tcp.status == TCP_STATUS_CLOSE_WAIT) {
                 socket_owner_wake_recv(sk);
                 uint32_t events = OWNER_IO_EV_READ;
                 if (sk->u.tcp.status == TCP_STATUS_CLOSE_WAIT)
