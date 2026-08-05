@@ -1,30 +1,32 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2010-2014 Intel Corporation
 
-# binary name
-APP = pro-stack
+# TCP INFO and TRACE logs are disabled by default for traffic generation.
+# Enable the required category explicitly while debugging, for example:
+#   make LOG_LEVEL=LOG_LVL_TRACE TCP_LOG_INFO_ENABLED=1 \
+#       TCP_LOG_DEBUG_ENABLED=1 TCP_LOG_TRACE_ENABLED=1 TCP_LOG_PACKETS=1
+# INFO keeps normal traffic-generator statistics visible without per-flow
+# owner and transport DEBUG output. Explicit debugging commands override it.
+LOG_LEVEL ?= LOG_LVL_INFO
+TCP_LOG_PACKETS ?= 0
+TCP_LOG_INFO_ENABLED ?= 0
+TCP_LOG_DEBUG_ENABLED ?= 0
+TCP_LOG_TRACE_ENABLED ?= 0
 
-# TCP packet traces are enabled by default. Override, for example:
-#   make LOG_LEVEL=LOG_LVL_INFO TCP_LOG_PACKETS=0
-LOG_LEVEL ?= LOG_LVL_TRACE
-TCP_LOG_PACKETS ?= 1
+STACK_SRCS := net_context.c ring.c arp.c udp.c icmp.c port.c socket.c \
+	socket_owner.c pkt_frame.c tcp.c tcp_options.c tcp_rtt.c rbtree.c \
+	owner_io.c stack_runtime.c
+STACK_OBJS := $(patsubst %.c,build/lib/%.o,$(STACK_SRCS))
+STACK_DEPS := $(STACK_OBJS:.o=.d)
 
-# all source are stored in SRCS-y
-SRCS-y := main.c net_context.c ring.c arp.c udp.c icmp.c port.c \
-	socket.c socket_owner.c pkt_frame.c udp_app.c tcp_app.c tcp.c \
-	tcp_options.c tcp_rtt.c rbtree.c
+-include $(STACK_DEPS)
 
 # Build using pkg-config variables if possible
 ifeq ($(shell pkg-config --exists libdpdk && echo 0),0)
 
-# dpdk-pdump installed by this DPDK build is statically linked. Use the same
-# DPDK linkage mode and PMD registration order in the primary process.
-all: static
-.PHONY: shared static
-shared: build/$(APP)-shared
-	ln -sf $(APP)-shared build/$(APP)
-static: build/$(APP)-static
-	ln -sf $(APP)-static build/$(APP)
+all: library
+.PHONY: library
+library: build/libpro-stack.a
 
 PKGCONF=pkg-config --define-prefix
 
@@ -32,27 +34,27 @@ PC_FILE := $(shell $(PKGCONF) --path libdpdk)
 CFLAGS += -O3 $(shell $(PKGCONF) --cflags libdpdk)
 CFLAGS += -DALLOW_EXPERIMENTAL_API
 CFLAGS += -DLOG_LEVEL=$(LOG_LEVEL) -DTCP_LOG_PACKETS=$(TCP_LOG_PACKETS)
-# Force --no-as-needed so ALL DPDK libraries are linked, not just the ones the
-# app references directly. This makes every library's constructor register its
-# tailq, which a full secondary process (e.g. dpdk-pdump) requires; otherwise
-# the secondary panics with "Cannot init tail queues for objects".
-LDFLAGS_SHARED = $(shell $(PKGCONF) --libs libdpdk | sed 's/-Wl,--as-needed/-Wl,--no-as-needed/')
-# pkg-config already names DPDK archives explicitly (librte_*.a). Do not add
-# -Bstatic globally: system dependencies such as libc and libgcc stay dynamic.
+CFLAGS += -DTCP_LOG_INFO_ENABLED=$(TCP_LOG_INFO_ENABLED)
+CFLAGS += -DTCP_LOG_DEBUG_ENABLED=$(TCP_LOG_DEBUG_ENABLED)
+CFLAGS += -DTCP_LOG_TRACE_ENABLED=$(TCP_LOG_TRACE_ENABLED)
 LDFLAGS_STATIC = $(shell $(PKGCONF) --static --libs libdpdk)
 
-build/$(APP)-shared: $(SRCS-y) Makefile $(PC_FILE) | build
-	$(CC) $(CFLAGS) $(SRCS-y) -o $@ $(LDFLAGS) $(LDFLAGS_SHARED)
+build/libpro-stack.a: $(STACK_OBJS) | build
+	ar rcs $@ $(STACK_OBJS)
 
-build/$(APP)-static: $(SRCS-y) Makefile $(PC_FILE) | build
-	$(CC) $(CFLAGS) $(SRCS-y) -o $@ $(LDFLAGS) $(LDFLAGS_STATIC)
+build/lib/%.o: %.c Makefile $(PC_FILE) | build/lib
+	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 build:
 	@mkdir -p $@
 
+build/lib:
+	@mkdir -p $@
+
 .PHONY: clean
 clean:
-	rm -f build/$(APP) build/$(APP)-static build/$(APP)-shared
+	rm -f build/libpro-stack.a
+	rm -rf build/lib
 	test -d build && rmdir -p build || true
 
 else # Build using legacy build system
@@ -74,6 +76,9 @@ endif
 CFLAGS += -O3
 CFLAGS += -DALLOW_EXPERIMENTAL_API
 CFLAGS += -DLOG_LEVEL=$(LOG_LEVEL) -DTCP_LOG_PACKETS=$(TCP_LOG_PACKETS)
+CFLAGS += -DTCP_LOG_INFO_ENABLED=$(TCP_LOG_INFO_ENABLED)
+CFLAGS += -DTCP_LOG_DEBUG_ENABLED=$(TCP_LOG_DEBUG_ENABLED)
+CFLAGS += -DTCP_LOG_TRACE_ENABLED=$(TCP_LOG_TRACE_ENABLED)
 CFLAGS += $(WERROR_FLAGS)
 
 include $(RTE_SDK)/mk/rte.extapp.mk

@@ -10,15 +10,14 @@
 
 ```
 pro-stack/
-├── main.c              EAL 初始化、NIC RX/TX 主循环、worker 派发、ARP 与 owner timer 调度
+├── stack_runtime.h/.c  owner worker 循环与上层 reactor callback
 ├── socket.h / socket.c 统一 socket、fd→handle 表、端点注册表、BSD API 命令入口
 ├── socket_owner.h / .c 代际句柄、应用命令环、阻塞操作 waiter 与 owner 生命周期
+├── owner_io.h / .c     owner-local 非阻塞 transport API 与 ready-event 消费
 ├── sock_ops.h          每协议 ops 向量 + sock_ops_lookup
 ├── pkt_frame.h / .c    共享 Ethernet+IPv4 组帧 helper (eth_ipv4_build)
 ├── tcp.h / tcp.c       TCP：表驱动状态机、tcp_ops、编解码/egress、定时器
-├── tcp_app.h / .c      TCP echo server / client 应用（config 开关）
 ├── udp.h / udp.c       UDP：udp_ops、收发、egress
-├── udp_app.h / .c      UDP echo 应用（默认关闭）
 ├── socket_api.h        兼容 shim（#include "socket.h"）
 ├── arp.h / arp.c       ARP 表 + ARP 包构造/处理
 ├── icmp.h / icmp.c     ICMP echo reply
@@ -29,7 +28,24 @@ pro-stack/
 ├── rbtree.h / .c       通用侵入式红黑树（TCP OFO 索引）
 ├── config.h            ENABLE_* 开关与常量
 ├── log.h               分级日志 + IP/MAC 格式化
-└── Makefile            产出 build/pro-stack
+└── Makefile            协议栈静态库构建目标
+
+test/
+├── test_rbtree.c       红黑树单元测试
+├── test_ofo.c          TCP OFO 队列单元测试
+├── test_tcp_paws.c     TCP PAWS 单元测试
+├── test_owner_io.c     owner_io / ready queue 回归测试
+└── Makefile            统一测试构建目标
+
+apps/
+├── stack-demo/         协议栈示例入口、NIC 主循环与 echo app 调度
+├── tcp-echo/           TCP echo server / active-open client 示例
+└── udp-echo/           UDP echo 示例
+
+traffic-gen/
+├── main_tg.c           独立发生器入口
+├── reactor.h / .c      owner-local ready-event 消费与 flow 驱动边界
+└── Makefile            链接 pro-stack 静态库生成 build/traffic-gen
 ```
 
 
@@ -38,7 +54,7 @@ pro-stack/
 
 **统一 socket** `struct nsock`（[socket.h](pro-stack/socket.h)）：由 packet worker 独占，持有本地地址、协议队列、ops、owner slot/generation 和传输私有状态。应用 fd 表只保存 `{id, generation, owner_lcore, protocol}` 句柄，不保存 `nsock` *；所有 BSD API 经 [socket_owner.c](pro-stack/socket_owner.c) 的 MPSC command ring 提交。UDP bind、TCP bind/listener/4-tuple 仍走 DPDK hash。
 
-**ops 向量** `struct sock_ops`（[sock_ops.h](pro-stack/sock_ops.h)）：`ingress / tx_flush / send / recv / close / connect / listen / accept`。`sock_ops_lookup(proto)` 按 IP 协议号查表；`main.c` 的派发与 worker 循环对协议完全无感。
+**ops 向量** `struct sock_ops`（[sock_ops.h](pro-stack/sock_ops.h)）：`ingress / tx_flush / send / recv / close / connect / listen / accept`。`sock_ops_lookup(proto)` 按 IP 协议号查表；`stack_runtime.c` 的派发与 worker 循环对协议完全无感。
 
 **表驱动 TCP 状态机**（[tcp.c](pro-stack/tcp.c)）：`tcp_state_ops[TCP_STATUS_MAX]` 每状态一个 handler；状态切换走 `tcp_stream_set_status`。
 
@@ -66,7 +82,7 @@ flowchart LR
 
 - **main lcore**：NIC RX → `ring->in`；`ring->out` → NIC TX；只管理 ARP 等基础设施 timer。
 - **worker lcore（socket owner）**：处理 command ring、`ring->in`、协议状态机、TCP timer 和最终释放；当前仍遍历 socket 调 `ops->tx_flush`（过渡实现）。
-- **app lcore**：只持有整数 fd；`tcp_client_entry` / `tcp_server_entry` / `udp_app_entry` 的 API 调用通过 command ring 阻塞等待结果，不直接访问 TCB。
+- **app lcore**：示例 echo app 只持有整数 fd；其 API 调用通过 command ring 阻塞等待结果，不直接访问 TCB。高并发 `traffic-gen` 则注册在 owner worker 的 reactor callback 中。
 
 
 
@@ -92,7 +108,7 @@ flowchart LR
 
 ### 基础设施
 
-- DPDK EAL 初始化、单端口 burst 收发、丢包统计（[main.c](pro-stack/main.c)）
+- DPDK EAL 初始化、单端口 burst 收发、丢包统计（[apps/stack-demo/](apps/stack-demo/)）
 - 软件环 `in/out` 单例（[ring.c](pro-stack/ring.c)）
 - 全局本端身份 `g_net`（[net_context.c](pro-stack/net_context.c)）
 - 分级日志 + IP/MAC 格式化（[log.h](pro-stack/log.h)）
@@ -134,7 +150,7 @@ flowchart LR
 
 - `udp_build_pkt` / `udp_ingress` / `udp_tx_flush` / `udp_send` / `udp_recv` / `udp_close`
 - 阻塞 `nrecvfrom` 由 owner recv waiter 实现，transport probe 保持非阻塞并支持部分读语义
-- UDP echo 应用（[udp_app.c](pro-stack/udp_app.c)，默认关闭）
+- UDP echo 示例（[apps/udp-echo/](apps/udp-echo/)，默认关闭）
 
 
 
@@ -151,7 +167,7 @@ flowchart LR
 - **被动拆除**：ESTABLISHED → CLOSE_WAIT → LAST_ACK → CLOSED
 - **主动拆除**：FIN_WAIT_1/2、CLOSING、TIME_WAIT（2MSL 定时器）
 - ISN 生成器；统一 mbuf 归属：ingress 一律消费 mbuf
-- 演示应用：[tcp_app.c](pro-stack/tcp_app.c)（server / client）
+- 演示应用：[apps/tcp-echo/](apps/tcp-echo/)（server / client）
 
 
 
@@ -228,9 +244,9 @@ flowchart LR
 | 协商 MSS / 选项驱动分段 | [tcp.c](pro-stack/tcp.c) 选项 TODO                                             | 发送已按 `TCP_DEFAULT_MSS` 切段；目标：握手协商 MSS 后按协商值切                                           |
 | RTT → RTO       | —                                                                            | 数据路径固定 RTO + 退避，无 SRTT/RTTVAR                                                          |
 | 重复 ACK / 快重传    | —                                                                            | 依赖 ACK 处理与 SACK（可选）                                                                    |
-| RX 校验和          | [main.c](pro-stack/main.c)、[tcp.c](pro-stack/tcp.c)、[udp.c](pro-stack/udp.c) | IPv4、TCP 与 UDP RX 已软件校验；IPv4 UDP 的零校验和按 RFC 768 接受                                     |
+| RX 校验和          | [stack_runtime.c](pro-stack/stack_runtime.c)、[tcp.c](pro-stack/tcp.c)、[udp.c](pro-stack/udp.c) | IPv4、TCP 与 UDP RX 已软件校验；IPv4 UDP 的零校验和按 RFC 768 接受                                     |
 | socket 选项       | —                                                                            | `SO_REUSEADDR`、非阻塞、`TCP_NODELAY` 等                                                     |
-| 多连接应用调度         | [tcp_app.c](pro-stack/tcp_app.c)                                             | 示例 echo server 在一个连接的阻塞 `nrecv` 循环中不会再 `accept`。目标：非阻塞 recv + poll/ready queue，或连接任务调度 |
+| 多连接应用调度         | [apps/tcp-echo/](apps/tcp-echo/)                                             | 示例 echo server 在一个连接的阻塞 `nrecv` 循环中不会再 `accept`。目标：非阻塞 recv + poll/ready queue，或连接任务调度 |
 | 接收交付抽象          | 见上文                                                                          | ESTABLISHED 已用 `tcp_rx_blob`；目标：统一 stream buffer，FIN_* 等状态同样走重组交付                      |
 
 
@@ -243,12 +259,12 @@ flowchart LR
 | ------------- | -------------------------------- | ------------------------------------------------------- |
 | ARP 缓存老化 / 淘汰 | [arp.c](pro-stack/arp.c) ~58     | 表项永不过期。目标：TTL + 容量淘汰；MAC 变更时更新                          |
 | 无故 ARP / 冲突检测 | —                                | 无                                                       |
-| ARP 解析策略      | [main.c](pro-stack/main.c) sweep | 现状 /24 全扫偏重。目标：按需 ARP + 老化；sweep 降级或限速                  |
+| ARP 解析策略      | [apps/stack-demo/](apps/stack-demo/) sweep | 现状 /24 全扫偏重。目标：按需 ARP + 老化；sweep 降级或限速                  |
 | ICMP echo 负载  | [icmp.c](pro-stack/icmp.c) ~80   | reply 应回显请求负载                                           |
 | 非 echo ICMP   | [icmp.c](pro-stack/icmp.c) ~94   | destination unreachable / time exceeded 等，并向 UDP/TCP 上报 |
-| IP 分片重组       | [main.c](pro-stack/main.c) ~69   | 分片直送 L4。目标：IP 层重组后再交 L4                                 |
+| IP 分片重组       | [stack_runtime.c](pro-stack/stack_runtime.c) | 分片直送 L4。目标：IP 层重组后再交 L4                                 |
 | UDP 发送分片      | [udp.c](pro-stack/udp.c) ~204    | RX 校验和已实现；超 MTU 不分片                                     |
-| IPv6          | [main.c](pro-stack/main.c) ~62   | 仅 ARP + IPv4                                            |
+| IPv6          | [stack_runtime.c](pro-stack/stack_runtime.c) | 仅 ARP + IPv4                                            |
 | 路由 / 多接口      | —                                | 单接口、无路由表                                                |
 
 
@@ -332,7 +348,7 @@ flowchart LR
 1. 写 `xxx.h` 定义私有状态（如有）和 `extern const struct sock_ops xxx_ops`。
 2. 写 `xxx.c` 实现 `ingress / tx_flush / send / recv / close`（可复用 `eth_ipv4_build`），定义 `xxx_ops`。
 3. 在 [socket.c](pro-stack/socket.c) 的 `sock_ops_lookup` 增加 `case IPPROTO_XXX: return &xxx_ops;`。
-4. `nsocket(..., IPPROTO_XXX)` 即可；`main.c` 派发与 worker `tx_flush` 自动生效。
+4. `nsocket(..., IPPROTO_XXX)` 即可；`stack_runtime` 派发与 worker `tx_flush` 自动生效。
 
 加一个 TCP 新状态/迁移：在 [tcp.c](pro-stack/tcp.c) 的 `tcp_state_ops[]` 加一行并实现 handler，经 `tcp_stream_set_status` 切换即可。
 
@@ -343,41 +359,75 @@ flowchart LR
 ## 六、构建与运行
 
 ```bash
-cd pro-stack && make          # 静态链接 build/pro-stack
-./bind-dpdk.sh                # 绑定 DPDK 驱动（按需）
-./build/pro-stack -l 0-2 ...  # 当前模型：main + worker + 至少一个 app lcore
+# 1. 只构建可被上层链接的协议栈静态库
+make -C pro-stack             # 生成 pro-stack/build/libpro-stack.a
+
+# 2. library 是与默认 target 等价的显式写法
+make -C pro-stack library     # 生成 pro-stack/build/libpro-stack.a
+
+# 3. 构建协议栈 + TCP/UDP echo 示例程序
+make -C apps/stack-demo       # 生成 apps/stack-demo/build/stack-demo
+
+# 4. 构建独立的 owner-local traffic-gen reactor 骨架
+make -C traffic-gen           # 自动构建依赖库，生成 traffic-gen/build/traffic-gen
+
+# 5. 构建全部测试（纯单元测试会在构建时运行）
+make -C test
+
+# 6. 构建并运行 owner_io / ready queue 回归测试（无需绑定 NIC）
+make -C test test-owner-io
+./test/build/test_owner_io --in-memory --no-huge
+
+# 7. 运行示例或 traffic-gen 时，按需先绑定 DPDK 驱动
+./bind-dpdk.sh
+./apps/stack-demo/build/stack-demo -l 0-2 ...
+./traffic-gen/build/traffic-gen -l 0-1 ...
 ```
 
-traffic-gen 的目标模型是 reactor 与 socket owner 同核；在该路径落地前，
-上述三类 lcore 分工仍是当前兼容实现，而不是最终高并发部署拓扑。
+`pro-stack/` 不包含任何程序入口，只导出协议栈静态库与 public headers。
+`apps/stack-demo` 使用编译期 `ENABLE_*` 开关启动 `apps/` 中的 echo 示例；
+`traffic-gen/build/traffic-gen` 不启动这些 app，而是让 reactor 与 socket owner
+同核。后者目前提供 nonblocking I/O 和 ready-event runtime 骨架，尚未包含
+HTTP/DNS scenario 插件。
 
 ### TCP 包级日志与排查
 
-默认构建会启用 TCP 包级 `TRACE` 日志（`LOG_LEVEL=LOG_LVL_TRACE`、
-`TCP_LOG_PACKETS=1`），运行时可看到 RX/TX 的 SYN、ACK、FIN、RST 与数据段，
-以及 ACK 推进、窗口缩放、owner waiter 的 park/wake。若只需调试级别而不输出
-每一包：
+默认构建关闭 `LOG_TCP_INFO`、`LOG_TCP_DEBUG` 和 `LOG_TCP_TRACE`，避免 traffic
+generator 的连接生命周期、ACK/窗口变化和逐包日志淹没运行统计；TCP 的 `ERROR`
+和 `WARN` 仍然输出。全局默认等级为 `LOG_LVL_INFO`，因此 owner 等模块的
+高频 `DEBUG` 也不会打印。
+协议栈排查时可通过编译期开关重新启用相应日志。若只需连接生命周期和重传日志，
+而不输出每一包：
 
 ```bash
 cd pro-stack
 make clean
-make LOG_LEVEL=LOG_LVL_DEBUG TCP_LOG_PACKETS=0
+make LOG_LEVEL=LOG_LVL_DEBUG TCP_LOG_INFO_ENABLED=1 TCP_LOG_PACKETS=0
 ```
 
-进行逐包排查时，使用 `TRACE`：
+若还需要 ACK、窗口、发送队列等高频调试信息，额外开启
+`TCP_LOG_DEBUG_ENABLED=1`。该选项在高 CPS 流量下会产生大量输出：
 
 ```bash
-cd pro-stack
-make clean
-make LOG_LEVEL=LOG_LVL_TRACE TCP_LOG_PACKETS=1
+make LOG_LEVEL=LOG_LVL_DEBUG TCP_LOG_INFO_ENABLED=1 \
+    TCP_LOG_DEBUG_ENABLED=1 TCP_LOG_PACKETS=0
 ```
 
-若只需生命周期、重传和错误日志，关闭逐包输出：
+进行逐包排查时，启用 `TRACE` 和 packet log：
 
 ```bash
 cd pro-stack
 make clean
-make TCP_LOG_PACKETS=0
+make LOG_LEVEL=LOG_LVL_TRACE TCP_LOG_INFO_ENABLED=1 \
+    TCP_LOG_DEBUG_ENABLED=1 TCP_LOG_TRACE_ENABLED=1 TCP_LOG_PACKETS=1
+```
+
+仅保留 TCP `ERROR` / `WARN` 时，使用默认配置：
+
+```bash
+cd pro-stack
+make clean
+make
 ```
 
 构建变量变更不会自动触发重新编译，因此切换日志配置前必须执行
@@ -394,10 +444,10 @@ make TCP_LOG_PACKETS=0
 
 | 宏                                                 | 默认  | 作用                          |
 | ------------------------------------------------- | --- | --------------------------- |
-| `ENABLE_TCP_APP`                                  | 1   | 启用 TCP ops / 应用             |
-| `ENABLE_TCP_CLIENT`                               | 0   | app lcore 跑 TCP client      |
-| `ENABLE_TCP_SERVER`                               | 1   | app lcore 跑 TCP echo server |
-| `ENABLE_UDP_APP`                                  | 0   | UDP echo 应用                 |
+| `ENABLE_TCP_APP`                                  | 1   | 编译 TCP echo 示例启动路径       |
+| `ENABLE_TCP_CLIENT`                               | 0   | app lcore 跑 `apps/tcp-echo` client |
+| `ENABLE_TCP_SERVER`                               | 1   | app lcore 跑 `apps/tcp-echo` server |
+| `ENABLE_UDP_APP`                                  | 0   | app lcore 跑 `apps/udp-echo`   |
 | `ENABLE_ARP` / `ENABLE_ICMP` / `ENABLE_ARP_SWEEP` | 1   | L2/L3 辅助路径                  |
 
 

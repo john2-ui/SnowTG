@@ -185,22 +185,25 @@ flowchart TB
 
 ## 4. 模块设计
 
-建议目录（实现阶段再落地，本文只定边界）：
+当前目录与后续扩展边界：
 
 ```text
 traffic-gen/
-├── main_tg.c           # 与 EAL / lcore 对接的入口（或挂入现有 main 的 app 入口）
-├── scenario.h/.c       # 剧本加载与校验
-├── scheduler.h/.c      # 混合调度、限速、并发水位
-├── conn_pool.h/.c      # 连接/事务对象池与状态机
-├── stats.h/.c          # 无锁或 per-lcore 计数 + 汇总
-├── report.h/.c         # 定时打印 / 结束时摘要
-└── proto/
-    ├── proto.h         # 插件接口
-    ├── http_client.c   # HTTP/1.1 子集
-    ├── dns_client.c    # DNS 查询子集
-    ├── redis_client.c  # 后期
-    └── mqtt_client.c   # 后期
+├── main_tg.c              # EAL、NIC 与 owner-worker 入口
+├── Makefile
+├── core/
+│   ├── reactor.h/.c        # owner-local tick 与 ready-event bridge
+│   ├── flow.h/.c           # TCP transport、handle map 与生命周期
+│   ├── flow_pool.h/.c      # 预分配 owner-local flow pool
+│   └── txn.h/.c            # 一次 L7 请求/响应事务
+├── proto/
+│   ├── proto.h             # 编译期注册的 L7 插件接口
+│   └── http/
+│       └── http_client.h/.c # llhttp 驱动的 HTTP request/response 插件
+├── scenario.h/.c           # 后续：剧本加载与校验
+├── scheduler.h/.c          # 后续：混合调度、限速、并发水位
+├── stats.h/.c              # 后续：per-lcore 计数与汇总
+└── report.h/.c             # 后续：周期性报表
 ```
 
 与 `pro-stack` 的集成方式二选一（实现时定一种即可）：
@@ -293,33 +296,48 @@ IDLE → SENDING → RECVING → IDLE
 
 ### 4.4 L7 插件接口
 
-统一 C 接口示意：
+`core/flow.c` 拥有 socket、非阻塞 I/O、ready event 和回收顺序；
+`tg_txn` 持有一次请求/响应的字节与插件引用；插件只处理字节流或数据报，
+不得调用 `owner_io_*`。当前短连接模型中一个 flow 嵌入一个 txn；HTTP
+keep-alive 后可扩展为一个 flow 串行承载多个 txn。
+
+统一 C 接口：
 
 ```c
 struct tg_proto_ops {
     const char *name;
 
-    /* 根据剧本 class 配置构造请求字节；返回长度或 -1 */
+    /* 初始化插件私有 transaction state。 */
+    int (*init)(struct tg_txn *txn);
+
+    /* 根据 class 配置构造请求字节。 */
     int (*build_request)(const void *class_cfg,
-                         uint8_t *buf, size_t buf_cap);
+                         uint8_t *buf, size_t buf_cap,
+                         size_t *request_len_out);
 
-    /* 喂入响应字节；返回：1 完成成功，0 需更多数据，-1 失败 */
-    int (*feed_response)(void *txn_ctx,
-                         const uint8_t *data, size_t len);
-
-    /* 事务上下文创建 / 销毁（插件私有） */
-    void *(*txn_create)(const void *class_cfg);
-    void  (*txn_destroy)(void *txn_ctx);
+    /* 传输层已接收发送字节、收到响应字节或看到 EOF 时的通知。 */
+    void (*on_tx_accepted)(struct tg_txn *txn, size_t bytes);
+    enum tg_proto_result (*on_rx)(struct tg_txn *txn,
+                                  const uint8_t *data, size_t len);
+    enum tg_proto_result (*on_eof)(struct tg_txn *txn);
+    void (*reset)(struct tg_txn *txn);
 };
 ```
 
-传输与 L7 解耦：`conn_pool` 只负责 fd 与收发；插件只认字节流/数据报。
+返回值 `TG_PROTO_MORE`、`TG_PROTO_COMPLETE` 和 `TG_PROTO_FAILED` 分别表示
+继续接收、事务完成和协议失败。HTTP 插件使用 vendored llhttp 9.4.3（MIT）解析
+字节流；`proto_ctx` 持有每事务独立的 parser state，llhttp callback 负责 HTTP
+framing，插件在 headers complete 阶段要求 HTTP/1.0 或 HTTP/1.1 的 2xx status。
+
+当前支持 `Content-Length`、chunked 与 EOF-delimited response body，并在完整 message
+后完成短连接事务。保持严格解析，不启用 llhttp 的 lenient flags。暂不支持
+HTTP upgrade、response pipeline 或在同一 flow 上复用下一个 keep-alive transaction。
 
 ### 4.5 协议子集范围
 
 | 协议 | 阶段 | 子集范围 | 成功判定（示例） |
 |------|------|----------|------------------|
-| HTTP/1.1 | Phase A | `GET`/`POST` 固定模板，解析状态行 | `HTTP/1.x 2xx` |
+| HTTP/1.x | Phase A | `GET`/`POST` 固定模板；llhttp 解析 Content-Length、chunked 与 EOF body | `HTTP/1.0`/`1.1` 2xx 且完整 message |
 | DNS | Phase A | 单问题 A/AAAA 查询（UDP） | 响应 QR=1 且 rcode=0 |
 | Redis | Phase B | `PING` / 简单 `GET`/`SET`（RESP） | `+PONG` 或批量回复完整 |
 | MQTT | Phase B | CONNECT + PINGREQ 或单次 PUBLISH | CONNACK / PUBACK |
@@ -415,6 +433,20 @@ Phase A 可先实现单 worker + 单 reactor，验证事件语义和状态机；
 4. owner 将状态变化推入本核 ready queue；reactor 批量消费它，或经
    `npoll` 获取 ready 子集。两者是同一语义的不同 API 外观。  
 5. 禁止扫描所有 in-flight fd 的纯忙询；它只可作为小规模原型的临时方案。
+
+实现边界：
+
+- `traffic-gen/` 仅包含 `pro-stack/owner_io.h`，通过
+  `owner_io_socket_create`、`owner_io_bind`、`owner_io_connect`、
+  `owner_io_send`、`owner_io_recv`、`owner_io_sendto`、
+  `owner_io_recvfrom` 和 `owner_io_close` 操作 generation handle。
+- 这些调用只能发生在 handle 对应的 owner lcore；它们直接调用 transport
+  probe，绝不创建 `sock_cmd`、进入 command ring 或等待 condvar。
+- `pro-stack/socket_owner.*` 继续服务公开 `n*` BSD 兼容接口和对象生命周期；
+  上层不包含该内部头文件，也不访问 `nsock`/TCB。
+- `owner_io_ready_burst` 消费 owner-local ready queue。每 socket 以
+  `ready_mask + ready_queued` 合并事件，队列项仅保存 generation handle；
+  已回收或复用的 slot 事件会被安全丢弃。
 
 事件位定义：
 

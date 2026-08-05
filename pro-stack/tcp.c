@@ -11,14 +11,17 @@
 #include "config.h"
 #include "log.h"
 #include "net_context.h"
+#include "owner_io.h"
 #include "pkt_frame.h"
 #include "rbtree.h"
 #include "ring.h"
 #include "socket.h"
+#include "socket_owner_internal.h"
 #include "tcp_options.h"
 #include "tcp_rtt.h"
 
 #include <errno.h>
+#include <inttypes.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <pthread.h>
@@ -31,6 +34,7 @@
 #include <rte_lcore.h>
 #include <rte_malloc.h>
 #include <rte_mbuf_core.h>
+#include <rte_random.h>
 #include <rte_ring.h>
 #include <rte_tcp.h>
 #include <rte_timer.h>
@@ -1138,7 +1142,20 @@ static uint64_t tcp_ms_to_cycles(uint64_t ms) {
  * @return Available port in network byte order, or 0 when exhausted.
  */
 static uint16_t tcp_alloc_ephemeral_port(void) {
-        static uint16_t next = TCP_EPHEMERAL_PORT_MIN;
+        static uint16_t next;
+        const uint32_t port_count =
+            TCP_EPHEMERAL_PORT_MAX - TCP_EPHEMERAL_PORT_MIN + 1U;
+
+        /*
+         * EAL seeds rte_rand() during startup.  Selecting a different initial
+         * slot for every process avoids immediately reusing 49152 after an
+         * abrupt traffic-generator restart, while later allocations retain
+         * the deterministic round-robin scan and local collision check.
+         */
+        if (next == 0)
+                next =
+                    TCP_EPHEMERAL_PORT_MIN + (uint16_t)rte_rand_max(port_count);
+
         for (int i = 0;
              i < (TCP_EPHEMERAL_PORT_MAX - TCP_EPHEMERAL_PORT_MIN + 1); i++) {
                 uint16_t p = next++;
@@ -1190,16 +1207,19 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                         struct tcp_fragment *syn_f = tcp_make_fragment(
                             sk, RTE_TCP_SYN_FLAG, sk->u.tcp.sent_seq, 0);
                         (void)tcp_options_apply_syn(sk, syn_f, true, true, 0);
+                        /*
+                         * The timer for the next retry backs off from the
+                         * fixed initial SYN RTO: 1s, 2s, 4s, and so on.
+                         */
+                        uint64_t delay_ms = (uint64_t)TCP_SYN_RTO_MS
+                                            << (sk->u.tcp.retries - 1);
                         if (tcp_enqueue_fragment(sk, syn_f) == 0) {
                                 LOG_TCP_INFO(TCP_SK_FMT
                                              " event=rto-retransmit kind=syn "
-                                             "retry=%u rto_ms=%u",
+                                             "retry=%u next_rto_ms=%" PRIu64,
                                              TCP_SK_ARG(sk), sk->u.tcp.retries,
-                                             TCP_SYN_RTO_MS);
+                                             delay_ms);
                         }
-                        /* Backoff: 1s, 2s, 4s, ... from TCP_SYN_RTO_MS. */
-                        uint64_t delay_ms = (uint64_t)TCP_SYN_RTO_MS
-                                            << (sk->u.tcp.retries - 1);
                         tcp_arm_syn_timer(sk, delay_ms);
                         return;
                 }
@@ -1209,6 +1229,7 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                 tcp_stream_set_status(sk, TCP_STATUS_CLOSED);
                 tcp_drain_send(sk);
                 socket_owner_complete_connect(sk, ETIMEDOUT);
+                socket_owner_ready_post(sk, OWNER_IO_EV_ERROR);
                 if (sk->app_closed) {
                         tcp_drain_recv(sk);
                         nsock_free(sk);
@@ -1272,17 +1293,17 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                         (void)tcp_options_apply_syn(
                             sk, syn_ack_f, sk->u.tcp.wscale_ok,
                             sk->u.tcp.timestamps_ok, sk->u.tcp.ts_recent);
-                        if (tcp_enqueue_fragment(sk, syn_ack_f) == 0) {
-                                LOG_TCP_INFO(
-                                    TCP_SK_FMT " event=rto-retransmit "
-                                               "kind=syn-ack retry=%u seq=%u "
-                                               "ack=%u rto_ms=%u",
-                                    TCP_SK_ARG(sk), sk->u.tcp.retries,
-                                    sk->u.tcp.sent_seq, sk->u.tcp.recv_ack,
-                                    TCP_SYN_RTO_MS);
-                        }
                         uint64_t delay_ms = (uint64_t)TCP_SYN_RTO_MS
                                             << (sk->u.tcp.retries - 1);
+                        if (tcp_enqueue_fragment(sk, syn_ack_f) == 0) {
+                                LOG_TCP_INFO(TCP_SK_FMT
+                                             " event=rto-retransmit "
+                                             "kind=syn-ack retry=%u seq=%u "
+                                             "ack=%u next_rto_ms=%" PRIu64,
+                                             TCP_SK_ARG(sk), sk->u.tcp.retries,
+                                             sk->u.tcp.sent_seq,
+                                             sk->u.tcp.recv_ack, delay_ms);
+                        }
                         tcp_arm_syn_timer(sk, delay_ms);
                         return;
                 }
@@ -1434,6 +1455,7 @@ static void tcp_process_peer_ack(struct nsock *sk, uint32_t ack) {
 #ifndef TCP_TESTING
         socket_owner_wake_send(sk);
 #endif
+        socket_owner_ready_post(sk, OWNER_IO_EV_WRITE);
 }
 
 /**
@@ -1487,6 +1509,7 @@ static void tcp_update_snd_wnd(struct nsock *sk, uint32_t seg_seq,
 #ifndef TCP_TESTING
         socket_owner_wake_send(sk);
 #endif
+        socket_owner_ready_post(sk, OWNER_IO_EV_WRITE);
 }
 
 #ifdef TCP_TESTING
@@ -1662,13 +1685,14 @@ static int tcp_state_syn_sent(struct nsock *sk, struct rte_tcp_hdr *hdr,
         tcp_rtt_reset(sk);
         tcp_stream_set_status(sk, TCP_STATUS_ESTABLISHED);
 
-        LOG_INFO("tcp handshake done (active) " TCP_ID_FMT " peer " IP_FMT
-                 ":%u",
-                 TCP_ID_ARG(sk), IP_ARG(sk->u.tcp.remote_ip),
-                 rte_be_to_cpu_16(sk->u.tcp.remote_port));
+        LOG_TCP_INFO("tcp handshake done (active) " TCP_ID_FMT " peer " IP_FMT
+                     ":%u",
+                     TCP_ID_ARG(sk), IP_ARG(sk->u.tcp.remote_ip),
+                     rte_be_to_cpu_16(sk->u.tcp.remote_port));
 
         /* Complete the CONNECT command parked by tcp_connect(). */
         socket_owner_complete_connect(sk, 0);
+        socket_owner_ready_post(sk, OWNER_IO_EV_CONNECTED);
         return 0;
 }
 
@@ -1902,8 +1926,25 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
          * All TCP receive state and the cumulative ACK have been committed.
          * A resumed recv may now safely send a window-update ACK.
          */
-        if (wake_recv)
+        /*
+         * OFO drain can deliver bytes even when this input segment carried no
+         * directly deliverable payload.  The ready event must reflect either
+         * source of newly readable data.
+         */
+        if (rte_ring_count(sk->recv_buf) != 0)
+                wake_recv = 1;
+        /*
+         * An OFO FIN may advance the stream to CLOSE_WAIT without adding a
+         * payload blob to recv_buf.  Publish HUP in that case so event-driven
+         * consumers observe EOF even when there are no readable bytes.
+         */
+        if (wake_recv || sk->u.tcp.status == TCP_STATUS_CLOSE_WAIT) {
                 socket_owner_wake_recv(sk);
+                uint32_t events = OWNER_IO_EV_READ;
+                if (sk->u.tcp.status == TCP_STATUS_CLOSE_WAIT)
+                        events |= OWNER_IO_EV_HUP;
+                socket_owner_ready_post(sk, events);
+        }
 
         return 0;
 }
@@ -2069,11 +2110,11 @@ static int tcp_state_fin_wait_1(struct nsock *sk, struct rte_tcp_hdr *hdr,
                     tcp_make_fragment(sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
                                       sk->u.tcp.recv_ack);
                 if (tcp_enqueue_fragment(sk, ack_f) == 0) {
-                        LOG_INFO("tcp FIN_WAIT_1 ACK peer FIN " IP_FMT
-                                 ":%u ack=%u",
-                                 IP_ARG(sk->u.tcp.remote_ip),
-                                 rte_be_to_cpu_16(sk->u.tcp.remote_port),
-                                 sk->u.tcp.recv_ack);
+                        LOG_TCP_INFO("tcp FIN_WAIT_1 ACK peer FIN " IP_FMT
+                                     ":%u ack=%u",
+                                     IP_ARG(sk->u.tcp.remote_ip),
+                                     rte_be_to_cpu_16(sk->u.tcp.remote_port),
+                                     sk->u.tcp.recv_ack);
                 }
 
                 if (ack_ok) {
@@ -2609,6 +2650,7 @@ static void tcp_abort_on_rst(struct nsock *sk) {
 
         /* RST completes every command parked on this owner-side socket. */
         socket_owner_abort_waiters(sk, ECONNRESET);
+        socket_owner_ready_post(sk, OWNER_IO_EV_ERROR | OWNER_IO_EV_HUP);
         if (sk->app_closed)
                 nsock_free(sk);
 }
@@ -3222,11 +3264,12 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
         tcp_stream_set_status(sk, TCP_STATUS_SYN_SENT);
         tcp_arm_syn_timer(sk, TCP_SYN_RTO_MS);
 
-        LOG_INFO("tcp connect SYN_SENT " TCP_ID_FMT " " IP_FMT ":%u -> " IP_FMT
-                 ":%u",
-                 TCP_ID_ARG(sk), IP_ARG(sk->local_ip),
-                 rte_be_to_cpu_16(sk->local_port), IP_ARG(sk->u.tcp.remote_ip),
-                 rte_be_to_cpu_16(sk->u.tcp.remote_port));
+        LOG_TCP_INFO("tcp connect SYN_SENT " TCP_ID_FMT " " IP_FMT
+                     ":%u -> " IP_FMT ":%u",
+                     TCP_ID_ARG(sk), IP_ARG(sk->local_ip),
+                     rte_be_to_cpu_16(sk->local_port),
+                     IP_ARG(sk->u.tcp.remote_ip),
+                     rte_be_to_cpu_16(sk->u.tcp.remote_port));
 
         errno = EINPROGRESS;
         return -1;

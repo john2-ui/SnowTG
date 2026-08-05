@@ -35,6 +35,7 @@
 
 struct nsock;
 struct rte_ring;
+struct rte_mempool;
 
 /** Stable cross-lcore name for a socket; it never contains a raw pointer. */
 struct nsock_handle {
@@ -120,6 +121,10 @@ struct sock_cmd {
 struct socket_owner {
         unsigned int lcore_id;
         struct rte_ring *command_ring;
+        /** Owner-local, coalesced transport readiness notifications. */
+        struct rte_ring *ready_ring;
+        /** Preallocated event objects; at most one is queued per socket. */
+        struct rte_mempool *ready_event_pool;
 
         struct nsock *slots[NSOCK_ID_MAX];
         uint32_t generations[NSOCK_ID_MAX];

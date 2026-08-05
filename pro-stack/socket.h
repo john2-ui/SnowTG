@@ -87,6 +87,14 @@ struct nsock {
         /** fd has been detached; protocol teardown may still be in progress. */
         bool app_closed;
 
+        /**
+         * Owner-local readiness state for traffic-generator reactors.  Event
+         * producers OR bits into ready_mask; ready_queued guarantees at most
+         * one event-pool entry per live socket.
+         */
+        uint32_t ready_mask;
+        bool ready_queued;
+
         /** Owner-only queues for blocking BSD operations. */
         struct sock_cmd *recv_wait_head;
         struct sock_cmd *recv_wait_tail;

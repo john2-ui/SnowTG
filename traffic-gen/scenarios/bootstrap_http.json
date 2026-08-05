@@ -1,0 +1,23 @@
+{
+  "name": "bootstrap-http",
+  "duration_sec": 300,
+  "max_concurrency": 128,
+  "target_cps": 50,
+  "report_interval_sec": 1,
+  "classes": [
+    {
+      "name": "http_get",
+      "weight": 1,
+      "transport": "tcp",
+      "peer": {
+        "ip": "192.168.21.106",
+        "port": 8888
+      },
+      "http": {
+        "method": "GET",
+        "path": "/",
+        "keepalive": false
+      }
+    }
+  ]
+}
