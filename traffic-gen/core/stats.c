@@ -35,6 +35,12 @@ void tg_stats_on_start_failure(struct tg_stats *stats) {
         stats->fail_connect++;
 }
 
+/** @copydoc tg_stats_on_resource_deferred */
+void tg_stats_on_resource_deferred(struct tg_stats *stats) {
+        if (stats != NULL)
+                stats->starts_deferred_resource++;
+}
+
 /** @copydoc tg_stats_on_flow_finished */
 void tg_stats_on_flow_finished(struct tg_stats *stats,
                                const struct tg_flow *flow,
@@ -62,6 +68,9 @@ void tg_stats_on_flow_finished(struct tg_stats *stats,
                 break;
         case TG_FLOW_RESULT_PROTOCOL_FAILURE:
                 stats->fail_proto++;
+                break;
+        case TG_FLOW_RESULT_RESOURCE_PRESSURE:
+                stats->fail_resource++;
                 break;
         case TG_FLOW_RESULT_IO_FAILURE:
         default:

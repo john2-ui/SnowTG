@@ -110,6 +110,7 @@ struct tg_shard {
         struct tg_plan plan;
         struct tg_scheduler scheduler;
         struct tg_stats stats;
+        struct owner_io_memory_snapshot memory;
         bool scheduling_stop_reported;
         bool duration_stats_reported;
 };
@@ -134,12 +135,14 @@ static void tg_report_duration_stats(const struct tg_shard *shard) {
                  "started=%" PRIu64 " done=%" PRIu64 " success=%" PRIu64
                  " fail=%" PRIu64 " success_rate=%" PRIu64 ".%02" PRIu64 "%%"
                  " fail_connect=%" PRIu64 " fail_io=%" PRIu64
-                 " fail_proto=%" PRIu64 " tx=%" PRIu64 " rx=%" PRIu64,
+                 " fail_proto=%" PRIu64 " fail_resource=%" PRIu64
+                 " deferred_resource=%" PRIu64 " tx=%" PRIu64 " rx=%" PRIu64,
                  stats->concurrency, shard->scheduler.live_sockets,
                  stats->txns_started, stats->txns_done, stats->txns_success,
                  stats->txns_fail, success_rate_hundredths / 100U,
                  success_rate_hundredths % 100U, stats->fail_connect,
-                 stats->fail_io, stats->fail_proto, stats->bytes_tx,
+                 stats->fail_io, stats->fail_proto, stats->fail_resource,
+                 stats->starts_deferred_resource, stats->bytes_tx,
                  stats->bytes_rx);
 }
 
@@ -202,13 +205,17 @@ static int tg_start_class(void *ctx, const struct tg_class_plan *class_plan) {
 
         if (shard == NULL || class_plan == NULL)
                 return -1;
-        if (tg_flow_start_tcp(&shard->flow_map, &shard->flow_pool,
-                              (const struct sockaddr *)&class_plan->peer,
-                              sizeof(class_plan->peer), class_plan->proto,
-                              &class_plan->http_config, tg_on_flow_finished,
-                              shard, tg_on_socket_created,
-                              tg_on_socket_released, shard) != 0) {
-                tg_stats_on_start_failure(&shard->stats);
+        if (tg_flow_start_tcp(
+                &shard->flow_map, &shard->flow_pool,
+                (const struct sockaddr *)&class_plan->peer,
+                sizeof(class_plan->peer), class_plan->proto,
+                &class_plan->http_config, class_plan->request_template,
+                class_plan->request_template_len, tg_on_flow_finished, shard,
+                tg_on_socket_created, tg_on_socket_released, shard) != 0) {
+                if (errno == ENOBUFS)
+                        tg_stats_on_resource_deferred(&shard->stats);
+                else
+                        tg_stats_on_start_failure(&shard->stats);
                 LOG_ERROR("traffic-gen start failed class=%s errno=%d",
                           class_plan->name, errno);
                 return -1;
@@ -229,6 +236,14 @@ static void tg_shard_tick(void *ctx, unsigned int budget) {
         if (shard == NULL || budget == 0)
                 return;
         now_cycles = rte_get_timer_cycles();
+        if (owner_io_memory_snapshot(&shard->memory) == 0) {
+                bool available = shard->scheduler.resource_paused
+                                     ? shard->memory.above_high_water
+                                     : !shard->memory.below_low_water;
+
+                tg_scheduler_set_resource_available(&shard->scheduler,
+                                                    available);
+        }
         (void)tg_scheduler_tick(&shard->scheduler, now_cycles, budget,
                                 tg_start_class, shard);
         if (tg_stats_report_due(&shard->stats, now_cycles, rte_get_timer_hz(),
@@ -241,6 +256,16 @@ static void tg_shard_tick(void *ctx, unsigned int budget) {
                          shard->stats.txns_started, shard->stats.txns_done,
                          shard->stats.txns_success, shard->stats.txns_fail,
                          shard->stats.bytes_tx, shard->stats.bytes_rx);
+                LOG_INFO("traffic-gen memory paused=%u pauses=%" PRIu64
+                         " tx_avail=%u tx_peak=%u payload_avail=%u "
+                         "payload_peak=%u tx_alloc_fail=%u",
+                         shard->scheduler.resource_paused,
+                         shard->scheduler.resource_pauses,
+                         shard->memory.tcp.available[TCP_MEMORY_TX_CHUNK],
+                         shard->memory.tcp.peak_in_use[TCP_MEMORY_TX_CHUNK],
+                         shard->memory.tcp.available[TCP_MEMORY_PAYLOAD],
+                         shard->memory.tcp.peak_in_use[TCP_MEMORY_PAYLOAD],
+                         shard->memory.tcp.alloc_fail[TCP_MEMORY_TX_CHUNK]);
         }
         if (tg_scheduler_is_stopped(&shard->scheduler) &&
             !shard->scheduling_stop_reported) {

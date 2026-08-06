@@ -45,20 +45,24 @@ static void make_scheduler_plan(struct tg_plan *plan) {
 static int test_plan_load_and_validation(void) {
         struct tg_plan plan;
 
-        ASSERT_TRUE(tg_plan_load_file(
-                        &plan, "../traffic-gen/scenarios/bootstrap_http.json") ==
-                    0);
+        ASSERT_TRUE(
+            tg_plan_load_file(
+                &plan, "../traffic-gen/scenarios/bootstrap_http.json") == 0);
         ASSERT_TRUE(strcmp(plan.name, "bootstrap-http") == 0);
         ASSERT_TRUE(plan.class_count == 1);
         ASSERT_TRUE(plan.total_weight == 1);
         ASSERT_TRUE(plan.classes[0].proto == &tg_http_proto_ops);
         ASSERT_TRUE(strcmp(plan.classes[0].http_config.method, "GET") == 0);
         ASSERT_TRUE(strcmp(plan.classes[0].http_config.path, "/") == 0);
+        ASSERT_TRUE(plan.classes[0].request_template_len != 0);
+        ASSERT_TRUE(memcmp(plan.classes[0].request_template,
+                           "GET / HTTP/1.0\r\nConnection: close\r\n\r\n",
+                           plan.classes[0].request_template_len) == 0);
         tg_plan_fini(&plan);
 
         errno = 0;
-        ASSERT_TRUE(tg_plan_load_file(&plan, "fixtures/invalid_scenario.json") ==
-                    -1);
+        ASSERT_TRUE(
+            tg_plan_load_file(&plan, "fixtures/invalid_scenario.json") == -1);
         ASSERT_TRUE(errno == EINVAL);
         return 0;
 }
@@ -70,19 +74,29 @@ static int test_weight_token_and_concurrency_bounds(void) {
 
         make_scheduler_plan(&plan);
         ASSERT_TRUE(tg_scheduler_init(&scheduler, &plan, 10) == 0);
-        ASSERT_TRUE(tg_scheduler_tick(&scheduler, 0, 3, record_start,
-                                      &recorder) == 0);
-        ASSERT_TRUE(tg_scheduler_tick(&scheduler, 10, 3, record_start,
-                                      &recorder) == 3);
+        ASSERT_TRUE(
+            tg_scheduler_tick(&scheduler, 0, 3, record_start, &recorder) == 0);
+        ASSERT_TRUE(
+            tg_scheduler_tick(&scheduler, 10, 3, record_start, &recorder) == 3);
         ASSERT_TRUE(recorder.count == 3);
         ASSERT_TRUE(memcmp(recorder.selected, "AAB", 3) == 0);
         ASSERT_TRUE(scheduler.active == 3);
 
         tg_scheduler_on_flow_finished(&scheduler);
-        ASSERT_TRUE(tg_scheduler_tick(&scheduler, 11, 3, record_start,
-                                      &recorder) == 1);
+        ASSERT_TRUE(
+            tg_scheduler_tick(&scheduler, 11, 3, record_start, &recorder) == 1);
         ASSERT_TRUE(recorder.selected[3] == 'A');
         ASSERT_TRUE(scheduler.active == 3);
+
+        tg_scheduler_set_resource_available(&scheduler, false);
+        ASSERT_TRUE(
+            tg_scheduler_tick(&scheduler, 12, 3, record_start, &recorder) == 0);
+        ASSERT_TRUE(scheduler.resource_paused);
+        ASSERT_TRUE(scheduler.resource_pauses == 1);
+        tg_scheduler_set_resource_available(&scheduler, true);
+        tg_scheduler_on_flow_finished(&scheduler);
+        ASSERT_TRUE(
+            tg_scheduler_tick(&scheduler, 13, 3, record_start, &recorder) == 1);
         return 0;
 }
 
@@ -93,17 +107,17 @@ static int test_failed_start_and_duration_stop(void) {
 
         make_scheduler_plan(&plan);
         ASSERT_TRUE(tg_scheduler_init(&scheduler, &plan, 10) == 0);
-        ASSERT_TRUE(tg_scheduler_tick(&scheduler, 0, 2, record_start,
-                                      &recorder) == 0);
-        ASSERT_TRUE(tg_scheduler_tick(&scheduler, 10, 2, record_start,
-                                      &recorder) == 2);
+        ASSERT_TRUE(
+            tg_scheduler_tick(&scheduler, 0, 2, record_start, &recorder) == 0);
+        ASSERT_TRUE(
+            tg_scheduler_tick(&scheduler, 10, 2, record_start, &recorder) == 2);
         ASSERT_TRUE(scheduler.active == 0);
 
         ASSERT_TRUE(tg_scheduler_init(&scheduler, &plan, 10) == 0);
-        ASSERT_TRUE(tg_scheduler_tick(&scheduler, 0, 1, record_start,
-                                      &recorder) == 0);
-        ASSERT_TRUE(tg_scheduler_tick(&scheduler, 20, 1, record_start,
-                                      &recorder) == 0);
+        ASSERT_TRUE(
+            tg_scheduler_tick(&scheduler, 0, 1, record_start, &recorder) == 0);
+        ASSERT_TRUE(
+            tg_scheduler_tick(&scheduler, 20, 1, record_start, &recorder) == 0);
         ASSERT_TRUE(tg_scheduler_is_stopped(&scheduler));
         return 0;
 }
@@ -125,6 +139,8 @@ static int test_stats(void) {
         ASSERT_TRUE(stats.bytes_tx == 12);
         ASSERT_TRUE(stats.bytes_rx == 34);
         ASSERT_TRUE(stats.http_rps_total == 1);
+        tg_stats_on_resource_deferred(&stats);
+        ASSERT_TRUE(stats.starts_deferred_resource == 1);
         return 0;
 }
 

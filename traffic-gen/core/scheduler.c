@@ -94,6 +94,10 @@ unsigned int tg_scheduler_tick(struct tg_scheduler *scheduler,
                 scheduler->stopped = true;
                 return 0;
         }
+        if (scheduler->resource_paused) {
+                scheduler->last_cycles = now_cycles;
+                return 0;
+        }
 
         tg_scheduler_add_tokens(scheduler, now_cycles - scheduler->last_cycles);
         scheduler->last_cycles = now_cycles;
@@ -127,6 +131,19 @@ void tg_scheduler_on_socket_created(struct tg_scheduler *scheduler) {
 void tg_scheduler_on_socket_released(struct tg_scheduler *scheduler) {
         if (scheduler != NULL && scheduler->live_sockets != 0)
                 scheduler->live_sockets--;
+}
+
+/** @copydoc tg_scheduler_set_resource_available */
+void tg_scheduler_set_resource_available(struct tg_scheduler *scheduler,
+                                         bool available) {
+        if (scheduler == NULL)
+                return;
+        if (!available && !scheduler->resource_paused) {
+                scheduler->resource_paused = true;
+                scheduler->resource_pauses++;
+        } else if (available) {
+                scheduler->resource_paused = false;
+        }
 }
 
 /** @copydoc tg_scheduler_is_stopped */

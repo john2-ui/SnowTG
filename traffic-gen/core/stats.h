@@ -30,6 +30,8 @@ struct tg_stats {
         uint64_t fail_connect;
         uint64_t fail_io;
         uint64_t fail_proto;
+        uint64_t fail_resource;
+        uint64_t starts_deferred_resource;
         uint64_t bytes_tx;
         uint64_t bytes_rx;
         uint64_t http_rps_total;
@@ -54,6 +56,9 @@ void tg_stats_on_admitted(struct tg_stats *stats);
  * failures without changing @ref tg_stats::concurrency.
  */
 void tg_stats_on_start_failure(struct tg_stats *stats);
+/** Records a local resource refusal without classifying it as remote failure.
+ */
+void tg_stats_on_resource_deferred(struct tg_stats *stats);
 
 /**
  * @brief Records terminal flow result before the flow is returned to its pool.

@@ -43,6 +43,8 @@ struct tg_scheduler {
         uint64_t selection_cursor;
         uint32_t active;
         uint32_t live_sockets;
+        uint64_t resource_pauses;
+        bool resource_paused;
         bool started;
         bool stopped;
 };
@@ -79,6 +81,12 @@ void tg_scheduler_on_flow_finished(struct tg_scheduler *scheduler);
 void tg_scheduler_on_socket_created(struct tg_scheduler *scheduler);
 /** Releases a socket-lifecycle slot after nsock_free() finishes. */
 void tg_scheduler_on_socket_released(struct tg_scheduler *scheduler);
+/**
+ * Apply owner-local resource hysteresis before attempting admissions.
+ * @p available must be false below low water and true only above high water.
+ */
+void tg_scheduler_set_resource_available(struct tg_scheduler *scheduler,
+                                         bool available);
 
 /**
  * @brief Reports whether plan duration has permanently stopped admissions.
