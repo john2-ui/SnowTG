@@ -10,6 +10,12 @@
 #include <rte_lcore.h>
 #include <rte_timer.h>
 
+static void count_release(void *ctx) {
+        unsigned int *count = ctx;
+
+        (*count)++;
+}
+
 int main(int argc, char **argv) {
         assert(rte_eal_init(argc, argv) >= 0);
         rte_timer_subsystem_init();
@@ -83,6 +89,19 @@ int main(int argc, char **argv) {
                                 sizeof(peer)) == -1);
         assert(errno == EINPROGRESS);
         assert(owner_io_close(tcp_handle) == 0);
+
+        unsigned int release_count = 0;
+        struct nsock_handle local_tcp;
+        assert(owner_io_socket_create_local(IPPROTO_TCP, &local_tcp) == 0);
+        sk = socket_owner_resolve_local(local_tcp);
+        assert(sk != NULL);
+        assert(sk->io_mode == NSOCK_IO_OWNER_LOCAL);
+        assert(sk->recv_buf == NULL);
+        assert(sk->send_buf == NULL);
+        assert(owner_io_set_release_observer(local_tcp, count_release,
+                                             &release_count) == 0);
+        assert(owner_io_close(local_tcp) == 0);
+        assert(release_count == 1);
 
         socket_registry_fini();
         return 0;

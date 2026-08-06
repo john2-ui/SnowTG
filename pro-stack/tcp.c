@@ -63,6 +63,37 @@
 static void tcp_drain_send(struct nsock *sk);
 static void tcp_drain_recv(struct nsock *sk);
 
+/*
+ * Production TCP allocation occurs only on a socket owner.  TCP_TESTING also
+ * exercises reassembly helpers without creating an owner, so the small
+ * fallback preserves that isolated seam without changing the runtime path.
+ */
+#ifdef TCP_TESTING
+/** Test seam: disable owner-pool access for isolated TCP algorithm tests. */
+static inline struct tcp_owner_memory *tcp_memory_current(void) { return NULL; }
+
+/** Test seam: release fallback heap payload storage without a TCP owner. */
+static inline void tcp_payload_release(uint8_t *data,
+                                       __attribute__((unused)) void *storage) {
+        rte_free(data);
+}
+#else
+/** Return the current lcore's TCP pool domain, if it is the socket owner. */
+static struct tcp_owner_memory *tcp_memory_current(void) {
+        return socket_owner_tcp_memory();
+}
+
+/** Return pool-backed payload storage, or fallback storage in a test seam. */
+static void tcp_payload_release(uint8_t *data, void *storage) {
+        struct tcp_owner_memory *memory = tcp_memory_current();
+
+        if (storage != NULL && memory != NULL)
+                tcp_memory_payload_free(memory, storage);
+        else if (data != NULL)
+                rte_free(data);
+}
+#endif
+
 static struct rte_mbuf *tcp_build_pkt(struct rte_mempool *mp, uint32_t src_ip,
                                       uint32_t dst_ip, const uint8_t *dst_mac,
                                       const struct tcp_fragment *f);
@@ -379,11 +410,16 @@ static inline int tcp_seq_between_open(uint32_t seq, uint32_t lo, uint32_t hi) {
  * @param s Segment to release; NULL is accepted.
  */
 static void tcp_ofo_seg_free(struct tcp_ofo_seg *s) {
+        struct tcp_owner_memory *memory;
+
         if (s == NULL)
                 return;
-        if (s->data)
-                rte_free(s->data);
-        rte_free(s);
+        tcp_payload_release(s->data, s->storage);
+        memory = tcp_memory_current();
+        if (memory != NULL)
+                tcp_memory_ofo_seg_free(memory, s);
+        else
+                rte_free(s);
 }
 
 /** @brief Discard every buffered out-of-order segment of a TCP socket.
@@ -414,26 +450,41 @@ static void tcp_ofo_purge(struct nsock *sk) {
  */
 static int tcp_deliver_payload(struct nsock *sk, const uint8_t *data,
                                uint32_t len) {
+        struct tcp_owner_memory *memory;
+        void *storage = NULL;
         if (len == 0)
                 return 0;
-        struct tcp_rx_blob *b =
-            rte_malloc("tcp_rx_blob", sizeof(struct tcp_rx_blob), 0);
+        if (len > TCP_MEMORY_CHUNK_SIZE)
+                return -1;
+        memory = tcp_memory_current();
+        struct tcp_rx_blob *b = memory == NULL
+                                    ? rte_zmalloc("tcp_rx_blob", sizeof(*b), 0)
+                                    : tcp_memory_rx_blob_alloc(memory);
         if (b == NULL)
                 return -1;
-        b->data = rte_malloc("tcp_rx_data", len, 0);
-        if (b->data == NULL) {
-                rte_free(b);
+        if ((memory != NULL &&
+             tcp_memory_payload_alloc(memory, &b->data, &storage) != 0) ||
+            (memory == NULL &&
+             (b->data = rte_malloc("tcp_rx_data", len, 0)) == NULL)) {
+                if (memory != NULL)
+                        tcp_memory_rx_blob_free(memory, b);
+                else
+                        rte_free(b);
                 return -1;
         }
         rte_memcpy(b->data, data, len);
         b->len = len;
         b->off = 0;
+        b->storage = storage;
 
         if (nsock_tcp_rx_enqueue(sk, b) != 0) {
                 LOG_ERROR("tcp recv_buf full " TCP_ID_FMT ", dropping %u bytes",
                           TCP_ID_ARG(sk), len);
-                rte_free(b->data);
-                rte_free(b);
+                tcp_payload_release(b->data, b->storage);
+                if (memory != NULL)
+                        tcp_memory_rx_blob_free(memory, b);
+                else
+                        rte_free(b);
                 return -1;
         }
         /*
@@ -502,7 +553,13 @@ static int tcp_ofo_link(struct nsock *sk, uint32_t seq, const uint8_t *data,
                 return -1;
         }
 
-        seg = rte_malloc("tcp_ofo_seg", sizeof(struct tcp_ofo_seg), 0);
+        if (len > TCP_MEMORY_CHUNK_SIZE) {
+                tcp_ofo_global_release(len);
+                return -1;
+        }
+        struct tcp_owner_memory *memory = tcp_memory_current();
+        seg = memory == NULL ? rte_zmalloc("tcp_ofo_seg", sizeof(*seg), 0)
+                             : tcp_memory_ofo_seg_alloc(memory);
         if (seg == NULL) {
                 tcp_ofo_global_release(len);
                 return -1;
@@ -513,10 +570,16 @@ static int tcp_ofo_link(struct nsock *sk, uint32_t seq, const uint8_t *data,
         seg->len = len;
         seg->has_fin = has_fin ? 1 : 0;
         if (len > 0) {
-                seg->data = rte_malloc("tcp_ofo_data", len, 0);
-                if (seg->data == NULL) {
+                if ((memory != NULL &&
+                     tcp_memory_payload_alloc(memory, &seg->data,
+                                              &seg->storage) != 0) ||
+                    (memory == NULL && (seg->data = rte_malloc(
+                                            "tcp_ofo_data", len, 0)) == NULL)) {
                         tcp_ofo_global_release(len);
-                        rte_free(seg);
+                        if (memory != NULL)
+                                tcp_memory_ofo_seg_free(memory, seg);
+                        else
+                                rte_free(seg);
                         return -1;
                 }
                 rte_memcpy(seg->data, data, len);
@@ -742,19 +805,16 @@ static void tcp_ofo_drain(struct nsock *sk) {
         }
 }
 
-/** @brief Allocate and initialize a TCP send buffer.
+/** @brief Initialize an empty, lazily allocated TCP send buffer.
  * @param sb Send buffer to initialize.
  * @param isn Initial sequence number for the buffer head.
- * @return 0 on success, or -1 if allocation fails.
+ * @return 0 on success, or -1 for an invalid destination.
  */
 int tcp_sndbuf_init(struct tcp_sndbuf *sb, uint32_t isn) {
-        sb->data = rte_malloc("tcp_sndbuf", TCP_SNDBUF_SIZE, 0);
-        if (sb->data == NULL) {
-                LOG_ERROR("tcp_sndbuf_init: rte_malloc failed");
+        if (sb == NULL)
                 return -1;
-        }
-        sb->size = TCP_SNDBUF_SIZE;
-        sb->head_off = 0;
+        sb->head = NULL;
+        sb->tail = NULL;
         sb->len = 0;
         sb->head_seq = isn;
         return 0;
@@ -764,11 +824,23 @@ int tcp_sndbuf_init(struct tcp_sndbuf *sb, uint32_t isn) {
  * @param sb Send buffer to release.
  */
 void tcp_sndbuf_free(struct tcp_sndbuf *sb) {
-        if (sb->data) {
-                rte_free(sb->data);
-                sb->data = NULL;
+        struct tcp_owner_memory *memory;
+
+        if (sb == NULL)
+                return;
+        memory = tcp_memory_current();
+        while (sb->head != NULL) {
+                struct tcp_tx_chunk *chunk = sb->head;
+
+                sb->head = chunk->next;
+                tcp_payload_release(chunk->data, chunk->storage);
+                if (memory != NULL)
+                        tcp_memory_tx_chunk_free(memory, chunk);
+                else
+                        rte_free(chunk);
         }
-        sb->len = sb->head_off = sb->size = 0;
+        sb->tail = NULL;
+        sb->len = 0;
 }
 
 /** @brief Empty a send buffer and assign its new sequence base.
@@ -776,8 +848,7 @@ void tcp_sndbuf_free(struct tcp_sndbuf *sb) {
  * @param seq Sequence number for the new buffer head.
  */
 static void tcp_sndbuf_reset(struct tcp_sndbuf *sb, uint32_t seq) {
-        sb->head_off = 0;
-        sb->len = 0;
+        tcp_sndbuf_free(sb);
         sb->head_seq = seq;
 }
 
@@ -794,26 +865,58 @@ static void tcp_sndbuf_reset(struct tcp_sndbuf *sb, uint32_t seq) {
  */
 static ssize_t tcp_sndbuf_append(struct tcp_sndbuf *sb, const uint8_t *data,
                                  size_t len) {
-        if (sb->data == NULL || len == 0)
-                return 0;
-        size_t space = sb->size - sb->len;
-        if (space == 0)
-                return -1;
-        size_t to_put = len < space ? len : space;
+        struct tcp_owner_memory *memory;
+        size_t copied = 0;
 
-        /* Compact to base if needed so the write is contiguous. */
-        if (sb->head_off + sb->len + to_put > sb->size) {
-                if (sb->head_off > 0) {
-                        memmove(sb->data, sb->data + sb->head_off, sb->len);
-                        sb->head_off = 0;
+        if (sb == NULL || data == NULL || len == 0)
+                return 0;
+        memory = tcp_memory_current();
+
+        while (copied < len) {
+                struct tcp_tx_chunk *chunk = sb->tail;
+                size_t space = 0;
+
+                if (chunk != NULL)
+                        space = TCP_MEMORY_CHUNK_SIZE - chunk->len;
+                if (space == 0) {
+                        void *storage = NULL;
+
+                        chunk =
+                            memory == NULL
+                                ? rte_zmalloc("tcp_tx_chunk", sizeof(*chunk), 0)
+                                : tcp_memory_tx_chunk_alloc(memory);
+                        if (chunk == NULL)
+                                break;
+                        if ((memory != NULL &&
+                             tcp_memory_payload_alloc(memory, &chunk->data,
+                                                      &storage) != 0) ||
+                            (memory == NULL &&
+                             (chunk->data = rte_malloc("tcp_tx_data",
+                                                       TCP_MEMORY_CHUNK_SIZE,
+                                                       0)) == NULL)) {
+                                if (memory != NULL)
+                                        tcp_memory_tx_chunk_free(memory, chunk);
+                                else
+                                        rte_free(chunk);
+                                break;
+                        }
+                        chunk->storage = storage;
+                        chunk->seq = sb->head_seq + sb->len;
+                        if (sb->tail != NULL)
+                                sb->tail->next = chunk;
+                        else
+                                sb->head = chunk;
+                        sb->tail = chunk;
+                        space = TCP_MEMORY_CHUNK_SIZE;
                 }
-                if (sb->head_off + sb->len + to_put > sb->size) {
-                        to_put = sb->size - sb->len;
-                }
+                size_t take = len - copied < space ? len - copied : space;
+
+                rte_memcpy(chunk->data + chunk->len, data + copied, take);
+                chunk->len += (uint16_t)take;
+                sb->len += (uint32_t)take;
+                copied += take;
         }
-        rte_memcpy(sb->data + sb->head_off + sb->len, data, to_put);
-        sb->len += (uint32_t)to_put;
-        return (ssize_t)to_put;
+        return copied == 0 ? -1 : (ssize_t)copied;
 }
 
 /**
@@ -829,9 +932,6 @@ static ssize_t tcp_sndbuf_append(struct tcp_sndbuf *sb, const uint8_t *data,
  */
 static uint32_t tcp_app_snd_limit_locked(const struct nsock *sk) {
         uint32_t limit = TCP_SNDBUF_APP_HIWAT;
-
-        if (limit > sk->u.tcp.sndbuf.size)
-                limit = sk->u.tcp.sndbuf.size;
 
         if (sk->u.tcp.snd_wnd_valid && sk->u.tcp.snd_wnd < limit)
                 limit = sk->u.tcp.snd_wnd;
@@ -860,16 +960,92 @@ static uint32_t tcp_app_snd_space_locked(const struct nsock *sk) {
  * @param len Requested number of bytes to remove; clamped to buffered bytes.
  */
 static void tcp_sndbuf_remove(struct tcp_sndbuf *sb, uint32_t len) {
+        struct tcp_owner_memory *memory;
+
+        if (sb == NULL)
+                return;
+        memory = tcp_memory_current();
         if (len == 0)
                 return;
         if (len > sb->len)
                 len = sb->len;
-        sb->head_off += len;
-        sb->len -= len;
-        sb->head_seq += len;
-        if (sb->len == 0)
-                sb->head_off = 0;
+        while (len != 0 && sb->head != NULL) {
+                struct tcp_tx_chunk *chunk = sb->head;
+                uint32_t available = chunk->len - chunk->off;
+                uint32_t take = len < available ? len : available;
+
+                chunk->off += (uint16_t)take;
+                sb->len -= take;
+                sb->head_seq += take;
+                len -= take;
+                if (chunk->off == chunk->len) {
+                        sb->head = chunk->next;
+                        if (sb->head == NULL)
+                                sb->tail = NULL;
+                        tcp_payload_release(chunk->data, chunk->storage);
+                        if (memory != NULL)
+                                tcp_memory_tx_chunk_free(memory, chunk);
+                        else
+                                rte_free(chunk);
+                }
+        }
 }
+
+/** Return the payload range beginning at @p seq, capped to one chunk. */
+static const uint8_t *tcp_sndbuf_peek(const struct tcp_sndbuf *sb, uint32_t seq,
+                                      uint32_t *available) {
+        uint32_t skip;
+
+        if (sb == NULL || available == NULL || tcp_seq_lt(seq, sb->head_seq) ||
+            !tcp_seq_lt(seq, sb->head_seq + sb->len))
+                return NULL;
+        skip = seq - sb->head_seq;
+        for (const struct tcp_tx_chunk *chunk = sb->head; chunk != NULL;
+             chunk = chunk->next) {
+                uint32_t bytes = chunk->len - chunk->off;
+
+                if (skip < bytes) {
+                        *available = bytes - skip;
+                        return chunk->data + chunk->off + skip;
+                }
+                skip -= bytes;
+        }
+        return NULL;
+}
+
+#ifdef TCP_TESTING
+/**
+ * Initialize a test send buffer and append bytes through the production chunk
+ * allocator; isolated tests use the fallback heap path.
+ */
+int tcp_test_sndbuf_append(struct nsock *sk, uint32_t isn, const uint8_t *data,
+                           size_t len) {
+        if (sk == NULL)
+                return -1;
+        if (tcp_sndbuf_init(&sk->u.tcp.sndbuf, isn) != 0)
+                return -1;
+        return (int)tcp_sndbuf_append(&sk->u.tcp.sndbuf, data, len);
+}
+
+/** Remove ACKed test bytes, including any complete chunk reclamation. */
+void tcp_test_sndbuf_remove(struct nsock *sk, uint32_t len) {
+        if (sk != NULL)
+                tcp_sndbuf_remove(&sk->u.tcp.sndbuf, len);
+}
+
+/** Expose one contiguous test payload range at a TCP sequence number. */
+const uint8_t *tcp_test_sndbuf_peek(const struct nsock *sk, uint32_t seq,
+                                    uint32_t *available) {
+        return sk == NULL ? NULL
+                          : tcp_sndbuf_peek(&sk->u.tcp.sndbuf, seq, available);
+}
+
+/** Release all test send-buffer chunks. */
+void tcp_test_sndbuf_free(struct nsock *sk) {
+        if (sk != NULL)
+                tcp_sndbuf_free(&sk->u.tcp.sndbuf);
+}
+#endif
 
 /** @brief Return a printable TCP state name.
  * @param s TCP state to format.
@@ -1056,16 +1232,32 @@ static struct rte_ipv4_hdr *tcp_ipv4_header(struct rte_mbuf *mbuf) {
         return (struct rte_ipv4_hdr *)(eth + 1);
 }
 
-/** @brief Allocate a zero-initialized outbound TCP fragment descriptor.
- * @return Allocated fragment; terminates the process if allocation fails.
+/**
+ * @brief Allocate a zero-initialized outbound TCP fragment descriptor.
+ * @return Allocated descriptor, or NULL when the owner pool is exhausted.
  */
 static struct tcp_fragment *tcp_fragment_alloc(void) {
-        struct tcp_fragment *f =
-            rte_malloc("tcp_fragment", sizeof(struct tcp_fragment), 0);
-        if (f == NULL)
-                rte_exit(EXIT_FAILURE, "rte_malloc(tcp_fragment) failed\n");
-        memset(f, 0, sizeof(*f));
+        struct tcp_owner_memory *memory = tcp_memory_current();
+        struct tcp_fragment *f;
+
+        f = memory == NULL ? rte_zmalloc("tcp_fragment", sizeof(*f), 0)
+                           : tcp_memory_fragment_alloc(memory);
         return f;
+}
+
+/** Release a control fragment and its optional independently-owned payload. */
+static void tcp_fragment_free(struct tcp_fragment *f) {
+        struct tcp_owner_memory *memory;
+
+        if (f == NULL)
+                return;
+        if (f->payload != NULL)
+                rte_free(f->payload);
+        memory = tcp_memory_current();
+        if (memory != NULL)
+                tcp_memory_fragment_free(memory, f);
+        else
+                rte_free(f);
 }
 
 /** @brief Queue an outbound TCP fragment and release it on failure.
@@ -1074,12 +1266,12 @@ static struct tcp_fragment *tcp_fragment_alloc(void) {
  * @return 0 on success, or -1 if send_buf is full.
  */
 static int tcp_enqueue_fragment(struct nsock *sk, struct tcp_fragment *f) {
+        if (f == NULL)
+                return -1;
         if (nsock_tcp_tx_enqueue(sk, f) != 0) {
                 LOG_ERROR("tcp send_buf full for " TCP_ID_FMT " flags=0x%02x",
                           TCP_ID_ARG(sk), f->tcp_flags);
-                if (f->payload)
-                        rte_free(f->payload);
-                rte_free(f);
+                tcp_fragment_free(f);
                 return -1;
         }
         return 0;
@@ -1100,6 +1292,8 @@ static struct tcp_fragment *tcp_make_fragment(struct nsock *sk, uint8_t flags,
                                               uint32_t sent_seq,
                                               uint32_t recv_ack) {
         struct tcp_fragment *f = tcp_fragment_alloc();
+        if (f == NULL)
+                return NULL;
         f->src_port = sk->local_port;
         f->dst_port = sk->u.tcp.remote_port;
         f->sent_seq = sent_seq;
@@ -1206,7 +1400,9 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                         sk->u.tcp.retries++;
                         struct tcp_fragment *syn_f = tcp_make_fragment(
                             sk, RTE_TCP_SYN_FLAG, sk->u.tcp.sent_seq, 0);
-                        (void)tcp_options_apply_syn(sk, syn_f, true, true, 0);
+                        if (syn_f != NULL)
+                                (void)tcp_options_apply_syn(sk, syn_f, true,
+                                                            true, 0);
                         /*
                          * The timer for the next retry backs off from the
                          * fixed initial SYN RTO: 1s, 2s, 4s, and so on.
@@ -1604,6 +1800,12 @@ static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
         listener->u.tcp.syn_pending++;
 
         struct tcp_fragment *f = tcp_fragment_alloc();
+        if (f == NULL) {
+                tcp_stream_set_status(child, TCP_STATUS_CLOSED);
+                nsock_free(child);
+                listener->u.tcp.syn_pending--;
+                return 0;
+        }
         f->src_port = child->local_port;
         f->dst_port = child->u.tcp.remote_port;
         f->sent_seq = child->u.tcp.sent_seq;
@@ -1615,9 +1817,7 @@ static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
                                     child->u.tcp.ts_recent);
         child->u.tcp.recv_ack = f->recv_ack;
         if (nsock_tcp_tx_enqueue(child, f) != 0) {
-                if (f->payload != NULL)
-                        rte_free(f->payload);
-                rte_free(f);
+                tcp_fragment_free(f);
                 tcp_stream_set_status(child, TCP_STATUS_CLOSED);
                 nsock_free(child);
                 listener->u.tcp.syn_pending--;
@@ -1728,9 +1928,10 @@ static int tcp_state_syn_recv(struct nsock *sk, struct rte_tcp_hdr *hdr,
                 struct tcp_fragment *f =
                     tcp_make_fragment(sk, RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG,
                                       sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
-                (void)tcp_options_apply_syn(sk, f, sk->u.tcp.wscale_ok,
-                                            sk->u.tcp.timestamps_ok,
-                                            sk->u.tcp.ts_recent);
+                if (f != NULL)
+                        (void)tcp_options_apply_syn(sk, f, sk->u.tcp.wscale_ok,
+                                                    sk->u.tcp.timestamps_ok,
+                                                    sk->u.tcp.ts_recent);
                 if (tcp_enqueue_fragment(sk, f) == 0)
                         LOG_INFO("tcp SYN_RECV retransmit SYN+ACK " IP_FMT
                                  ":%u seq=%u ack=%u",
@@ -1922,7 +2123,7 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
         /* Pure ACK so the peer can retire its in-flight bytes. */
         struct tcp_fragment *ack_f = tcp_make_fragment(
             sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
-        uint16_t ack_win = ack_f->rx_win;
+        uint16_t ack_win = ack_f == NULL ? 0 : ack_f->rx_win;
         (void)tcp_enqueue_fragment(sk, ack_f);
         LOG_TCP_DEBUG(TCP_SK_FMT " event=ack-queue reason=%s ack=%u win=%u",
                       TCP_SK_ARG(sk),
@@ -2693,7 +2894,7 @@ static int tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
                 goto out;
 
         struct tcp_sndbuf *sb = &sk->u.tcp.sndbuf;
-        if (sb->data == NULL || sb->len == 0)
+        if (sb->head == NULL || sb->len == 0)
                 goto out;
 
         /* Bytes not yet transmitted: [sent_seq, head_seq + len) */
@@ -2701,8 +2902,12 @@ static int tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
         if (!tcp_seq_lt(sk->u.tcp.sent_seq, buf_end))
                 goto out;
 
-        uint32_t off = sk->u.tcp.sent_seq - sb->head_seq; /* into buffer */
         uint32_t unsent = buf_end - sk->u.tcp.sent_seq;
+        uint32_t chunk_available = 0;
+        const uint8_t *payload =
+            tcp_sndbuf_peek(sb, sk->u.tcp.sent_seq, &chunk_available);
+        if (payload == NULL)
+                goto out;
 
         uint32_t in_flight = sk->u.tcp.sent_seq - sk->u.tcp.snd_una;
         int was_idle = (sk->u.tcp.snd_una == sk->u.tcp.sent_seq);
@@ -2718,6 +2923,8 @@ static int tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
                 seglen = mss;
         if (seglen > credit)
                 seglen = credit;
+        if (seglen > chunk_available)
+                seglen = chunk_available;
         if (seglen == 0)
                 goto out;
 
@@ -2747,7 +2954,7 @@ static int tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
         f.data_off = (5 << 4);
         f.rx_win = tcp_wire_rcv_wnd(sk, f.tcp_flags);
         (void)tcp_options_apply_established(sk, &f);
-        f.payload = sb->data + sb->head_off + off;
+        f.payload = (unsigned char *)payload;
         f.payload_len = seglen;
 
         struct rte_mbuf *tcp_buf =
@@ -2832,14 +3039,15 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
                         struct inout_ring *ring = ring_instance();
                         rte_ring_mp_enqueue_burst(ring->out, (void **)&arp, 1,
                                                   NULL);
-                        (void)nsock_tcp_tx_enqueue(sk, f);
+                        if (nsock_tcp_tx_enqueue(sk, f) != 0)
+                                tcp_fragment_free(f);
                         return 0;
                 }
 
                 struct rte_mbuf *tcp_buf =
                     tcp_build_pkt(mp, g_net.local_ip, peer_ip, dst_mac, f);
                 if (tcp_buf == NULL) {
-                        rte_free(f);
+                        tcp_fragment_free(f);
                         continue;
                 }
 
@@ -2867,9 +3075,7 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
                             f->sent_seq, f->recv_ack, f->payload_len);
                 }
 
-                if (f->payload)
-                        rte_free(f->payload);
-                rte_free(f);
+                tcp_fragment_free(f);
         }
 
         while (tcp_tx_flush_sndbuf(sk, mp) > 0)
@@ -3007,7 +3213,7 @@ ssize_t tcp_recv(struct nsock *sk, void *buf, size_t len,
         /* Promptly advertise space, including recovery from a zero window. */
         struct tcp_fragment *ack_f = tcp_make_fragment(
             sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
-        uint16_t ack_win = ack_f->rx_win;
+        uint16_t ack_win = ack_f == NULL ? 0 : ack_f->rx_win;
         (void)tcp_enqueue_fragment(sk, ack_f);
         LOG_TCP_DEBUG(TCP_SK_FMT
                       " event=ack-queue reason=window-update ack=%u win=%u "
@@ -3018,8 +3224,11 @@ ssize_t tcp_recv(struct nsock *sk, void *buf, size_t len,
         if (b->off < b->len)
                 return (ssize_t)n;
 
-        rte_free(b->data);
-        rte_free(b);
+        tcp_payload_release(b->data, b->storage);
+        if (tcp_memory_current() != NULL)
+                tcp_memory_rx_blob_free(tcp_memory_current(), b);
+        else
+                rte_free(b);
         sk->u.tcp.rx_current = NULL;
         return (ssize_t)n;
 }
@@ -3041,9 +3250,7 @@ static void tcp_drain_send(struct nsock *sk) {
          */
         pthread_mutex_lock(&sk->mutex);
         while ((f = nsock_tcp_tx_dequeue(sk)) != NULL) {
-                if (f->payload)
-                        rte_free(f->payload);
-                rte_free(f);
+                tcp_fragment_free(f);
         }
         tcp_sndbuf_reset(&sk->u.tcp.sndbuf, sk->u.tcp.sent_seq);
         sk->u.tcp.snd_una = sk->u.tcp.sent_seq;
@@ -3056,13 +3263,19 @@ static void tcp_drain_send(struct nsock *sk) {
 static void tcp_drain_recv(struct nsock *sk) {
         struct tcp_rx_blob *b;
         while ((b = nsock_tcp_rx_dequeue(sk)) != NULL) {
-                rte_free(b->data);
-                rte_free(b);
+                tcp_payload_release(b->data, b->storage);
+                if (tcp_memory_current() != NULL)
+                        tcp_memory_rx_blob_free(tcp_memory_current(), b);
+                else
+                        rte_free(b);
         }
         b = sk->u.tcp.rx_current;
         if (b != NULL) {
-                rte_free(b->data);
-                rte_free(b);
+                tcp_payload_release(b->data, b->storage);
+                if (tcp_memory_current() != NULL)
+                        tcp_memory_rx_blob_free(tcp_memory_current(), b);
+                else
+                        rte_free(b);
                 sk->u.tcp.rx_current = NULL;
         }
         tcp_ofo_purge(sk);
@@ -3262,7 +3475,8 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
 
         struct tcp_fragment *syn_f =
             tcp_make_fragment(sk, RTE_TCP_SYN_FLAG, sk->u.tcp.sent_seq, 0);
-        (void)tcp_options_apply_syn(sk, syn_f, true, true, 0);
+        if (syn_f != NULL)
+                (void)tcp_options_apply_syn(sk, syn_f, true, true, 0);
         if (tcp_enqueue_fragment(sk, syn_f) != 0) {
                 LOG_ERROR("tcp_connect: SYN enqueue failed " TCP_ID_FMT,
                           TCP_ID_ARG(sk));

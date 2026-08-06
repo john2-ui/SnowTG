@@ -66,6 +66,7 @@ struct tcp_rx_blob {
         size_t len;
         size_t off;               /**< bytes already consumed by short recv */
         struct tcp_rx_blob *next; /**< Owner-local RX queue linkage. */
+        void *storage;            /**< Owner-pool payload backing object. */
 };
 
 /**
@@ -80,6 +81,7 @@ struct tcp_ofo_seg {
         uint32_t len;
         uint8_t has_fin;
         unsigned char *data;
+        void *storage; /**< Owner-pool payload backing object. */
 
         /*O(log n) lookup index, keyed by seq*/
         struct rb_node rb;
@@ -89,12 +91,20 @@ struct tcp_ofo_seg {
         struct tcp_ofo_seg *next;
 };
 
+struct tcp_tx_chunk {
+        struct tcp_tx_chunk *next;
+        uint8_t *data;
+        void *storage;
+        uint32_t seq; /**< Sequence number of data[0]. */
+        uint16_t len;
+        uint16_t off; /**< Acknowledged prefix within @c data. */
+};
+
 struct tcp_sndbuf {
-        uint8_t *data;     /**< Contiguous payload storage. */
-        uint32_t size;     /**< Capacity (TCP_SNDBUF_SIZE). */
-        uint32_t head_off; /**< Offset of first buffered byte. */
+        struct tcp_tx_chunk *head;
+        struct tcp_tx_chunk *tail;
         uint32_t len;      /**< Bytes currently buffered (unacked+unsent). */
-        uint32_t head_seq; /**< Seq of data[head_off]; tracks snd_una. */
+        uint32_t head_seq; /**< Sequence of the first buffered byte. */
 };
 
 #ifdef TCP_TESTING
@@ -113,14 +123,24 @@ struct tcp_ofo_seg *tcp_test_ofo_lower_bound(const struct nsock *sk,
 void tcp_test_ofo_purge(struct nsock *sk);
 void tcp_test_update_snd_wnd(struct nsock *sk, uint32_t seg_seq,
                              uint32_t seg_ack, uint16_t seg_wnd);
+/** Test-only initialization plus append through the lazy TX chunk path. */
+int tcp_test_sndbuf_append(struct nsock *sk, uint32_t isn, const uint8_t *data,
+                           size_t len);
+/** Test-only ACK-prefix removal from the lazy TX chunk chain. */
+void tcp_test_sndbuf_remove(struct nsock *sk, uint32_t len);
+/** Test-only sequence lookup returning one contiguous chunk range. */
+const uint8_t *tcp_test_sndbuf_peek(const struct nsock *sk, uint32_t seq,
+                                    uint32_t *available);
+/** Test-only destruction of every chunk in a send buffer. */
+void tcp_test_sndbuf_free(struct nsock *sk);
 #endif
 
 /**
- * @brief Allocate and initialize a TCP send buffer.
+ * @brief Initialize an empty TCP send buffer; payload chunks are lazy.
  *
  * @param sb  Send buffer to initialize.
  * @param isn Initial sequence number for @c head_seq.
- * @return 0 on success, -1 on allocation failure.
+ * @return 0 on success, -1 for an invalid destination.
  */
 int tcp_sndbuf_init(struct tcp_sndbuf *sb, uint32_t isn);
 /**

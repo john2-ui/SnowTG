@@ -222,6 +222,39 @@ static void test_initial_send_window_update(void) {
         CHECK(sk.u.tcp.snd_wnd == 32768);
 }
 
+static void test_chunked_send_buffer_ack_reclaim(void) {
+        struct nsock sk;
+        uint8_t payload[TCP_MEMORY_CHUNK_SIZE + 32];
+        uint32_t available;
+        const uint8_t *view;
+
+        memset(&sk, 0, sizeof(sk));
+        for (size_t i = 0; i < sizeof(payload); i++)
+                payload[i] = (uint8_t)i;
+        CHECK(tcp_test_sndbuf_append(&sk, 1000, payload, sizeof(payload)) ==
+              (int)sizeof(payload));
+        CHECK(sk.u.tcp.sndbuf.len == sizeof(payload));
+
+        view = tcp_test_sndbuf_peek(&sk, 1000, &available);
+        CHECK(view != NULL);
+        CHECK(available == TCP_MEMORY_CHUNK_SIZE);
+        CHECK(memcmp(view, payload, available) == 0);
+
+        tcp_test_sndbuf_remove(&sk, TCP_MEMORY_CHUNK_SIZE + 16);
+        CHECK(sk.u.tcp.sndbuf.head_seq == 1000 + TCP_MEMORY_CHUNK_SIZE + 16);
+        CHECK(sk.u.tcp.sndbuf.len == 16);
+        view = tcp_test_sndbuf_peek(&sk, sk.u.tcp.sndbuf.head_seq, &available);
+        CHECK(view != NULL);
+        CHECK(available == 16);
+        CHECK(memcmp(view, payload + TCP_MEMORY_CHUNK_SIZE + 16, 16) == 0);
+
+        tcp_test_sndbuf_remove(&sk, 16);
+        CHECK(sk.u.tcp.sndbuf.head == NULL);
+        CHECK(sk.u.tcp.sndbuf.tail == NULL);
+        CHECK(sk.u.tcp.sndbuf.len == 0);
+        tcp_test_sndbuf_free(&sk);
+}
+
 int main(void) {
         char *eal_argv[] = {"test_ofo", "--in-memory", "--no-pci"};
 
@@ -231,6 +264,7 @@ int main(void) {
         test_receive_window_and_capacity();
         test_sequence_wraparound();
         test_initial_send_window_update();
+        test_chunked_send_buffer_ack_reclaim();
         puts("test_ofo: PASS");
         return EXIT_SUCCESS;
 }

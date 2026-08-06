@@ -51,7 +51,7 @@ test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(OWNER_IO_TEST) \
 	$(RBTREE_TEST)
 	$(OFO_TEST)
 	$(PAWS_TEST)
-	$(OWNER_IO_TEST) --in-memory --no-huge
+	$(OWNER_IO_TEST) --no-huge --no-pci --file-prefix ownerio-test
 	$(HTTP_CLIENT_TEST)
 	$(SCENARIO_SCHEDULER_TEST)
 
