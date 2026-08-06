@@ -384,10 +384,12 @@ HTTP upgrade、response pipeline 或在同一 flow 上复用下一个 keep-alive
 
 1. **小初始窗口 / 小 sndbuf 默认**（压测请求通常很小）。  
 2. **对象池**：`tg_flow` / `tg_txn` 预分配，禁止热路径 `malloc`。  
-3. **TCP 缓冲按需**：空闲连接不占满发送缓存；或发送走小固定 scratch。  
+3. **TCP 缓冲按需**：owner-local fixed chunk 仅在未 ACK payload 存在时占用，
+   ACK 后归还；空闲或 TIME_WAIT socket 不持有完整发送缓存。
 4. 提高规模前先算：`N * (TCB + 平均缓冲 + 事务 ctx)` ≤ 可用巨页内存的 60%。
 
-栈侧需配合：可配置 `TCP_SNDBUF` / 连接上限；`NSOCK_FD_MAX` / `NSOCK_ID_MAX` 随目标上调并有文档说明。
+栈侧需配合：可配置 `TCP_SNDBUF`、chunk pool 与连接上限；pool low/high water
+必须反馈为 scheduler 背压和资源指标。`NSOCK_FD_MAX` / `NSOCK_ID_MAX` 随目标上调并有文档说明。
 
 ### 5.3 定时器
 

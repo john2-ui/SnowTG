@@ -6,7 +6,7 @@
 
 - [ARC-001：TCP 接收路径的跨 lcore 所有权缺陷](#arc-001tcp-接收路径的跨-lcore-所有权缺陷) — 接收路径已实施；生命周期收敛待后续处理
 - [ARC-002：Socket 单 owner、代际句柄与命令队列](#arc-002socket-单-owner代际句柄与命令队列) — 已实施；取代跨 lcore 裸指针与 `tcp_rx_events` 过渡模型
-- [ARC-003：traffic-gen owner-local 队列与按需 TCP 缓冲](#arc-003traffic-gen-owner-local-队列与按需-tcp-缓冲) — 实施中；消除 per-socket ring 后继续收敛 TCB 内存
+- [ARC-003：traffic-gen owner-local 队列与按需 TCP 缓冲](#arc-003traffic-gen-owner-local-队列与按需-tcp-缓冲) — 已实施（单 worker）；TCB 内存按需分配并为 RSS 分片保留 owner 边界
 
 ## 条目格式
 
@@ -906,7 +906,7 @@ fd
 
 ## ARC-003：traffic-gen owner-local 队列与按需 TCP 缓冲
 
-- **状态**：实施中。
+- **状态**：已实施（单 worker）；多 worker/RSS 分片仍保持 fail-closed。
 - **范围**：`traffic-gen` owner-local flow、`owner_io`、`nsock`、TCP RX/TX 队列、发送缓冲和后续 per-worker 分片。
 - **触发**：1000 CPS 短连接测试中，每个 socket 创建两个 DPDK ring；连接在 FIN_WAIT/TIME_WAIT 期间仍保留 ring，最终触发 DPDK memzone 段上限。
 - **架构决策**：同一 owner worker 内的 traffic-gen socket 不创建 DPDK ring，改用嵌入 TCB 的 owner-local FIFO；DPDK ring 仅保留给跨 lcore 通信和 app-visible 兼容路径。
@@ -937,18 +937,27 @@ HTTP transaction complete
 3. `nsock_free()` 提供最终释放 observer；scheduler 分别记录活跃 transaction 与 `live_sockets`，后者仅在 TCP 完整释放后减少。
 4. scheduler 停止、活跃 flow 与 `live_sockets` 均为零后，runtime 自动停止并等待 worker 退出。
 
-### 长期内存策略
+### 按需内存实现
 
-消除 ring 不是百万连接的终点。当前 `tcp_sndbuf_init()` 仍会为每个 TCP socket 预分配 `TCP_SNDBUF_SIZE`（64 KiB）；100 万 socket 仅该项就约 61 GiB。
+消除 ring 后，`tcp_sndbuf_init()` 若仍为每个 socket 预分配
+`TCP_SNDBUF_SIZE`（64 KiB），100 万 socket 仅该项就约 61 GiB。本次实现将
+该成本收敛为 owner-local 的显式预算：
 
-后续应遵守：
-
-1. TCB/flow pool 只保存四元组、序号、窗口、timer 和少量指针等固定元数据；
-2. TX payload 改为按需申请的固定大小 chunk 链，仅保留未 ACK 数据并在 ACK 后归还；
-3. traffic-gen 固定 HTTP 模板使用 template 引用、offset 和 lazy packet build；重传按模板重建，不复制完整请求；
-4. `tcp_rx_blob`、OFO segment、`tcp_fragment` 从热路径 `rte_malloc` 迁为 per-worker mempool；
-5. pool 耗尽时由 scheduler 背压并记录资源指标，不把本地资源不足误记为远端连接失败。
+1. `tcp_owner_memory` 属于 `socket_owner` shard；每个 owner 创建 TX chunk、
+   RX blob、OFO node、control fragment 和 payload mempool，不共享热路径对象；
+2. `tcp_sndbuf` 改为带序号的 TX chunk 链。只保存未 ACK 数据，部分 ACK 推进
+   chunk offset，完整 ACK 将 chunk 归还本 owner；RTO 仍从相同序号范围重建；
+3. scenario 在加载期为每个 HTTP class 序列化一次 request template；`tg_txn`
+   只引用该模板和维护 offset，不再为每个 flow 复制 1 KiB 请求数组；
+4. RX/OFO/control fragment 通过同一 pool 分配，owner 外的测试接缝才保留
+   `rte_malloc` fallback；生产路径 pool 耗尽不会 `rte_exit`；
+5. scheduler 用 low/high-water hysteresis 暂停/恢复新 flow admission，周期日志
+   输出可用对象数、peak、allocation failure 和资源暂停次数。`ENOBUFS` 被归类
+   为本地资源压力，而非远端 connect 或 I/O 错误。
 
 ### 多核边界
 
 `--workers N` 和多 queue/RSS 配置已建立基础，但当前 `socket_owner`、socket list、ARP 表、in/out ring 和 reactor 仍为进程全局单例。它们必须先按 worker 分片，才能安全启用多个协议 worker；在此之前，`--workers > 1` 必须 fail-closed。
+
+在 socket owner、socket list、ARP 表、in/out ring、reactor 与 TCP memory domain
+全部按 worker 分片，并验证跨 worker 生命周期交接前，不能解除此限制。

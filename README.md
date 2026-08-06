@@ -286,7 +286,7 @@ flowchart LR
   `EAGAIN` / `EINPROGRESS`；补充 socket 级 nonblocking 状态、
   `naccept4(..., SOCK_NONBLOCK)`、`ngetsockopt(SO_ERROR)` 及错误语义，
   使应用可正确处理空 accept queue、异步 connect 成败、短读和短写。
-- [ ] **提供 owner-local 热路径**：traffic-gen reactor 与 socket owner 同核，
+- [x] **提供 owner-local 热路径**：traffic-gen reactor 与 socket owner 同核，
   通过受控 `try_*` 接口推进 flow；避免 app lcore 经 command ring +
   `pthread_cond_wait()` 同步调用成为高并发瓶颈。
 - [ ] **确定 traffic-gen 集成方式**：明确独立二进制、`ENABLE_TRAFFIC_GEN`
@@ -334,7 +334,7 @@ flowchart LR
 | fd、UDP bind、TCP listener/4-tuple 已使用数组或 `rte_hash`；ARP 仍为 O(n) 链表，`g_sock_list` 仍供 TX 遍历  | ARP 表改哈希；TX 改为 dirty socket 队列                                                                           |
 | worker 每轮遍历全部 socket 调 `tx_flush`                                                         | 仅冲洗有待发数据的 socket：dirty 队列，或 `send_buf` / `sndbuf` 非空时入队                                                  |
 | TCP OFO 使用 RB-tree（按 seq）+ 双向链表，插入定位 O(log n)、从 `recv_ack` drain O(1)，并限制节点、每 TCB 字节与全局字节 | 增加可观测性指标；依据压力和乱序距离自适应调节上限                                                                                |
-| `tcp_send` → `sndbuf` 仍 memcpy                                                            | （可选）零拷贝 / mbuf 引用计数                                                                                      |
+| `tcp_send` → owner-local ACK-retained chunk 链（仅未确认数据占用内存）                      | （可选）零拷贝 / mbuf 引用计数                                                                                      |
 | ARP /24 周期性广播                                                                             | 按需解析 + 缓存老化；全网扫仅作可选调试手段                                                                                  |
 | 单 RX/TX queue、单 packet worker                                                             | 多 queue + 硬件 RSS：同一四元组固定归属一个 worker；ARP/ICMP、计时器、TX 和 socket 生命周期按 worker 分片。单 RX queue 或自定义亲和时再使用软件 RSS |
 
