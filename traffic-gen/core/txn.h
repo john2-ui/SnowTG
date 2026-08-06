@@ -5,7 +5,8 @@
  * @file txn.h
  * @brief One owner-local L7 request/response transaction and lifecycle API.
  *
- * A transaction owns protocol-parser state and a bounded request buffer.
+ * A transaction owns protocol-parser state and references immutable request
+ * bytes owned by its compiled scenario.
  * Transport code reports accepted transmit bytes and received data through
  * this interface without knowing protocol-specific parsing details.
  */
@@ -14,9 +15,6 @@
 
 #include <stddef.h>
 #include <stdint.h>
-
-/** @brief Maximum serialized application request size, in bytes. */
-#define TG_TXN_REQUEST_CAP 1024U
 
 /**
  * @brief Per-flow state for a single application-layer exchange.
@@ -29,14 +27,14 @@ struct tg_txn {
         const void *class_config;
         void *proto_ctx;
 
-        uint8_t request[TG_TXN_REQUEST_CAP];
+        const uint8_t *request;
         size_t request_len;
         size_t request_offset;
         uint64_t response_bytes;
 };
 
 /**
- * @brief Initializes protocol state and serializes the outbound request.
+ * @brief Initializes protocol state without allocating request payload.
  * @param txn Destination transaction.
  * @param proto Protocol plugin that owns parsing behavior.
  * @param class_config Immutable plugin-specific class configuration.
@@ -44,6 +42,15 @@ struct tg_txn {
  */
 int tg_txn_init(struct tg_txn *txn, const struct tg_proto_ops *proto,
                 const void *class_config);
+/**
+ * Initialize with a scenario-owned immutable request view.
+ * @p request must outlive the transaction; the transaction never frees or
+ * copies it, so many flows can share one compiled class template.
+ */
+int tg_txn_init_with_request(struct tg_txn *txn,
+                             const struct tg_proto_ops *proto,
+                             const void *class_config, const uint8_t *request,
+                             size_t request_len);
 
 /**
  * @brief Releases plugin state and clears transaction fields.

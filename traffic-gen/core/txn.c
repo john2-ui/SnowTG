@@ -15,9 +15,7 @@
 /** @copydoc tg_txn_init */
 int tg_txn_init(struct tg_txn *txn, const struct tg_proto_ops *proto,
                 const void *class_config) {
-        size_t request_len;
-
-        if (txn == NULL || proto == NULL || proto->build_request == NULL) {
+        if (txn == NULL || proto == NULL) {
                 errno = EINVAL;
                 return -1;
         }
@@ -31,15 +29,21 @@ int tg_txn_init(struct tg_txn *txn, const struct tg_proto_ops *proto,
                 return -1;
         }
 
-        if (proto->build_request(class_config, txn->request,
-                                 sizeof(txn->request), &request_len) != 0 ||
-            request_len == 0 || request_len > sizeof(txn->request)) {
+        return 0;
+}
+
+/** @copydoc tg_txn_init_with_request */
+int tg_txn_init_with_request(struct tg_txn *txn,
+                             const struct tg_proto_ops *proto,
+                             const void *class_config, const uint8_t *request,
+                             size_t request_len) {
+        if (request == NULL || request_len == 0 ||
+            tg_txn_init(txn, proto, class_config) != 0) {
                 if (errno == 0)
                         errno = EINVAL;
-                tg_txn_reset(txn);
                 return -1;
         }
-
+        txn->request = request;
         txn->request_len = request_len;
         return 0;
 }

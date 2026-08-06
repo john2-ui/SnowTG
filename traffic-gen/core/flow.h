@@ -53,6 +53,8 @@ enum tg_flow_result {
         TG_FLOW_RESULT_IO_FAILURE,
         /** @brief Received bytes or EOF violated protocol requirements. */
         TG_FLOW_RESULT_PROTOCOL_FAILURE,
+        /** @brief A local owner-memory pool could not admit required data. */
+        TG_FLOW_RESULT_RESOURCE_PRESSURE,
 };
 
 /**
@@ -150,7 +152,8 @@ int tg_flow_map_remove(struct tg_flow_map *map, struct tg_flow *flow);
 int tg_flow_start_tcp(struct tg_flow_map *map, struct tg_flow_pool *pool,
                       const struct sockaddr *peer, socklen_t peer_len,
                       const struct tg_proto_ops *proto,
-                      const void *class_config, tg_flow_finish_fn on_finish,
+                      const void *class_config, const uint8_t *request,
+                      size_t request_len, tg_flow_finish_fn on_finish,
                       void *on_finish_ctx,
                       tg_flow_socket_created_fn on_socket_created,
                       owner_io_release_fn on_socket_released,

@@ -13,6 +13,7 @@
 #include "../proto/http/http_client.h"
 
 #include <netinet/in.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /** @brief Maximum number of independently weighted traffic classes. */
@@ -23,6 +24,8 @@
 #define TG_PLAN_HTTP_METHOD_CAP 16U
 /** @brief Capacity, including NUL terminator, of an HTTP request path. */
 #define TG_PLAN_HTTP_PATH_CAP 768U
+/** Largest immutable serialized request retained once per traffic class. */
+#define TG_PLAN_REQUEST_TEMPLATE_CAP 1024U
 /** @brief Largest flow-pool and scheduler concurrency supported by a plan. */
 #define TG_PLAN_MAX_CONCURRENCY 65536U
 /** @brief Largest supported connection-start rate in attempts per second. */
@@ -54,6 +57,8 @@ struct tg_class_plan {
         char http_path[TG_PLAN_HTTP_PATH_CAP];
         struct tg_http_config http_config;
         const struct tg_proto_ops *proto;
+        uint8_t request_template[TG_PLAN_REQUEST_TEMPLATE_CAP];
+        size_t request_template_len;
 };
 
 /**

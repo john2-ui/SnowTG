@@ -151,7 +151,8 @@ static void tg_flow_start_cleanup(struct tg_flow_map *map,
 int tg_flow_start_tcp(struct tg_flow_map *map, struct tg_flow_pool *pool,
                       const struct sockaddr *peer, socklen_t peer_len,
                       const struct tg_proto_ops *proto,
-                      const void *class_config, tg_flow_finish_fn on_finish,
+                      const void *class_config, const uint8_t *request,
+                      size_t request_len, tg_flow_finish_fn on_finish,
                       void *on_finish_ctx,
                       tg_flow_socket_created_fn on_socket_created,
                       owner_io_release_fn on_socket_released,
@@ -160,6 +161,7 @@ int tg_flow_start_tcp(struct tg_flow_map *map, struct tg_flow_pool *pool,
         struct nsock_handle handle;
 
         if (map == NULL || pool == NULL || peer == NULL || proto == NULL ||
+            request == NULL || request_len == 0 ||
             (on_socket_created == NULL) != (on_socket_released == NULL)) {
                 errno = EINVAL;
                 return -1;
@@ -171,7 +173,8 @@ int tg_flow_start_tcp(struct tg_flow_map *map, struct tg_flow_pool *pool,
         flow->on_finish = on_finish;
         flow->on_finish_ctx = on_finish_ctx;
 
-        if (tg_txn_init(&flow->txn, proto, class_config) != 0) {
+        if (tg_txn_init_with_request(&flow->txn, proto, class_config, request,
+                                     request_len) != 0) {
                 (void)tg_flow_pool_put(pool, flow);
                 return -1;
         }
@@ -305,6 +308,19 @@ static void tg_flow_recycle(struct tg_flow_map *map, struct tg_flow_pool *pool,
         (void)tg_flow_pool_put(pool, flow);
 }
 
+/** Classify a failed send-side operation without blaming a local pool shortage.
+ */
+static enum tg_flow_result tg_flow_io_result(void) {
+        return errno == ENOBUFS ? TG_FLOW_RESULT_RESOURCE_PRESSURE
+                                : TG_FLOW_RESULT_IO_FAILURE;
+}
+
+/** Keep parser violations distinct from local receive-memory exhaustion. */
+static enum tg_flow_result tg_flow_rx_result(void) {
+        return errno == ENOBUFS ? TG_FLOW_RESULT_RESOURCE_PRESSURE
+                                : TG_FLOW_RESULT_PROTOCOL_FAILURE;
+}
+
 /** @copydoc tg_flow_on_event */
 void tg_flow_on_event(struct tg_flow_map *map, struct tg_flow_pool *pool,
                       struct tg_flow *flow, uint32_t events) {
@@ -329,8 +345,7 @@ void tg_flow_on_event(struct tg_flow_map *map, struct tg_flow_pool *pool,
             (events & (OWNER_IO_EV_CONNECTED | OWNER_IO_EV_WRITE))) {
                 if (tg_flow_send_pending(flow) != 0) {
                         flow->state = TG_FLOW_FAILED;
-                        tg_flow_recycle(map, pool, flow,
-                                        TG_FLOW_RESULT_IO_FAILURE);
+                        tg_flow_recycle(map, pool, flow, tg_flow_io_result());
                         return;
                 }
         }
@@ -343,8 +358,7 @@ void tg_flow_on_event(struct tg_flow_map *map, struct tg_flow_pool *pool,
 
                 if (tg_flow_drain_receive(flow, &eof, &complete) != 0) {
                         flow->state = TG_FLOW_FAILED;
-                        tg_flow_recycle(map, pool, flow,
-                                        TG_FLOW_RESULT_PROTOCOL_FAILURE);
+                        tg_flow_recycle(map, pool, flow, tg_flow_rx_result());
                         return;
                 }
                 if (complete) {

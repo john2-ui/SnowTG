@@ -204,6 +204,15 @@ static int tg_parse_http(const char *json, const jsmntok_t *tokens,
         class_plan->http_config.path = class_plan->http_path;
         class_plan->http_config.connection_close = !keepalive;
         class_plan->proto = &tg_http_proto_ops;
+        if (class_plan->proto->build_request(
+                &class_plan->http_config, class_plan->request_template,
+                sizeof(class_plan->request_template),
+                &class_plan->request_template_len) != 0 ||
+            class_plan->request_template_len == 0) {
+                if (errno == 0)
+                        errno = EINVAL;
+                return -1;
+        }
         return 0;
 }
 
