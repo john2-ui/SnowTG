@@ -12,6 +12,7 @@
 
 #include "socket_owner.h"
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/socket.h>
@@ -31,6 +32,13 @@ typedef void (*owner_io_release_fn)(void *ctx);
 struct owner_io_event {
         struct nsock_handle handle;
         uint32_t events;
+};
+
+/** Owner-local TCP resource state sampled by a co-located reactor. */
+struct owner_io_memory_snapshot {
+        struct tcp_memory_snapshot tcp; /**< Per-pool availability/counters. */
+        bool below_low_water;           /**< Admission must pause while true. */
+        bool above_high_water; /**< Paused admission may resume while true. */
 };
 
 /**
@@ -82,5 +90,8 @@ int owner_io_close(struct nsock_handle handle);
  */
 unsigned int owner_io_ready_burst(struct owner_io_event *events,
                                   unsigned int max_events);
+/** Read owner-local TCP pool availability; callable only on that owner lcore.
+ */
+int owner_io_memory_snapshot(struct owner_io_memory_snapshot *snapshot);
 
 #endif /* NETARCH_OWNER_IO_H */

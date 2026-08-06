@@ -30,6 +30,19 @@ struct socket_ready_event {
         struct nsock_handle handle;
 };
 
+/** Release partially created owner resources after an initialization failure.
+ */
+static void socket_owner_init_cleanup(void) {
+        tcp_owner_memory_fini(&g_owner.tcp_memory);
+        if (g_owner.ready_event_pool != NULL)
+                rte_mempool_free(g_owner.ready_event_pool);
+        if (g_owner.ready_ring != NULL)
+                rte_ring_free(g_owner.ready_ring);
+        if (g_owner.command_ring != NULL)
+                rte_ring_free(g_owner.command_ring);
+        memset(&g_owner, 0, sizeof(g_owner));
+}
+
 #define OWNER_SK_FMT "sock=%u gen=%u"
 #define OWNER_SK_ARG(sk) (sk)->id, (sk)->generation
 
@@ -136,27 +149,70 @@ int socket_owner_init(unsigned int lcore_id) {
         g_owner.command_ring =
             rte_ring_create("socket_commands", NSOCK_REGISTRY_ENTRIES,
                             rte_socket_id(), RING_F_SC_DEQ);
-        if (g_owner.command_ring == NULL)
+        if (g_owner.command_ring == NULL) {
+                LOG_OWNER_ERROR("owner command ring initialization failed");
                 return -1;
+        }
 
         g_owner.ready_ring =
             rte_ring_create("socket_ready_events", NSOCK_READY_EVENT_CAP,
                             rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
-        if (g_owner.ready_ring == NULL)
+        if (g_owner.ready_ring == NULL) {
+                LOG_OWNER_ERROR("owner ready ring initialization failed");
+                socket_owner_init_cleanup();
                 return -1;
+        }
 
         g_owner.ready_event_pool =
             rte_mempool_create("socket_ready_event_pool", NSOCK_READY_EVENT_CAP,
                                sizeof(struct socket_ready_event), 0, 0, NULL,
                                NULL, NULL, NULL, rte_socket_id(), 0);
-        if (g_owner.ready_event_pool == NULL)
+        if (g_owner.ready_event_pool == NULL) {
+                LOG_OWNER_ERROR("owner ready-event pool initialization failed");
+                socket_owner_init_cleanup();
                 return -1;
+        }
+        if (tcp_owner_memory_init(&g_owner.tcp_memory, lcore_id) != 0) {
+                LOG_OWNER_ERROR("owner TCP memory initialization failed");
+                socket_owner_init_cleanup();
+                return -1;
+        }
 
         g_owner_ready = true;
         LOG_OWNER_INFO("event=init lcore=%u command_capacity=%u "
                        "ready_capacity=%u",
                        lcore_id, NSOCK_REGISTRY_ENTRIES, NSOCK_READY_EVENT_CAP);
         return 0;
+}
+
+/** @copydoc socket_owner_tcp_memory */
+struct tcp_owner_memory *socket_owner_tcp_memory(void) {
+        if (!g_owner_ready || rte_lcore_id() != g_owner.lcore_id)
+                return NULL;
+        return &g_owner.tcp_memory;
+}
+
+/** @copydoc socket_owner_tcp_memory_snapshot */
+int socket_owner_tcp_memory_snapshot(struct tcp_memory_snapshot *snapshot) {
+        if (snapshot == NULL || !g_owner_ready ||
+            rte_lcore_id() != g_owner.lcore_id)
+                return -1;
+        tcp_owner_memory_snapshot(&g_owner.tcp_memory, snapshot);
+        return 0;
+}
+
+/** @copydoc socket_owner_tcp_memory_below_low_water */
+int socket_owner_tcp_memory_below_low_water(void) {
+        if (!g_owner_ready || rte_lcore_id() != g_owner.lcore_id)
+                return 1;
+        return tcp_owner_memory_below_low_water(&g_owner.tcp_memory);
+}
+
+/** @copydoc socket_owner_tcp_memory_above_high_water */
+int socket_owner_tcp_memory_above_high_water(void) {
+        if (!g_owner_ready || rte_lcore_id() != g_owner.lcore_id)
+                return 0;
+        return tcp_owner_memory_above_high_water(&g_owner.tcp_memory);
 }
 
 int socket_owner_adopt(struct nsock *sk) {

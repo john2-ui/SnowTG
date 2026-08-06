@@ -21,6 +21,8 @@
 #ifndef NETARCH_SOCKET_OWNER_H
 #define NETARCH_SOCKET_OWNER_H
 
+#include "tcp_memory.h"
+
 #include <pthread.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -127,6 +129,8 @@ struct socket_owner {
         struct rte_ring *ready_ring;
         /** Preallocated event objects; at most one is queued per socket. */
         struct rte_mempool *ready_event_pool;
+        /** Owner-local TCP hot-path pools; copied with each future shard. */
+        struct tcp_owner_memory tcp_memory;
 
         struct nsock *slots[NSOCK_ID_MAX];
         uint32_t generations[NSOCK_ID_MAX];

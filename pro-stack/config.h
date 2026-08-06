@@ -70,10 +70,29 @@
  */
 #define TIMER_MANAGE_INTERVAL_MS 10
 
-/** TCP send buffer (sliding window) size in bytes. */
+/**
+ * Maximum application bytes retained per TCP stream before backpressure.
+ * Storage is allocated lazily in owner-local chunks, not preallocated per TCB.
+ */
 #define TCP_SNDBUF_SIZE (64 * 1024)
 /** Application-visible TCP send buffer high watermark. */
 #define TCP_SNDBUF_APP_HIWAT TCP_SNDBUF_SIZE
+/** Bytes carried by one owner-local TCP payload block. */
+#define TCP_MEMORY_CHUNK_SIZE 2048U
+/** Per-owner capacity of TCP data chunks retained until ACK. */
+#define TCP_MEMORY_TX_CHUNKS 8191U
+/** Per-owner capacity of queued contiguous receive blobs. */
+#define TCP_MEMORY_RX_BLOBS 4095U
+/** Per-owner capacity of out-of-order segment descriptors. */
+#define TCP_MEMORY_OFO_SEGS 4095U
+/** Per-owner capacity of queued SYN/ACK/FIN descriptor objects. */
+#define TCP_MEMORY_FRAGMENTS 4095U
+/** Shared per-owner payload backing blocks for RX, OFO, and TX chunks. */
+#define TCP_MEMORY_PAYLOAD_BLOCKS 8191U
+/** Pause traffic-gen admissions below this per-pool availability threshold. */
+#define TCP_MEMORY_LOW_WATER 64U
+/** Resume admissions only after all pools exceed this hysteresis threshold. */
+#define TCP_MEMORY_HIGH_WATER 128U
 /** Default MSS used when slicing sndbuf for TX (no option negotiation yet). */
 #define TCP_DEFAULT_MSS 1460
 /** RFC 6298 initial data/FIN RTO before a valid RTT sample (ms). */

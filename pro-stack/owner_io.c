@@ -175,3 +175,15 @@ unsigned int owner_io_ready_burst(struct owner_io_event *events,
                                   unsigned int max_events) {
         return socket_owner_ready_burst(events, max_events);
 }
+
+/** @copydoc owner_io_memory_snapshot */
+int owner_io_memory_snapshot(struct owner_io_memory_snapshot *snapshot) {
+        if (snapshot == NULL ||
+            socket_owner_tcp_memory_snapshot(&snapshot->tcp) != 0) {
+                errno = EPERM;
+                return -1;
+        }
+        snapshot->below_low_water = socket_owner_tcp_memory_below_low_water();
+        snapshot->above_high_water = socket_owner_tcp_memory_above_high_water();
+        return 0;
+}
