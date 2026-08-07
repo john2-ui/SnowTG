@@ -85,6 +85,12 @@ struct tg_plan {
  * @return 0 on success; -1 with @c errno set on I/O, syntax, or schema error.
  */
 int tg_plan_load_file(struct tg_plan *plan, const char *path);
+/**
+ * Copy an immutable source plan into one scheduling shard while preserving the
+ * source plan's global CPS and concurrency totals across all shards.
+ */
+int tg_plan_partition(struct tg_plan *destination, const struct tg_plan *source,
+                      unsigned int shard_index, unsigned int shard_count);
 
 /**
  * @brief Clears all compiled plan state.

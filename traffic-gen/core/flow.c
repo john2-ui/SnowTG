@@ -12,6 +12,7 @@
 
 #include <errno.h>
 #include <netinet/in.h>
+#include <rte_cycles.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -172,6 +173,7 @@ int tg_flow_start_tcp(struct tg_flow_map *map, struct tg_flow_pool *pool,
                 return -1;
         flow->on_finish = on_finish;
         flow->on_finish_ctx = on_finish_ctx;
+        flow->start_cycles = rte_get_timer_cycles();
 
         if (tg_txn_init_with_request(&flow->txn, proto, class_config, request,
                                      request_len) != 0) {
@@ -260,6 +262,8 @@ static int tg_flow_drain_receive(struct tg_flow *flow, bool *eof_out,
                         size_t bytes = (size_t)received;
                         size_t retained = 0;
 
+                        if (flow->first_rx_cycles == 0)
+                                flow->first_rx_cycles = rte_get_timer_cycles();
                         if (flow->response_prefix_len <
                             sizeof(flow->response_prefix)) {
                                 retained = sizeof(flow->response_prefix) -
@@ -338,8 +342,10 @@ void tg_flow_on_event(struct tg_flow_map *map, struct tg_flow_pool *pool,
         }
 
         if ((events & OWNER_IO_EV_CONNECTED) &&
-            flow->state == TG_FLOW_CONNECTING)
+            flow->state == TG_FLOW_CONNECTING) {
+                flow->connected_cycles = rte_get_timer_cycles();
                 flow->state = TG_FLOW_SENDING;
+        }
 
         if (flow->state == TG_FLOW_SENDING &&
             (events & (OWNER_IO_EV_CONNECTED | OWNER_IO_EV_WRITE))) {

@@ -9,6 +9,7 @@
 
 #include "stats.h"
 
+#include <rte_cycles.h>
 #include <string.h>
 
 /** @copydoc tg_stats_init */
@@ -45,9 +46,38 @@ void tg_stats_on_resource_deferred(struct tg_stats *stats) {
 void tg_stats_on_flow_finished(struct tg_stats *stats,
                                const struct tg_flow *flow,
                                enum tg_flow_result result) {
+        uint64_t now;
+
         if (stats == NULL || flow == NULL)
                 return;
 
+        now = rte_get_timer_cycles();
+        if (flow->start_cycles != 0 && now >= flow->start_cycles) {
+                uint64_t elapsed = now - flow->start_cycles;
+
+                stats->complete_samples++;
+                stats->complete_cycles += elapsed;
+                if (elapsed > stats->complete_max_cycles)
+                        stats->complete_max_cycles = elapsed;
+        }
+        if (flow->connected_cycles >= flow->start_cycles &&
+            flow->start_cycles != 0) {
+                uint64_t elapsed = flow->connected_cycles - flow->start_cycles;
+
+                stats->connect_samples++;
+                stats->connect_cycles += elapsed;
+                if (elapsed > stats->connect_max_cycles)
+                        stats->connect_max_cycles = elapsed;
+        }
+        if (flow->first_rx_cycles >= flow->start_cycles &&
+            flow->start_cycles != 0) {
+                uint64_t elapsed = flow->first_rx_cycles - flow->start_cycles;
+
+                stats->first_rx_samples++;
+                stats->first_rx_cycles += elapsed;
+                if (elapsed > stats->first_rx_max_cycles)
+                        stats->first_rx_max_cycles = elapsed;
+        }
         stats->txns_done++;
         if (stats->concurrency != 0)
                 stats->concurrency--;

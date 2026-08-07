@@ -12,6 +12,8 @@
 
 #include "../../pro-stack/owner_io.h"
 
+#include <stdint.h>
+
 /**
  * @brief Invoked once after the current ready-event burst is drained.
  * @param ctx Opaque context supplied when the reactor is initialized.
@@ -38,6 +40,10 @@ struct tg_reactor {
         tg_reactor_event_fn on_event;
         tg_reactor_tick_fn on_tick;
         void *ctx;
+        /** Counters reset by tg_reactor_metrics_take() after each report. */
+        uint64_t turns;  /**< Owner-worker reactor invocations. */
+        uint64_t events; /**< Ready events delivered to flows. */
+        uint32_t event_burst_high_water; /**< Largest one-turn ready burst. */
 };
 
 /**
@@ -56,5 +62,11 @@ void tg_reactor_init(struct tg_reactor *reactor, tg_reactor_tick_fn on_tick,
  * @param budget Maximum number of ready events and scheduling attempts.
  */
 void tg_reactor_run(void *ctx, unsigned int budget);
+/**
+ * Return and clear reactor activity accumulated since the prior call.
+ * The reactor and caller must execute on the same owner lcore.
+ */
+void tg_reactor_metrics_take(struct tg_reactor *reactor, uint64_t *turns,
+                             uint64_t *events, uint32_t *burst_high_water);
 
 #endif /* TRAFFIC_GEN_REACTOR_H */

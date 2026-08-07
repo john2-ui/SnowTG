@@ -35,6 +35,16 @@ struct tg_stats {
         uint64_t bytes_tx;
         uint64_t bytes_rx;
         uint64_t http_rps_total;
+        /** Owner-local phase latency sums/maxima, stored in timer cycles. */
+        uint64_t connect_samples;
+        uint64_t connect_cycles; /**< Start to CONNECTED cumulative time. */
+        uint64_t connect_max_cycles;
+        uint64_t first_rx_samples;
+        uint64_t first_rx_cycles; /**< Start to first response byte sum. */
+        uint64_t first_rx_max_cycles;
+        uint64_t complete_samples;
+        uint64_t complete_cycles; /**< Start to terminal flow callback sum. */
+        uint64_t complete_max_cycles;
         uint32_t concurrency;
         uint64_t last_report_cycles;
 };

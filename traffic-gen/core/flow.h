@@ -96,6 +96,10 @@ struct tg_flow {
         bool completion_notified;
         tg_flow_finish_fn on_finish;
         void *on_finish_ctx;
+        /** Cycle timestamps are zero until each lifecycle phase occurs. */
+        uint64_t start_cycles;     /**< Flow object accepted for connection. */
+        uint64_t connected_cycles; /**< TCP CONNECTED notification observed. */
+        uint64_t first_rx_cycles;  /**< First application response byte read. */
 
         /**
          * Retained diagnostics prefix.  Protocol parsing receives every

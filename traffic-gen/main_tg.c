@@ -1,11 +1,11 @@
 /**
  * @file main_tg.c
- * @brief Initializes and runs the single-owner DPDK traffic-generator process.
+ * @brief Initializes and runs the multi-owner DPDK traffic-generator process.
  *
  * Startup compiles the scenario into immutable plan data, provisions one
- * owner-local shard, and connects the reactor to the protocol stack worker.
- * The main lcore continuously transfers NIC RX and TX bursts through stack
- * rings while the owner worker runs TCP, flow, and scheduler work.
+ * owner-local shard per RSS queue, and connects a reactor to each protocol
+ * worker. The main lcore transfers NIC RX/TX bursts between matching queues
+ * and SPSC stack rings.
  */
 
 #include "core/flow.h"
@@ -27,6 +27,7 @@
 
 #include <rte_eal.h>
 #include <rte_ethdev.h>
+#include <rte_ether.h>
 #include <rte_launch.h>
 #include <rte_lcore.h>
 #include <rte_mbuf.h>
@@ -36,6 +37,7 @@
 #include <errno.h>
 #include <inttypes.h>
 #include <limits.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -100,10 +102,13 @@ static int tg_parse_app_args(int argc, char *argv[], unsigned int *workers_out,
 /**
  * Per-packet-worker traffic-generator state.
  *
- * The current runtime has one owner lcore.  When RSS support adds workers,
- * each worker will receive an independent tg_shard with its own flow map,
- * flow pool, scheduler, and statistics.
+ * Each owner lcore has an independent flow map, flow pool, scheduler, and
+ * statistics. All fields except the drop counters are owner-local.
  */
+struct tg_runtime_control {
+        atomic_uint remaining_shards;
+};
+
 struct tg_shard {
         struct tg_flow_map flow_map;
         struct tg_flow_pool flow_pool;
@@ -111,9 +116,43 @@ struct tg_shard {
         struct tg_scheduler scheduler;
         struct tg_stats stats;
         struct owner_io_memory_snapshot memory;
+        struct tg_reactor *reactor; /**< Needed to snapshot reactor counters. */
+        uint64_t scheduler_starts;  /**< Attempts since the prior report. */
+        uint64_t socket_releases; /**< Final TCB releases since prior report. */
+        /*
+         * The main lcore records software-RX and NIC-TX drops while the owner
+         * lcore exchanges them at report boundaries.
+         */
+        atomic_uint_fast64_t rx_ring_drops;
+        atomic_uint_fast64_t tx_nic_drops;
+        struct tg_runtime_control *runtime;
+        bool scheduling_enabled;
+        bool drained;
         bool scheduling_stop_reported;
         bool duration_stats_reported;
 };
+
+/** Complete application and stack context associated with one RSS queue. */
+struct tg_worker {
+        unsigned int lcore_id;
+        uint16_t queue_id;
+        struct inout_ring *ring;
+        struct tg_shard shard;
+        struct tg_reactor reactor;
+        struct stack_runtime_worker runtime;
+};
+
+/** Convert DPDK cycle-clock values for human-readable periodic diagnostics. */
+static uint64_t tg_cycles_to_us(uint64_t cycles) {
+        uint64_t hz = rte_get_timer_hz();
+
+        return hz == 0 ? 0 : cycles * 1000000U / hz;
+}
+
+/** Avoid division by zero for phases not reached in the report interval. */
+static uint64_t tg_average_cycles(uint64_t total, uint64_t samples) {
+        return samples == 0 ? 0 : total / samples;
+}
 
 /**
  * @brief Prints one cumulative statistics snapshot when scheduling ends.
@@ -172,11 +211,13 @@ static void tg_on_socket_created(void *ctx) {
 static void tg_on_socket_released(void *ctx) {
         struct tg_shard *shard = ctx;
 
-        if (shard != NULL)
+        if (shard != NULL) {
                 tg_scheduler_on_socket_released(&shard->scheduler);
+                shard->socket_releases++;
+        }
 }
 
-static void tg_drain_tx_ring(struct inout_ring *ring) {
+static void tg_drain_tx_ring(struct inout_ring *ring, uint16_t queue_id) {
         if (ring == NULL)
                 return;
 
@@ -188,9 +229,47 @@ static void tg_drain_tx_ring(struct inout_ring *ring) {
                         return;
 
                 unsigned int sent =
-                    rte_eth_tx_burst(g_net.port_id, 0, tx, nb_tx);
+                    rte_eth_tx_burst(g_net.port_id, queue_id, tx, nb_tx);
                 for (unsigned int i = sent; i < nb_tx; i++)
                         rte_pktmbuf_free(tx[i]);
+        }
+}
+
+static bool tg_is_arp_packet(const struct rte_mbuf *mbuf) {
+        const struct rte_ether_hdr *eth;
+
+        if (mbuf == NULL || mbuf->pkt_len < sizeof(*eth) ||
+            mbuf->data_len < sizeof(*eth))
+                return false;
+        eth = rte_pktmbuf_mtod(mbuf, const struct rte_ether_hdr *);
+        return eth->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP);
+}
+
+static void tg_replicate_arp(struct tg_worker *workers,
+                             unsigned int worker_count,
+                             unsigned int source_index, struct rte_mempool *mp,
+                             struct rte_mbuf *mbuf) {
+        if (!tg_is_arp_packet(mbuf))
+                return;
+        mbuf->dynfield1[0] = 0;
+
+        for (unsigned int index = 0; index < worker_count; index++) {
+                struct rte_mbuf *clone;
+
+                if (index == source_index)
+                        continue;
+                clone = rte_pktmbuf_clone(mbuf, mp);
+                if (clone == NULL) {
+                        atomic_fetch_add(&workers[index].shard.rx_ring_drops,
+                                         1);
+                        continue;
+                }
+                clone->dynfield1[0] = ARP_MBUF_F_LEARN_ONLY;
+                if (rte_ring_sp_enqueue(workers[index].ring->in, clone) != 0) {
+                        rte_pktmbuf_free(clone);
+                        atomic_fetch_add(&workers[index].shard.rx_ring_drops,
+                                         1);
+                }
         }
 }
 
@@ -233,7 +312,7 @@ static void tg_shard_tick(void *ctx, unsigned int budget) {
         struct tg_shard *shard = ctx;
         uint64_t now_cycles;
 
-        if (shard == NULL || budget == 0)
+        if (shard == NULL || budget == 0 || !shard->scheduling_enabled)
                 return;
         now_cycles = rte_get_timer_cycles();
         if (owner_io_memory_snapshot(&shard->memory) == 0) {
@@ -244,10 +323,27 @@ static void tg_shard_tick(void *ctx, unsigned int budget) {
                 tg_scheduler_set_resource_available(&shard->scheduler,
                                                     available);
         }
-        (void)tg_scheduler_tick(&shard->scheduler, now_cycles, budget,
-                                tg_start_class, shard);
+        shard->scheduler_starts += tg_scheduler_tick(
+            &shard->scheduler, now_cycles, budget, tg_start_class, shard);
         if (tg_stats_report_due(&shard->stats, now_cycles, rte_get_timer_hz(),
                                 shard->plan.report_interval_sec)) {
+                /*
+                 * These counters are interval deltas. Keep flow latency in
+                 * tg_stats cumulative so rare long transactions remain visible.
+                 */
+                struct stack_runtime_metrics runtime = {0};
+                uint64_t reactor_turns = 0;
+                uint64_t reactor_events = 0;
+                uint32_t reactor_burst_high_water = 0;
+                uint64_t rx_ring_drops;
+                uint64_t tx_nic_drops;
+
+                stack_runtime_metrics_take(&runtime);
+                tg_reactor_metrics_take(shard->reactor, &reactor_turns,
+                                        &reactor_events,
+                                        &reactor_burst_high_water);
+                rx_ring_drops = atomic_exchange(&shard->rx_ring_drops, 0);
+                tx_nic_drops = atomic_exchange(&shard->tx_nic_drops, 0);
                 LOG_INFO("traffic-gen stats active=%u live_sockets=%u "
                          "started=%" PRIu64 " done=%" PRIu64 " success=%" PRIu64
                          " fail=%" PRIu64 " tx=%" PRIu64 " rx=%" PRIu64,
@@ -266,6 +362,49 @@ static void tg_shard_tick(void *ctx, unsigned int budget) {
                          shard->memory.tcp.available[TCP_MEMORY_PAYLOAD],
                          shard->memory.tcp.peak_in_use[TCP_MEMORY_PAYLOAD],
                          shard->memory.tcp.alloc_fail[TCP_MEMORY_TX_CHUNK]);
+                LOG_INFO("traffic-gen worker turns=%" PRIu64 " rx=%" PRIu64
+                         " scans=%" PRIu64 " flush=%" PRIu64
+                         " turn_avg_us=%" PRIu64 " rx_us=%" PRIu64
+                         " maint_us=%" PRIu64 " reactor_us=%" PRIu64
+                         " flush_us=%" PRIu64,
+                         runtime.worker_turns, runtime.rx_packets,
+                         runtime.socket_scans, runtime.tx_flush_calls,
+                         tg_cycles_to_us(tg_average_cycles(
+                             runtime.turn_cycles, runtime.worker_turns)),
+                         tg_cycles_to_us(runtime.rx_cycles),
+                         tg_cycles_to_us(runtime.maintenance_cycles),
+                         tg_cycles_to_us(runtime.reactor_cycles),
+                         tg_cycles_to_us(runtime.tx_flush_cycles));
+                LOG_INFO("traffic-gen reactor turns=%" PRIu64 " events=%" PRIu64
+                         " event_burst_hwm=%u starts=%" PRIu64
+                         " tokens=%" PRIu64 " socket_releases=%" PRIu64
+                         " ring_hwm_in=%u ring_hwm_out=%u"
+                         " rx_ring_drops=%" PRIu64 " tx_nic_drops=%" PRIu64,
+                         reactor_turns, reactor_events,
+                         reactor_burst_high_water, shard->scheduler_starts,
+                         shard->scheduler.token_numerator /
+                             shard->scheduler.cycles_per_second,
+                         shard->socket_releases, runtime.in_ring_high_water,
+                         runtime.out_ring_high_water, rx_ring_drops,
+                         tx_nic_drops);
+                LOG_INFO("traffic-gen latency connect_avg_us=%" PRIu64
+                         " connect_max_us=%" PRIu64 " first_rx_avg_us=%" PRIu64
+                         " first_rx_max_us=%" PRIu64 " complete_avg_us=%" PRIu64
+                         " complete_max_us=%" PRIu64,
+                         tg_cycles_to_us(
+                             tg_average_cycles(shard->stats.connect_cycles,
+                                               shard->stats.connect_samples)),
+                         tg_cycles_to_us(shard->stats.connect_max_cycles),
+                         tg_cycles_to_us(
+                             tg_average_cycles(shard->stats.first_rx_cycles,
+                                               shard->stats.first_rx_samples)),
+                         tg_cycles_to_us(shard->stats.first_rx_max_cycles),
+                         tg_cycles_to_us(
+                             tg_average_cycles(shard->stats.complete_cycles,
+                                               shard->stats.complete_samples)),
+                         tg_cycles_to_us(shard->stats.complete_max_cycles));
+                shard->scheduler_starts = 0;
+                shard->socket_releases = 0;
         }
         if (tg_scheduler_is_stopped(&shard->scheduler) &&
             !shard->scheduling_stop_reported) {
@@ -279,8 +418,13 @@ static void tg_shard_tick(void *ctx, unsigned int budget) {
                 tg_report_duration_stats(shard);
         }
         if (tg_scheduler_is_stopped(&shard->scheduler) &&
-            shard->scheduler.active == 0 && shard->scheduler.live_sockets == 0)
-                stack_runtime_request_stop();
+            shard->scheduler.active == 0 &&
+            shard->scheduler.live_sockets == 0 && !shard->drained) {
+                shard->drained = true;
+                if (shard->runtime != NULL &&
+                    atomic_fetch_sub(&shard->runtime->remaining_shards, 1) == 1)
+                        stack_runtime_request_stop();
+        }
 }
 
 /**
@@ -308,9 +452,9 @@ static void tg_on_event(void *ctx, const struct owner_io_event *event) {
         LOG_DEBUG("traffic-gen ready sock=%u gen=%u events=0x%x",
                   event->handle.id, event->handle.generation, event->events);
 
-        if (event->events & OWNER_IO_EV_CONNECTED)
-                LOG_INFO("traffic-gen TCP connected: sock=%u gen=%u",
-                         event->handle.id, event->handle.generation);
+        // if (event->events & OWNER_IO_EV_CONNECTED)
+        //         LOG_INFO("traffic-gen TCP connected: sock=%u gen=%u",
+        //                  event->handle.id, event->handle.generation);
 
         /*
          * tg_flow_on_event() may recycle the object for ERROR or HUP.  The
@@ -318,6 +462,31 @@ static void tg_on_event(void *ctx, const struct owner_io_event *event) {
          */
         tg_flow_on_event(&shard->flow_map, &shard->flow_pool, flow,
                          event->events);
+}
+
+static void tg_report_aggregate(const struct tg_worker *workers,
+                                unsigned int worker_count) {
+        uint64_t started = 0;
+        uint64_t done = 0;
+        uint64_t success = 0;
+        uint64_t failed = 0;
+        uint64_t bytes_tx = 0;
+        uint64_t bytes_rx = 0;
+
+        for (unsigned int index = 0; index < worker_count; index++) {
+                const struct tg_stats *stats = &workers[index].shard.stats;
+
+                started += stats->txns_started;
+                done += stats->txns_done;
+                success += stats->txns_success;
+                failed += stats->txns_fail;
+                bytes_tx += stats->bytes_tx;
+                bytes_rx += stats->bytes_rx;
+        }
+        LOG_INFO(
+            "traffic-gen aggregate workers=%u started=%" PRIu64 " done=%" PRIu64
+            " success=%" PRIu64 " fail=%" PRIu64 " tx=%" PRIu64 " rx=%" PRIu64,
+            worker_count, started, done, success, failed, bytes_tx, bytes_rx);
 }
 
 /**
@@ -330,7 +499,12 @@ int main(int argc, char *argv[]) {
         const char *scenario_path;
         int eal_args;
         unsigned int worker_count;
-        struct tg_shard shard = {0};
+        unsigned int main_lcore;
+        unsigned int active_shards;
+        struct tg_plan plan = {0};
+        struct tg_worker *workers;
+        struct tg_runtime_control runtime = {0};
+        struct rte_mempool *mp;
 
         eal_args = rte_eal_init(argc, argv);
         if (eal_args < 0)
@@ -340,35 +514,23 @@ int main(int argc, char *argv[]) {
         if (tg_parse_app_args(argc, argv, &worker_count, &scenario_path) != 0)
                 rte_exit(EXIT_FAILURE,
                          "usage: traffic-gen [--workers N] [scenario.json]\n");
-        /*
-         * Fail closed until the stack's process-global owner, socket-list,
-         * ARP, and I/O-ring state is made per worker.  Proceeding would create
-         * multiple owner shards that mutate the same TCB registry and route
-         * RX/TX through queue zero, violating both ownership and RSS affinity.
-         */
-        if (worker_count != 1)
-                rte_exit(EXIT_FAILURE,
-                         "--workers %u is unavailable: multi-worker stack "
-                         "runtime has not been isolated per lcore\n",
+        if (worker_count > RTE_MAX_LCORE)
+                rte_exit(EXIT_FAILURE, "--workers %u exceeds lcore capacity\n",
                          worker_count);
-        if (tg_plan_load_file(&shard.plan, scenario_path) != 0)
+        if (tg_plan_load_file(&plan, scenario_path) != 0)
                 rte_exit(EXIT_FAILURE, "scenario load failed (%s): errno=%d\n",
                          scenario_path, errno);
-        if (shard.plan.max_concurrency > NSOCK_ID_MAX)
+        if (plan.max_concurrency > (uint64_t)NSOCK_ID_MAX * worker_count)
                 rte_exit(EXIT_FAILURE,
-                         "scenario max_concurrency exceeds socket capacity\n");
-        if (tg_scheduler_init(&shard.scheduler, &shard.plan,
-                              rte_get_timer_hz()) != 0)
-                rte_exit(EXIT_FAILURE, "scheduler init failed\n");
-        tg_stats_init(&shard.stats);
+                         "scenario max_concurrency exceeds shard capacity\n");
         LOG_INFO("traffic-gen scenario=%s classes=%u cps=%u concurrency=%u",
-                 shard.plan.name, shard.plan.class_count, shard.plan.target_cps,
-                 shard.plan.max_concurrency);
+                 plan.name, plan.class_count, plan.target_cps,
+                 plan.max_concurrency);
 
         if (socket_registry_init() != 0)
                 rte_exit(EXIT_FAILURE, "socket registry init failed\n");
 
-        struct rte_mempool *mp =
+        mp =
             rte_pktmbuf_pool_create("tg_mbuf_pool", NUM_MBUFS, 0, 0,
                                     RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
         if (mp == NULL)
@@ -376,72 +538,135 @@ int main(int argc, char *argv[]) {
 
         net_context_set_mempool(mp);
         port_init_queues(0, mp, (uint16_t)worker_count);
-        {
-                unsigned int available =
-                    mp == NULL ? 0 : rte_mempool_avail_count(mp);
-                unsigned int in_use =
-                    mp == NULL ? 0 : rte_mempool_in_use_count(mp);
-
-                LOG_INFO(
-                    "traffic-gen mbuf pool after port init: mp=%p avail=%u "
-                    "in_use=%u",
-                    (void *)mp, available, in_use);
-        }
         net_context_init(0, tg_local_ip);
-        struct inout_ring *ring = ring_instance();
-        arp_table_instance();
         rte_timer_subsystem_init();
 
-        unsigned int main_lcore = rte_lcore_id();
-        unsigned int worker_lcore = rte_get_next_lcore(main_lcore, 1, 0);
-        if (worker_lcore == RTE_MAX_LCORE)
-                rte_exit(EXIT_FAILURE,
-                         "traffic-gen needs at least two lcores\n");
-        if (socket_owner_init(worker_lcore) != 0)
-                rte_exit(EXIT_FAILURE, "socket owner init failed\n");
+        main_lcore = rte_lcore_id();
+        workers = calloc(worker_count, sizeof(*workers));
+        if (workers == NULL)
+                rte_exit(EXIT_FAILURE, "worker context allocation failed\n");
 
-        if (tg_flow_map_init(&shard.flow_map, worker_lcore) != 0)
-                rte_exit(EXIT_FAILURE, "traffic-gen flow map init failed\n");
+        active_shards = worker_count;
+        if (active_shards > plan.target_cps)
+                active_shards = plan.target_cps;
+        if (active_shards > plan.max_concurrency)
+                active_shards = plan.max_concurrency;
+        atomic_init(&runtime.remaining_shards, active_shards);
 
-        if (tg_flow_pool_init(&shard.flow_pool, shard.plan.max_concurrency) !=
-            0)
-                rte_exit(EXIT_FAILURE, "traffic-gen flow pool init failed\n");
+        unsigned int previous_lcore = main_lcore;
+        for (unsigned int index = 0; index < worker_count; index++) {
+                struct tg_worker *worker = &workers[index];
 
-        struct tg_reactor reactor;
-        tg_reactor_init(&reactor, tg_shard_tick, tg_on_event, &shard);
-        /*
-         * stack_runtime_worker_entry() invokes tg_reactor_run() once per
-         * owner-worker turn, after RX ingress and TCP timer processing and
-         * before transport TX flush.
-         */
-        stack_runtime_set_reactor(tg_reactor_run, &reactor);
-        if (rte_eal_remote_launch(stack_runtime_worker_entry, mp,
-                                  worker_lcore) < 0)
-                rte_exit(EXIT_FAILURE, "failed to launch owner worker\n");
+                worker->lcore_id = rte_get_next_lcore(previous_lcore, 1, 0);
+                if (worker->lcore_id == RTE_MAX_LCORE)
+                        rte_exit(EXIT_FAILURE,
+                                 "traffic-gen needs main plus %u worker "
+                                 "lcores\n",
+                                 worker_count);
+                previous_lcore = worker->lcore_id;
+                worker->queue_id = (uint16_t)index;
+                worker->shard.runtime = &runtime;
+                worker->shard.scheduling_enabled = index < active_shards;
+                tg_stats_init(&worker->shard.stats);
+
+                if (socket_registry_init_owner(worker->lcore_id) != 0 ||
+                    socket_owner_init(worker->lcore_id) != 0 ||
+                    ring_init_owner(worker->lcore_id) != 0 ||
+                    arp_table_init_owner(worker->lcore_id) != 0)
+                        rte_exit(EXIT_FAILURE,
+                                 "worker %u shard initialization failed\n",
+                                 index);
+                worker->ring = ring_for_lcore(worker->lcore_id);
+                if (tg_flow_map_init(&worker->shard.flow_map,
+                                     worker->lcore_id) != 0)
+                        rte_exit(EXIT_FAILURE, "worker %u flow map failed\n",
+                                 index);
+                if (worker->shard.scheduling_enabled) {
+                        if (tg_plan_partition(&worker->shard.plan, &plan, index,
+                                              active_shards) != 0 ||
+                            tg_scheduler_init(&worker->shard.scheduler,
+                                              &worker->shard.plan,
+                                              rte_get_timer_hz()) != 0 ||
+                            tg_flow_pool_init(
+                                &worker->shard.flow_pool,
+                                worker->shard.plan.max_concurrency) != 0)
+                                rte_exit(EXIT_FAILURE,
+                                         "worker %u scheduler initialization "
+                                         "failed\n",
+                                         index);
+                }
+                tg_reactor_init(&worker->reactor, tg_shard_tick, tg_on_event,
+                                &worker->shard);
+                worker->shard.reactor = &worker->reactor;
+                if (stack_runtime_worker_init(
+                        &worker->runtime, worker->lcore_id, worker->queue_id,
+                        mp, worker->ring, tg_reactor_run,
+                        &worker->reactor) != 0)
+                        rte_exit(EXIT_FAILURE,
+                                 "worker %u runtime initialization failed\n",
+                                 index);
+        }
+        for (unsigned int index = 0; index < worker_count; index++) {
+                if (rte_eal_remote_launch(stack_runtime_worker_entry,
+                                          &workers[index].runtime,
+                                          workers[index].lcore_id) < 0)
+                        rte_exit(EXIT_FAILURE,
+                                 "failed to launch worker %u on lcore %u\n",
+                                 index, workers[index].lcore_id);
+        }
 
         while (!stack_runtime_stop_requested()) {
-                struct rte_mbuf *rx[BURST_SIZE];
-                unsigned int nb_rx =
-                    rte_eth_rx_burst(g_net.port_id, 0, rx, BURST_SIZE);
-                if (nb_rx != 0) {
-                        unsigned int enq = rte_ring_sp_enqueue_burst(
-                            ring->in, (void **)rx, nb_rx, NULL);
-                        for (unsigned int i = enq; i < nb_rx; i++)
-                                rte_pktmbuf_free(rx[i]);
-                }
+                for (unsigned int index = 0; index < worker_count; index++) {
+                        struct tg_worker *worker = &workers[index];
+                        struct rte_mbuf *rx[BURST_SIZE];
+                        unsigned int nb_rx = rte_eth_rx_burst(
+                            g_net.port_id, worker->queue_id, rx, BURST_SIZE);
 
-                struct rte_mbuf *tx[BURST_SIZE];
-                unsigned int nb_tx = rte_ring_sc_dequeue_burst(
-                    ring->out, (void **)tx, BURST_SIZE, NULL);
-                if (nb_tx != 0) {
-                        unsigned int sent =
-                            rte_eth_tx_burst(g_net.port_id, 0, tx, nb_tx);
-                        for (unsigned int i = sent; i < nb_tx; i++)
-                                rte_pktmbuf_free(tx[i]);
+                        if (nb_rx != 0) {
+                                for (unsigned int packet = 0; packet < nb_rx;
+                                     packet++)
+                                        tg_replicate_arp(workers, worker_count,
+                                                         index, mp, rx[packet]);
+                                unsigned int enq = rte_ring_sp_enqueue_burst(
+                                    worker->ring->in, (void **)rx, nb_rx, NULL);
+                                for (unsigned int i = enq; i < nb_rx; i++)
+                                        rte_pktmbuf_free(rx[i]);
+                                if (enq != nb_rx)
+                                        atomic_fetch_add(
+                                            &worker->shard.rx_ring_drops,
+                                            nb_rx - enq);
+                        }
+
+                        struct rte_mbuf *tx[BURST_SIZE];
+                        unsigned int nb_tx = rte_ring_sc_dequeue_burst(
+                            worker->ring->out, (void **)tx, BURST_SIZE, NULL);
+                        if (nb_tx != 0) {
+                                unsigned int sent = rte_eth_tx_burst(
+                                    g_net.port_id, worker->queue_id, tx, nb_tx);
+                                for (unsigned int i = sent; i < nb_tx; i++)
+                                        rte_pktmbuf_free(tx[i]);
+                                if (sent != nb_tx)
+                                        atomic_fetch_add(
+                                            &worker->shard.tx_nic_drops,
+                                            nb_tx - sent);
+                        }
                 }
         }
-        (void)rte_eal_wait_lcore(worker_lcore);
-        tg_drain_tx_ring(ring);
-        tg_plan_fini(&shard.plan);
+        for (unsigned int index = 0; index < worker_count; index++)
+                (void)rte_eal_wait_lcore(workers[index].lcore_id);
+        for (unsigned int index = 0; index < worker_count; index++)
+                tg_drain_tx_ring(workers[index].ring, workers[index].queue_id);
+        tg_report_aggregate(workers, worker_count);
+        for (unsigned int index = 0; index < worker_count; index++) {
+                tg_flow_pool_fini(&workers[index].shard.flow_pool);
+                tg_flow_map_fini(&workers[index].shard.flow_map);
+                tg_plan_fini(&workers[index].shard.plan);
+        }
+        socket_owner_fini();
+        arp_table_fini();
+        ring_fini();
+        socket_registry_fini();
+        tg_plan_fini(&plan);
+        free(workers);
         return EXIT_SUCCESS;
 }

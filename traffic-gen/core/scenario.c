@@ -451,6 +451,37 @@ out:
         return result;
 }
 
+int tg_plan_partition(struct tg_plan *destination, const struct tg_plan *source,
+                      unsigned int shard_index, unsigned int shard_count) {
+        uint32_t cps_base;
+        uint32_t cps_remainder;
+        uint32_t concurrency_base;
+        uint32_t concurrency_remainder;
+
+        if (destination == NULL || source == NULL || shard_count == 0 ||
+            shard_index >= shard_count) {
+                errno = EINVAL;
+                return -1;
+        }
+        memcpy(destination, source, sizeof(*destination));
+        cps_base = source->target_cps / shard_count;
+        cps_remainder = source->target_cps % shard_count;
+        concurrency_base = source->max_concurrency / shard_count;
+        concurrency_remainder = source->max_concurrency % shard_count;
+        destination->target_cps =
+            cps_base + (shard_index < cps_remainder ? 1U : 0U);
+        destination->max_concurrency =
+            concurrency_base + (shard_index < concurrency_remainder ? 1U : 0U);
+        for (uint32_t class_index = 0; class_index < destination->class_count;
+             class_index++) {
+                destination->classes[class_index].http_config.method =
+                    destination->classes[class_index].http_method;
+                destination->classes[class_index].http_config.path =
+                    destination->classes[class_index].http_path;
+        }
+        return 0;
+}
+
 /** @copydoc tg_plan_fini */
 void tg_plan_fini(struct tg_plan *plan) {
         if (plan != NULL)
