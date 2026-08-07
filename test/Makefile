@@ -8,6 +8,7 @@ OWNER_IO_CFLAGS := $(TEST_CFLAGS) -D_GNU_SOURCE
 # unrelated legacy warnings to test failures.
 OFO_CFLAGS := $(CFLAGS) -std=gnu11 -Wall -Wextra -D_GNU_SOURCE -fdata-sections
 PAWS_CFLAGS := $(CFLAGS) -std=gnu11 -Wall -Wextra -Werror -D_GNU_SOURCE
+ARP_CFLAGS := $(PAWS_CFLAGS) -DLOG_LEVEL=LOG_LVL_ERROR
 
 DPDK_PKGCONF := pkg-config --define-prefix
 DPDK_CFLAGS := $(shell $(DPDK_PKGCONF) --cflags libdpdk)
@@ -20,6 +21,7 @@ PAWS_TEST := $(BUILD_DIR)/test_tcp_paws
 OWNER_IO_TEST := $(BUILD_DIR)/test_owner_io
 HTTP_CLIENT_TEST := $(BUILD_DIR)/test_http_client
 SCENARIO_SCHEDULER_TEST := $(BUILD_DIR)/test_scenario_scheduler
+ARP_TEST := $(BUILD_DIR)/test_arp
 LLHTTP_DIR := ../third_party/llhttp
 HTTP_CLIENT_CFLAGS := $(TEST_CFLAGS) -I../traffic-gen/core \
 	-I../traffic-gen/proto -I../traffic-gen/proto/http \
@@ -41,19 +43,22 @@ SCENARIO_SCHEDULER_OBJS := $(BUILD_DIR)/test_scenario_scheduler.o \
 	$(BUILD_DIR)/llhttp_api.o \
 	$(BUILD_DIR)/llhttp_http.o
 
-.PHONY: all test test-owner-io test-http-client test-scenario-scheduler clean
+.PHONY: all test test-arp test-owner-io test-http-client test-scenario-scheduler clean
 
 all: test
 
 # Compilation and execution both must succeed for the test target to pass.
 test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(OWNER_IO_TEST) \
-	$(HTTP_CLIENT_TEST) $(SCENARIO_SCHEDULER_TEST)
+	$(HTTP_CLIENT_TEST) $(SCENARIO_SCHEDULER_TEST) $(ARP_TEST)
 	$(RBTREE_TEST)
 	$(OFO_TEST)
 	$(PAWS_TEST)
 	$(OWNER_IO_TEST) --no-huge --no-pci --file-prefix ownerio-test
 	$(HTTP_CLIENT_TEST)
 	$(SCENARIO_SCHEDULER_TEST)
+	$(ARP_TEST) --no-huge --no-pci --file-prefix arp-test
+
+test-arp: $(ARP_TEST)
 
 test-owner-io: $(OWNER_IO_TEST)
 
@@ -78,6 +83,11 @@ $(PAWS_TEST): test_tcp_paws.c ../pro-stack/tcp_options.c \
 $(OWNER_IO_TEST): test_owner_io.c ../pro-stack/build/libpro-stack.a | $(BUILD_DIR)
 	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) -I../pro-stack test_owner_io.c \
 		../pro-stack/build/libpro-stack.a -o $@ $(DPDK_LIBS)
+
+$(ARP_TEST): test_arp.c ../pro-stack/arp.c ../pro-stack/arp.h \
+		../pro-stack/net_context.c ../pro-stack/net_context.h | $(BUILD_DIR)
+	$(CC) $(ARP_CFLAGS) $(DPDK_CFLAGS) -I../pro-stack test_arp.c \
+		../pro-stack/arp.c ../pro-stack/net_context.c -o $@ $(DPDK_LIBS)
 
 $(HTTP_CLIENT_TEST): $(HTTP_CLIENT_OBJS)
 	$(CC) $(HTTP_CLIENT_OBJS) -o $@

@@ -153,6 +153,30 @@ static inline void net_log_emit(const char *module, unsigned int level,
 #define LOG_TCP_WARN(fmt, ...) LOG_MOD_WARN("TCP", fmt, ##__VA_ARGS__)
 
 /**
+ * ARP learning and request/reply messages are expected on normal traffic
+ * paths. Keep them disabled unless ARP diagnosis is explicitly requested.
+ */
+#ifndef ARP_LOG_ENABLED
+#define ARP_LOG_ENABLED 0
+#endif
+
+#if ARP_LOG_ENABLED
+#define LOG_ARP_INFO(fmt, ...) LOG_MOD_INFO("ARP", fmt, ##__VA_ARGS__)
+#define LOG_ARP_DEBUG(fmt, ...) LOG_MOD_DEBUG("ARP", fmt, ##__VA_ARGS__)
+#else
+#define LOG_ARP_INFO(fmt, ...)                                                 \
+        do {                                                                   \
+                if (0)                                                         \
+                        LOG_MOD_INFO("ARP", fmt, ##__VA_ARGS__);               \
+        } while (0)
+#define LOG_ARP_DEBUG(fmt, ...)                                                \
+        do {                                                                   \
+                if (0)                                                         \
+                        LOG_MOD_DEBUG("ARP", fmt, ##__VA_ARGS__);              \
+        } while (0)
+#endif
+
+/**
  * TCP state-transition and packet-path messages are verbose during traffic
  * generation.  Keep TCP errors and warnings enabled while compiling INFO,
  * DEBUG, and TRACE calls out by default.  Define the needed option as 1 in

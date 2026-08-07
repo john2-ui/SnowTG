@@ -28,8 +28,27 @@
 #define ENABLE_ICMP 1
 /** Dispatch received UDP datagrams to the userspace socket layer. */
 #define ENABLE_UDP_ECHO 1
-/** Periodically sweep the subnet with ARP requests. */
-#define ENABLE_ARP_SWEEP 1
+/** Enable rate-limited /24 ARP sweep for controlled diagnostics only. */
+#define ENABLE_ARP_SWEEP 0
+/**
+ * ARP sweep is a diagnostic-only facility.  Normal operation uses the
+ * demand-driven resolver below and must not probe every host in a subnet.
+ */
+#define ARP_SWEEP_INTERVAL_MS (60U * 1000U)
+#define ARP_SWEEP_BATCH 8U
+
+/** Maximum number of IPv4 neighbours retained by the ARP cache. */
+#define ARP_CACHE_CAPACITY 256U
+/** Time a learned neighbour remains usable without being refreshed. */
+#define ARP_REACHABLE_TTL_MS (5U * 60U * 1000U)
+/** Minimum interval between ARP requests for one unresolved neighbour. */
+#define ARP_PROBE_INTERVAL_MS 1000U
+/** Number of ARP requests made before a neighbour enters FAILED state. */
+#define ARP_PROBE_MAX_RETRIES 3U
+/** Backoff before a failed neighbour may be resolved again. */
+#define ARP_FAILED_TTL_MS (30U * 1000U)
+/** Frequency at which the packet worker expires ARP cache entries. */
+#define ARP_MAINTENANCE_INTERVAL_MS 1000U
 /** Enable the packet-capture framework so dpdk-pdump can attach. */
 #define ENABLE_PDUMP 1
 /** Launch the example UDP echo application on a dedicated lcore. */

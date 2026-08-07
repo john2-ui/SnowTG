@@ -105,8 +105,18 @@ int stack_runtime_worker_entry(void *arg) {
         struct rte_mempool *mp = arg;
         struct inout_ring *ring = ring_instance();
         uint64_t last_timer_tsc = 0;
+        uint64_t last_arp_maintenance_tsc = 0;
+#if ENABLE_ARP_SWEEP
+        uint64_t last_arp_sweep_tsc = 0;
+#endif
         const uint64_t timer_interval =
             rte_get_timer_hz() * TIMER_MANAGE_INTERVAL_MS / 1000;
+        const uint64_t arp_maintenance_interval =
+            rte_get_timer_hz() * ARP_MAINTENANCE_INTERVAL_MS / 1000;
+#if ENABLE_ARP_SWEEP
+        const uint64_t arp_sweep_interval =
+            rte_get_timer_hz() * ARP_SWEEP_INTERVAL_MS / 1000;
+#endif
 
         LOG_INFO("packet worker started on lcore %u", rte_lcore_id());
         while (!stack_runtime_stop_requested()) {
@@ -125,6 +135,17 @@ int stack_runtime_worker_entry(void *arg) {
                         rte_timer_manage();
                         last_timer_tsc = now;
                 }
+                if (now - last_arp_maintenance_tsc >=
+                    arp_maintenance_interval) {
+                        arp_maintain(now);
+                        last_arp_maintenance_tsc = now;
+                }
+#if ENABLE_ARP_SWEEP
+                if (now - last_arp_sweep_tsc >= arp_sweep_interval) {
+                        arp_debug_sweep(mp, ring->out, now);
+                        last_arp_sweep_tsc = now;
+                }
+#endif
 
                 if (g_reactor != NULL)
                         g_reactor(g_reactor_ctx, BURST_SIZE);
