@@ -6,8 +6,9 @@
 
 - [ARC-001：TCP 接收路径的跨 lcore 所有权缺陷](#arc-001tcp-接收路径的跨-lcore-所有权缺陷) — 接收路径已实施；生命周期收敛待后续处理
 - [ARC-002：Socket 单 owner、代际句柄与命令队列](#arc-002socket-单-owner代际句柄与命令队列) — 已实施；取代跨 lcore 裸指针与 `tcp_rx_events` 过渡模型
-- [ARC-003：traffic-gen owner-local 队列与按需 TCP 缓冲](#arc-003traffic-gen-owner-local-队列与按需-tcp-缓冲) — 已实施（单 worker）；TCB 内存按需分配并为 RSS 分片保留 owner 边界
+- [ARC-003：traffic-gen owner-local 队列与按需 TCP 缓冲](#arc-003traffic-gen-owner-local-队列与按需-tcp-缓冲) — 已实施；原有单 worker 限制由 ARC-005 解除
 - [ARC-004：短连接压测的全 socket TX 扫描与对端 RST](#arc-004短连接压测的全-socket-tx-扫描与对端-rst) — 已识别；诊断指标已实施，dirty TX queue 待实施
+- [ARC-005：多 owner worker、硬件 RSS 与软件接收分流](#arc-005多-owner-worker硬件-rss-与软件接收分流) — 已实施；真实 NIC 回退与压力回归待验证
 
 ## 条目格式
 
@@ -541,7 +542,7 @@ fd
 
 ## ARC-003：traffic-gen owner-local 队列与按需 TCP 缓冲
 
-- **状态**：已实施（单 worker）；多 worker/RSS 分片仍保持 fail-closed。
+- **状态**：已实施；本条目实施时的单 worker 限制已由 ARC-005 解除。
 - **范围**：`traffic-gen` owner-local flow、`owner_io`、`nsock`、TCP RX/TX 队列、发送缓冲和后续 per-worker 分片。
 - **触发**：1000 CPS 短连接测试中，每个 socket 创建两个 DPDK ring；连接在 FIN_WAIT/TIME_WAIT 期间仍保留 ring，最终触发 DPDK memzone 段上限。
 - **架构决策**：同一 owner worker 内的 traffic-gen socket 不创建 DPDK ring，改用嵌入 TCB 的 owner-local FIFO；DPDK ring 仅保留给跨 lcore 通信和 app-visible 兼容路径。
@@ -596,6 +597,9 @@ HTTP transaction complete
 
 在 socket owner、socket list、ARP 表、in/out ring、reactor 与 TCP memory domain
 全部按 worker 分片，并验证跨 worker 生命周期交接前，不能解除此限制。
+
+以上是 ARC-003 实施时的安全边界。后续已完成 per-lcore 资源分片、RSS 队列绑定、
+owner 发布和软件接收分流，解除过程与当前不变量见 ARC-005。
 
 ---
 
@@ -667,3 +671,192 @@ worker turn
 4. **回归门槛**：dirty TX queue 后，`tx_flush` call 数应接近有发送工作的
    socket 数，而非 `worker_turns × live_sockets`；同时比较至少三轮相同环境的
    RPS、P50/P99 阶段延迟、RST 分类与 ring drop。
+
+---
+
+## ARC-005：多 owner worker、硬件 RSS 与软件接收分流
+
+- **状态**：已实施；软件分流与拓扑单测已通过，真实 NIC 下的 RSS
+  失败回退和长时间多核压力回归待完成。
+- **范围**：`pro-stack/socket_owner.c`、`socket.c`、`ring.c`、`arp.c`、
+  `stack_runtime.c`、`port.c`、`rx_dispatch.c`、`tcp.c`，以及
+  `traffic-gen/main_tg.c` 的主 I/O lcore、packet worker 和 flow shard。
+- **触发**：ARC-002/ARC-003 已建立 socket 单 owner 和 owner-local 内存边界，
+  但多个 worker 仍会共享协议资源；同时仅依赖硬件 RSS 会使不支持 RSS、
+  队列数不足或 RETA 配置失败的 NIC 无法运行多 worker。
+- **架构决策**：协议可变状态严格按 owner lcore 分片；物理 RX 队列数与
+  flow worker 数解耦；接收路径依次使用已发布 owner、硬件 RSS 队列和软件
+  Toeplitz hash 决定目标 worker。
+
+### 背景与实施演进
+
+多 worker 不是简单地增加 RX queue。若 socket registry、owner slot、ARP 表、
+timer、TCP memory 或软件 ring 仍是进程级可变单例，即使 NIC 能把四元组稳定
+分配到不同队列，多个 worker 仍会并发修改同一协议对象，重新引入跨 lcore
+锁、裸指针竞态和错误释放。
+
+本次能力按以下顺序建立：
+
+1. `eb571f6` 将 socket registry、socket owner、ARP 表和 NIC↔worker ring
+   改为 per-lcore 分片，使协议状态具有明确 owner；
+2. `e9cb965` 为 packet worker 建立独立 runtime、timer 和 RX/TX queue，
+   配置 TCP RSS/RETA，并让主动连接选择能够回流到 owner queue 的临时端口；
+3. `8ca3101` 将 traffic-gen 的 scenario、scheduler、flow pool、reactor 和
+   统计按 shard 拆分，正式启用 `--workers N`；
+4. 当前补充 `port_topology` 与 `rx_dispatch`：硬件 RSS 不可用时只创建一个
+   RX queue，由主 lcore 软件分类到多个 owner worker；同时通过 endpoint/flow
+   owner 表处理 listener、UDP bind 和已建立 TCP 连接的显式归属。
+
+这组改动解除 ARC-003 中“`--workers > 1` 必须 fail-closed”的临时限制。
+
+### 多核所有权与数据流不变量
+
+1. 每个 packet worker 独占自己的 socket registry、socket/TCB、owner slot、
+   command/ready queue、ARP 表、TCP memory domain、timer 和 reactor 状态。
+2. 应用或其他 lcore 只能通过带 `{id, generation, owner_lcore}` 的 handle
+   向 owner command ring 提交操作，不能跨 lcore 解引用 `nsock *`。
+3. 主 I/O lcore 是所有 worker 输入 ring 的唯一生产者，也是输出 ring 的唯一
+   消费者；即使一个物理 RX queue 软件分流到多个 worker，SPSC ring 前提仍成立。
+4. `flow_queue_id` 表示稳定的软件 flow bucket，不再等同于物理 RX queue；
+   `tx_queue_id` 独立映射为 `worker_index % tx_queue_count`。
+5. endpoint/flow owner 表只发布路由元数据，不转移协议状态所有权。生命周期
+   写入受 registry mutex 串行化，主 I/O lcore 在收包热路径进行原子只读查询。
+
+### RSS 拓扑选择与接收分流
+
+`port_init_queues()` 探测 NIC 能力并返回实际 `port_topology`：
+
+- 单 worker 使用一个 RX/TX queue，不启用 RSS；
+- NIC 支持 TCP RSS、queue 数量、RSS key 和 RETA 时，为每个 worker 创建
+  RX/TX queue，并配置固定 RSS key 和轮转 RETA；
+- 能力不足或可回退的 RSS 配置失败时，创建一个 RX queue 和不超过 NIC 上限的
+  TX queues，同时建立固定 128 项软件 RETA；
+- UDP RSS 只有在 NIC 明确支持时才启用；否则即使 TCP 使用硬件 RSS，UDP 仍由
+  主 lcore 软件 hash。
+
+```mermaid
+flowchart TD
+    Start["启动：指定 worker_count"] --> One{"worker_count = 1?"}
+
+    One -- 是 --> Single["单 RX / TX 队列模式"]
+    One -- 否 --> Probe{"NIC 支持 TCP RSS、队列数、RETA 和 Key?"}
+
+    Probe -- 否 --> SoftInit["初始化软件 Toeplitz / RETA"]
+    Probe -- 是 --> TryRSS["配置多 RX/TX 队列和硬件 RSS"]
+    TryRSS --> RSSOK{"端口启动及 RETA 配置成功?"}
+    RSSOK -- 是 --> Hardware["硬件 RSS 模式<br/>RX 队列数 = worker 数"]
+    RSSOK -- 否 --> Cleanup["清理 RSS 配置"] --> SoftInit
+
+    SoftInit --> Software["软件分流模式<br/>1 个 RX 队列<br/>多个 flow worker"]
+    Single --> Poll
+    Hardware --> Poll
+    Software --> Poll
+
+    subgraph RX["RX 分流策略"]
+        Poll["主 lcore 轮询所有 RX 队列"] --> Burst["读取 RX burst"]
+        Burst --> Classify["rx_dispatch_classify"]
+
+        Classify --> ARP{"ARP?"}
+        ARP -- 是 --> Fanout["克隆并广播到所有 worker"]
+
+        ARP -- 否 --> Parse{"IPv4/L4 可解析?"}
+        Parse -- 否 --> Worker0["交给 worker 0<br/>由协议栈验证或丢弃"]
+
+        Parse -- 是 --> Conn{"命中 TCP 四元组 owner?"}
+        Conn -- 是 --> Owner["发送给已登记 owner"]
+
+        Conn -- 否 --> Endpoint{"命中 TCP/UDP endpoint owner?"}
+        Endpoint -- 是 --> Owner
+
+        Endpoint -- 否 --> HWRSS{"该协议使用硬件 RSS?"}
+        HWRSS -- 是 --> RXQueue["worker = RX queue"]
+        HWRSS -- 否 --> SWHash["软件 Toeplitz Hash<br/>worker = RETA[hash]"]
+
+        Fanout --> Rings["按 worker 批量写入 SPSC ring"]
+        Worker0 --> Rings
+        Owner --> Rings
+        RXQueue --> Rings
+        SWHash --> Rings
+        Rings --> Workers["协议栈 worker 处理"]
+    end
+
+    Socket["Socket bind/listen/connect/free"] -. "发布或删除 owner" .-> Registry["Endpoint 表 / TCP Flow 表"]
+    Registry -. "优先匹配" .-> Classify
+
+    Workers --> TXRing["Worker TX ring"]
+    TXRing --> TXQueue["TX queue = worker % tx_queue_count"]
+    TXQueue --> NIC["NIC TX"]
+```
+
+分类优先级不能交换：
+
+1. ARP 必须 fanout；原始 mbuf 交给一个 worker，其余 worker 接收带
+   `ARP_MBUF_F_LEARN_ONLY` 的 clone，以保持每个 owner-local ARP 表可用；
+2. 已建立 TCP 四元组命中时必须回到连接 owner；
+3. TCP listener 或 UDP bind 命中 endpoint owner 时必须回到 endpoint owner；
+4. 没有显式 owner 时，若 NIC 已对该协议执行 RSS，则沿用 `rx_queue`；
+5. 其余 IPv4 流量使用固定 key 的软件 Toeplitz hash；无法安全解析的帧交给
+   worker 0，由正常协议栈校验和丢弃。
+
+### Socket owner 发布与主动连接
+
+`socket.c` 将 dispatcher owner 发布绑定到 registry 生命周期：
+
+- UDP bind 发布 `{protocol, local_ip, local_port} → owner_lcore`；
+- TCP listen 发布 listener endpoint；
+- TCP connection register 发布完整
+  `{remote_ip, local_ip, remote_port, local_port} → owner_lcore`；
+- unregister 和 `nsock_free()` 对称删除对应记录；
+- 发布失败时回滚 socket registry 插入，避免 registry 与 dispatcher
+  对同一对象给出不同结论。
+
+主动 TCP 连接仍优先通过临时端口选择使 Toeplitz/RETA 结果匹配 owner 的
+`flow_queue_id`。额外的全局 endpoint 查询防止不同 owner 与已发布 listener
+竞争相同本地地址。连接进入 registry 后，精确四元组 owner 具有最高优先级，
+因此后续报文不依赖 NIC 是否继续提供相同 RSS 能力。
+
+### traffic-gen 多 shard 接入与可观测性
+
+traffic-gen 为每个 worker 独立创建 plan shard、scheduler、flow map/pool、
+reactor、socket owner 资源和 stack runtime。主 lcore：
+
+1. 轮询 `port_topology.rx_queue_count` 个物理 RX queues；
+2. 对 burst 中每个 mbuf 分类，按 worker 聚合后批量写入输入 ring；
+3. 轮询所有 worker 输出 ring，并发送到各自映射的 TX queue；
+4. 保持 ARP clone、ring enqueue 失败和 NIC 未发送 mbuf 的释放责任。
+
+周期统计新增：
+
+- `rx_owner_hits`：由 endpoint/flow owner 覆盖默认 RSS 结果的包数；
+- `rx_software_hashes`：由软件 Toeplitz 选定 worker 的包数；
+- `rx_parse_fallbacks`：因短帧、非 IPv4、IP options、分片或不完整 L4
+  等原因交给 worker 0 的包数；
+- 原有 `rx_ring_drops`、`tx_nic_drops` 和各 worker ring high-water。
+
+这些指标用于区分 NIC RSS、owner 路由和软件 fallback 的实际占比，也能判断
+吞吐下降来自分类成本、软件 ring 背压还是 NIC TX。
+
+### 验证
+
+新增测试：
+
+1. `test_rx_dispatch` 验证软件 hash 稳定性、UDP endpoint owner、TCP
+   listener/四元组优先级、ICMP hash、解析 fallback 和硬件 RX queue 继承；
+2. `test_port_topology` 使用 `net_null` vdev 强制关闭硬件 RSS，验证两个
+   flow worker 回退为一个 RX queue，并保留一到两个 TX queues；
+3. 两个测试均以 `-Wall -Wextra -Werror -Wpedantic` 构建并通过。
+
+### 遗留事项与验证重点
+
+1. 在支持和不支持 RSS 的真实 NIC/PMD 上分别验证多 worker 启动、RETA
+   映射、TCP/UDP 回流和持续压测；特别验证 RSS 启动或 RETA 配置失败后的
+   stop/close/reconfigure 行为是否被目标 PMD 支持。
+2. 当前 dispatcher 只直接解析无 VLAN、无 IPv4 options 且 L2/L3/L4 头位于
+   mbuf 首段的报文；后续若要支持 VLAN、多段 mbuf 或 IP options，应扩展安全
+   解析，而不能在热路径无边界访问。
+3. 所有 IPv4 分片（含仅设置 `MF` 的首分片）均回退 worker 0，避免按不完整的
+   L4 信息分流；当前不支持重组。
+4. endpoint/flow 表当前为固定容量开放寻址表。需要增加容量占用、探测长度和
+   `ENOSPC` 指标，并验证 tombstone 复用期间的无锁读取可见性。
+5. ARC-004 的全 socket TX 扫描仍是独立瓶颈。多 worker 和 RSS 只把扫描按
+   owner 分片，不能代替 owner-local dirty TX queue。

@@ -43,3 +43,38 @@ MAC、重写状态或 probe 计数；缓存未命中、未完成解析和 MAC �
 - `ARP_LOG_ENABLED` 默认关闭，避免每个入站报文的 ARP 缓存确认日志干扰流量发生器
 统计与终端 I/O。
 
+## 2026-08-07 多 worker 复测
+
+以下均为进程退出时的 aggregate 统计；除行内特别注明外，场景时长为 120 秒、目标为
+100,000 CPS。后续多 worker 数据追加到此表。
+
+| workers | 场景 | started / done / success / fail | 成功率 | 实际 started CPS / 成功 RPS | TX / RX | 资源与丢包 | 延迟（worker 范围） | 结论 |
+| ------- | ---- | ------------------------------- | ------ | --------------------------- | ------- | ---------- | ------------------- | ---- |
+| 2 | 100,000 目标 CPS，120 秒，最大并发 1,000 | 74,032 / 74,032 / 72,977 / 1,055 | 98.57% | 616.93 / 608.14 | 2,730,563 / 6,421,976 | `paused=0`、`tx_alloc_fail=0`、`rx_ring_drops=0`、`tx_nic_drops=0`；每 worker `tx_peak/payload_peak=411–441` | connect avg 65.90–92.59 ms；first-rx avg 367.79–394.43 ms；complete avg 1.41–2.02 s；complete max 127.05 s | 未接近目标 CPS；存在 1.43% 失败，日志可见 ESTABLISHED RST 与 SYN RTO give-up；两个 worker 启动量为 43,579 / 30,453，负载不均衡。 |
+| 4 | 100,000 目标 CPS，120 秒，最大并发 1,000 | 82,449 / 82,449 / 81,525 / 924 | 98.88% | 687.08 / 679.38 | 3,048,874 / 7,174,200 | `paused=0`、`tx_alloc_fail=0`、`rx_ring_drops=0`、`tx_nic_drops=0`；每 worker `tx_peak/payload_peak=219–246` | connect avg 73.96–105.64 ms；first-rx avg 345.15–435.41 ms；complete avg 1.20–2.91 s；complete max 127.07 s | 相对 2 workers，成功 RPS +71.24（+11.71%）、失败率降至 1.12%，但仍远低于目标；worker 启动量 25,473 / 21,394 / 24,993 / 10,589，明显不均衡。 |
+| 4 | 100,000 目标 CPS，120 秒，最大并发 10,000 | 78,668 / 78,668 / 66,251 / 12,417 | 84.22% | 655.57 / 552.09 | 2,801,307 / 5,830,088 | `paused=0`、`tx_alloc_fail=0`、`rx_ring_drops=0`、`tx_nic_drops=0`；每 worker `tx_peak/payload_peak=2,419–2,451` | connect avg 449.85–694.54 ms；first-rx avg 1.10–1.87 s；complete avg 14.95–18.49 s；complete max 140.05 s | 相对同为 4 workers / 1k 并发，成功 RPS -127.29（-18.74%），失败率升至 15.78%；`tokens≈2500` 已积压，且大规模 ESTABLISHED RST 与完成延迟显著恶化。 |
+
+> 两种并发下实际启动速率均不足目标的 0.7%；10k 并发没有提升吞吐，反而显著放大 RST、
+> 连接完成延迟和失败率。因此当前主要瓶颈不在已统计的 RX ring、NIC 丢包或 TX/payload 分配失败。
+
+### RST / SYN RTO 判断
+
+- `tcp accepted RST` 表示本端收到了对端发来的 TCP RST；它不是本端超时合成的错误。
+  对端应用或代理主动中止连接、连接状态丢失/过早回收、请求被限流，或对端资源紧张时的
+  abort，都可能触发 RST。仅凭客户端日志，不能把它确定归因于“对端性能不足”。
+- `rto-give-up kind=syn` 表示本端 SYN 重传耗尽仍未收到可接受的 SYN-ACK，最终以
+  `ETIMEDOUT` 完成 connect。可能是对端 listen/backlog/防火墙或中间网络丢弃 SYN/SYN-ACK，
+  也可能是本端发包、回包收包或分发路径的问题；它同样不是对端性能不足的充分证据。
+- 本次 `paused`、`tx_alloc_fail`、`rx_ring_drops`、`tx_nic_drops` 均为零，排除了这些
+  **已统计** 的本端资源和软件 ring 丢包原因，但不能排除 NIC 硬件计数器、链路/交换机丢包，
+  或协议栈未覆盖的丢包。
+- 1k 并发时，4 workers 会把目标 CPS / 并发平均切成每 worker 25,000 CPS / 250 并发；
+  最终 started 仍不均衡。提高到 10k 并发后每 worker 为 2,500 并发，`tokens≈2500` 仍积压，
+  但 complete average 恶化到 15–18 秒；说明新连接被允许创建后，连接完成/关闭路径或对端
+  服务能力已经饱和。应优先检查 TX 全 socket 扫描、CPU 核绑定和对端连接处理，而不是先认定
+  服务端是唯一瓶颈。
+
+建议在对端同时采集 listen accept 队列、RST/重传、CPU 和连接状态，并在客户端采集
+NIC `xstats` 与抓包（SYN、SYN-ACK、RST），按五元组关联后才能区分对端拒绝、网络丢包与本端
+协议栈/调度问题。
+
