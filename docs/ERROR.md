@@ -72,9 +72,11 @@ rte_eal_remote_launch(pkt_worker, mp,
 
 这样 worker 启动时，`in`/`out` 环与 ARP 表均已完整初始化。
 
-### 遗留隐患
+### 当前约束
 
-ARP 表链表仍会被 worker（收到 ARP 回复时写入）与定时器回调 `arp_sweep_cb`（主 lcore 读取）并发访问，目前未加锁。学习场景一般不触发，若后续出现偶发崩溃或表数据错乱，需要给 ARP 表加锁或改为单线程访问。
+ARP 缓存现为 packet worker 独占的有界 `rte_hash`；ARP 老化和可选诊断
+sweep 也都在该 worker 执行，因此不再与 main lcore 并发访问。多 worker
+扩展前仍需将缓存按 worker 分片，不能重新把该单例暴露给多个协议 worker。
 
 ---
 

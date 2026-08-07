@@ -6,7 +6,6 @@
 #endif
 
 #include "../../pro-stack/arp.h"
-#include "../../pro-stack/log.h"
 #include "../../pro-stack/net_context.h"
 #include "../../pro-stack/port.h"
 #include "../../pro-stack/ring.h"
@@ -22,29 +21,8 @@
 #if ENABLE_PDUMP
 #include <rte_pdump.h>
 #endif
-#include <rte_timer.h>
 
 static const uint32_t demo_local_ip = MAKE_IPV4_ADDR(192, 168, 21, 2);
-
-#if ENABLE_ARP_SWEEP
-static void arp_sweep_cb(__attribute__((unused)) struct rte_timer *timer,
-                         void *arg) {
-        struct rte_mempool *mp = arg;
-        struct inout_ring *ring = ring_instance();
-
-        for (int i = 1; i <= 254; i++) {
-                uint32_t dst_ip =
-                    (g_net.local_ip & 0x00FFFFFF) | (0xFF000000 & (i << 24));
-                uint8_t *known = arp_lookup(dst_ip);
-                const uint8_t *dst_mac = known ? known : g_broadcast_mac;
-                struct rte_mbuf *arp = arp_build_pkt(
-                    mp, RTE_ARP_OP_REQUEST, dst_mac, g_net.local_ip, dst_ip);
-                if (arp != NULL)
-                        rte_ring_mp_enqueue_burst(ring->out, (void **)&arp, 1,
-                                                  NULL);
-        }
-}
-#endif
 
 int main(int argc, char *argv[]) {
         if (rte_eal_init(argc, argv) < 0)
@@ -76,13 +54,6 @@ int main(int argc, char *argv[]) {
                          "stack demo needs at least two lcores\n");
         if (socket_owner_init(worker_lcore) != 0)
                 rte_exit(EXIT_FAILURE, "socket owner init failed\n");
-
-#if ENABLE_ARP_SWEEP
-        struct rte_timer arp_timer;
-        rte_timer_init(&arp_timer);
-        rte_timer_reset(&arp_timer, rte_get_timer_hz() * 60, PERIODICAL,
-                        main_lcore, arp_sweep_cb, mp);
-#endif
 
         unsigned int next_app_lcore = worker_lcore;
 #if ENABLE_UDP_APP

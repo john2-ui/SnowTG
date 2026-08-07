@@ -113,7 +113,7 @@ flowchart LR
 - 全局本端身份 `g_net`（[net_context.c](pro-stack/net_context.c)）
 - 分级日志 + IP/MAC 格式化（[log.h](pro-stack/log.h)）
 - 编译期功能开关 `ENABLE_*`（[config.h](pro-stack/config.h)）
-- `rte_timer`：ARP sweep；TCP SYN_SENT RTO（指数退避）与 TIME_WAIT 2MSL
+- `rte_timer`：TCP SYN_SENT RTO（指数退避）与 TIME_WAIT 2MSL；packet worker 周期维护 ARP 缓存
 
 
 
@@ -133,10 +133,10 @@ flowchart LR
 
 ### ARP
 
-- ARP 表 `arp_table_instance / arp_lookup / arp_table_add`（[arp.c](pro-stack/arp.c)）
-- ARP request 回复、reply 学习；从 TCP/UDP RX 学习对端 MAC
-- ARP sweep 定时器周期性扫描 /24（可关）
-- 未解析 MAC 时自动发 ARP request 并把待发包回队重试
+- 有界 `rte_hash` 邻居缓存（[arp.c](pro-stack/arp.c)）：O(1) 查找、TTL 老化、LRU 容量淘汰和 MAC 变更刷新
+- ARP request 回复、reply 学习；TCP/UDP RX 对已确认邻居仅刷新活跃时间戳，未命中、未完成解析或 MAC 变更时学习对端 MAC；入站 ARP 校验以太网/IPv4 格式和 sender MAC
+- 未解析 MAC 时按需发送 ARP request；同一 IP 在 probe 间隔内去重，失败后退避重试；待发数据仍留在 socket 队列
+- 不再默认扫描 /24；`ENABLE_ARP_SWEEP` 仅在 packet worker 中以固定批量和 60 秒间隔执行受控诊断 sweep
 
 
 
@@ -257,9 +257,7 @@ flowchart LR
 
 | 功能            | 位置                               | 说明 / 目标设计                                               |
 | ------------- | -------------------------------- | ------------------------------------------------------- |
-| ARP 缓存老化 / 淘汰 | [arp.c](pro-stack/arp.c) ~58     | 表项永不过期。目标：TTL + 容量淘汰；MAC 变更时更新                          |
 | 无故 ARP / 冲突检测 | —                                | 无                                                       |
-| ARP 解析策略      | [apps/stack-demo/](apps/stack-demo/) sweep | 现状 /24 全扫偏重。目标：按需 ARP + 老化；sweep 降级或限速                  |
 | ICMP echo 负载  | [icmp.c](pro-stack/icmp.c) ~80   | reply 应回显请求负载                                           |
 | 非 echo ICMP   | [icmp.c](pro-stack/icmp.c) ~94   | destination unreachable / time exceeded 等，并向 UDP/TCP 上报 |
 | IP 分片重组       | [stack_runtime.c](pro-stack/stack_runtime.c) | 分片直送 L4。目标：IP 层重组后再交 L4                                 |
@@ -331,11 +329,11 @@ flowchart LR
 
 | 现状（低效）                                                                                    | 目标（高效）                                                                                                   |
 | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| fd、UDP bind、TCP listener/4-tuple 已使用数组或 `rte_hash`；ARP 仍为 O(n) 链表，`g_sock_list` 仍供 TX 遍历  | ARP 表改哈希；TX 改为 dirty socket 队列                                                                           |
+| fd、UDP bind、TCP listener/4-tuple 与 ARP 已使用 `rte_hash`；`g_sock_list` 仍供 TX 遍历  | TX 改为 dirty socket 队列                                                                           |
 | worker 每轮遍历全部 socket 调 `tx_flush`                                                         | 仅冲洗有待发数据的 socket：dirty 队列，或 `send_buf` / `sndbuf` 非空时入队                                                  |
 | TCP OFO 使用 RB-tree（按 seq）+ 双向链表，插入定位 O(log n)、从 `recv_ack` drain O(1)，并限制节点、每 TCB 字节与全局字节 | 增加可观测性指标；依据压力和乱序距离自适应调节上限                                                                                |
 | `tcp_send` → owner-local ACK-retained chunk 链（仅未确认数据占用内存）                      | （可选）零拷贝 / mbuf 引用计数                                                                                      |
-| ARP /24 周期性广播                                                                             | 按需解析 + 缓存老化；全网扫仅作可选调试手段                                                                                  |
+| ARP 解析：按需 probe、缓存老化、容量淘汰与退避已实现                                                      | 全网扫描仅保留为可选、批量限速的调试手段                                                                                  |
 | 单 RX/TX queue、单 packet worker                                                             | 多 queue + 硬件 RSS：同一四元组固定归属一个 worker；ARP/ICMP、计时器、TX 和 socket 生命周期按 worker 分片。单 RX queue 或自定义亲和时再使用软件 RSS |
 
 
@@ -390,12 +388,23 @@ make -C test test-owner-io
 同核。后者目前提供 nonblocking I/O 和 ready-event runtime 骨架，尚未包含
 HTTP/DNS scenario 插件。
 
-### TCP 包级日志与排查
+### TCP 与 ARP 日志排查
 
 默认构建关闭 `LOG_TCP_INFO`、`LOG_TCP_DEBUG` 和 `LOG_TCP_TRACE`，避免 traffic
 generator 的连接生命周期、ACK/窗口变化和逐包日志淹没运行统计；TCP 的 `ERROR`
 和 `WARN` 仍然输出。全局默认等级为 `LOG_LVL_INFO`，因此 owner 等模块的
 高频 `DEBUG` 也不会打印。
+
+ARP 的学习、请求回复和 reply 接收日志同样默认关闭（`ARP_LOG_ENABLED=0`），
+避免正常 ARP 流量持续输出 `[CORE][INFO]`；ARP 的 `ERROR` 和 `WARN` 保持输出。
+排查 ARP 时先清理旧产物，再显式开启：
+
+```bash
+cd pro-stack
+make clean
+make LOG_LEVEL=LOG_LVL_DEBUG ARP_LOG_ENABLED=1
+```
+
 协议栈排查时可通过编译期开关重新启用相应日志。若只需连接生命周期和重传日志，
 而不输出每一包：
 
@@ -448,7 +457,8 @@ make
 | `ENABLE_TCP_CLIENT`                               | 0   | app lcore 跑 `apps/tcp-echo` client |
 | `ENABLE_TCP_SERVER`                               | 1   | app lcore 跑 `apps/tcp-echo` server |
 | `ENABLE_UDP_APP`                                  | 0   | app lcore 跑 `apps/udp-echo`   |
-| `ENABLE_ARP` / `ENABLE_ICMP` / `ENABLE_ARP_SWEEP` | 1   | L2/L3 辅助路径                  |
+| `ENABLE_ARP` / `ENABLE_ICMP`                      | 1   | L2/L3 辅助路径                  |
+| `ENABLE_ARP_SWEEP`                                | 0   | packet worker 的受控诊断 sweep；正常解析始终按需进行 |
 
 
 `TCP_APP_PORT`、`TCP_CLIENT_PEER_IP` 等演示参数同样在 `config.h`。

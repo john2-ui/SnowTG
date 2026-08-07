@@ -21,6 +21,7 @@
 
 #include <errno.h>
 #include <netinet/in.h>
+#include <rte_cycles.h>
 #include <rte_ether.h>
 #include <rte_ip.h>
 #include <rte_ring.h>
@@ -122,7 +123,7 @@ int udp_ingress(struct rte_mbuf *mbuf) {
                 return -1;
         }
 
-        arp_table_add(ip->src_addr, eth->src_addr.addr_bytes);
+        arp_table_confirm(ip->src_addr, eth->src_addr.addr_bytes);
 
         if (rte_ring_mp_enqueue(sk->recv_buf, mbuf) != 0) {
                 LOG_ERROR("recv_buf full for " UDP_SK_FMT ", dropping packet",
@@ -153,22 +154,13 @@ int udp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
         struct rte_ipv4_hdr *ip = udp_ipv4_header(mbuf);
 
         if (mac_is_broadcast(eth->dst_addr.addr_bytes)) {
-                uint8_t *dst_mac = arp_lookup(ip->dst_addr);
+                struct rte_ring *out_ring = ring_instance()->out;
+                const uint8_t *dst_mac = arp_resolve(mp, out_ring, ip->dst_addr,
+                                                     rte_get_timer_cycles());
                 if (dst_mac != NULL) {
                         rte_memcpy(eth->dst_addr.addr_bytes, dst_mac,
                                    RTE_ETHER_ADDR_LEN);
                 } else {
-                        struct rte_mbuf *arp = arp_build_pkt(
-                            mp, RTE_ARP_OP_REQUEST, eth->dst_addr.addr_bytes,
-                            g_net.local_ip, ip->dst_addr);
-                        if (arp == NULL) {
-                                LOG_ERROR("arp_build_pkt() failed");
-                                rte_pktmbuf_free(mbuf);
-                                return 0;
-                        }
-                        struct inout_ring *ring = ring_instance();
-                        rte_ring_mp_enqueue_burst(ring->out, (void **)&arp, 1,
-                                                  NULL);
                         if (rte_ring_mp_enqueue(sk->send_buf, mbuf) != 0) {
                                 LOG_ERROR("send_buf full while waiting ARP");
                                 rte_pktmbuf_free(mbuf);
@@ -210,9 +202,12 @@ ssize_t udp_sendto(struct nsock *sk, const void *buf, size_t len,
         }
 
         const struct sockaddr_in *daddr = (const struct sockaddr_in *)dest_addr;
-        const uint8_t *dst_mac = arp_lookup(daddr->sin_addr.s_addr);
-        if (dst_mac == NULL)
-                dst_mac = g_broadcast_mac;
+        /*
+         * Resolution happens in udp_tx_flush on the packet worker.  Building
+         * with a broadcast destination marks this mbuf as unresolved without
+         * reading the owner-local ARP cache from the application lcore.
+         */
+        const uint8_t *dst_mac = g_broadcast_mac;
         /* TODO: fragment payloads larger than the path MTU (IP fragmentation)
          * and reassemble fragmented datagrams on receive. Today an oversized
          * send is encoded as a single frame and there is no reassembly path. */

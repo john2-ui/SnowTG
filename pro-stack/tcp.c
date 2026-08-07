@@ -2541,7 +2541,7 @@ int tcp_ingress(struct rte_mbuf *mbuf) {
             tcp_flags_str(tcp_hdr->tcp_flags), ntohl(tcp_hdr->sent_seq),
             ntohl(tcp_hdr->recv_ack), ntohs(tcp_hdr->rx_win));
 
-        arp_table_add(iphdr->src_addr, eth->src_addr.addr_bytes);
+        arp_table_confirm(iphdr->src_addr, eth->src_addr.addr_bytes);
 
         struct tcp_options_rx opts;
         if (tcp_options_parse(tcp_hdr, &opts) != 0) {
@@ -2928,17 +2928,11 @@ static int tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
         if (seglen == 0)
                 goto out;
 
-        uint8_t *dst_mac = arp_lookup(sk->u.tcp.remote_ip);
+        struct inout_ring *ring = ring_instance();
+        const uint8_t *dst_mac = arp_resolve(mp, ring->out, sk->u.tcp.remote_ip,
+                                             rte_get_timer_cycles());
         if (dst_mac == NULL) {
-                /* Trigger ARP; try again next flush. */
-                struct rte_mbuf *arp =
-                    arp_build_pkt(mp, RTE_ARP_OP_REQUEST, g_broadcast_mac,
-                                  g_net.local_ip, sk->u.tcp.remote_ip);
-                if (arp) {
-                        struct inout_ring *ring = ring_instance();
-                        rte_ring_mp_enqueue_burst(ring->out, (void **)&arp, 1,
-                                                  NULL);
-                }
+                /* Resolver rate-limits probes; retry on the next flush. */
                 goto out;
         }
 
@@ -2962,7 +2956,6 @@ static int tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
         if (tcp_buf == NULL)
                 goto out;
 
-        struct inout_ring *ring = ring_instance();
         rte_ring_mp_enqueue_burst(ring->out, (void **)&tcp_buf, 1, NULL);
 
         LOG_TCP_PACKET(TCP_SK_FMT " event=tx-data seq=%u ack=%u len=%u una=%u",
@@ -3023,22 +3016,15 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
                         break;
 
                 uint32_t peer_ip = sk->u.tcp.remote_ip;
-                uint8_t *dst_mac = arp_lookup(peer_ip);
+                struct inout_ring *ring = ring_instance();
+                const uint8_t *dst_mac =
+                    arp_resolve(mp, ring->out, peer_ip, rte_get_timer_cycles());
                 if (dst_mac == NULL) {
                         LOG_TCP_DEBUG(
                             TCP_SK_FMT " event=tx-wait-arp flags=%s seq=%u "
                                        "ack=%u",
                             TCP_SK_ARG(sk), tcp_flags_str(f->tcp_flags),
                             f->sent_seq, f->recv_ack);
-                        struct rte_mbuf *arp = arp_build_pkt(
-                            mp, RTE_ARP_OP_REQUEST, g_broadcast_mac,
-                            g_net.local_ip, peer_ip);
-                        if (arp == NULL)
-                                rte_exit(EXIT_FAILURE,
-                                         "arp_build_pkt failed\n");
-                        struct inout_ring *ring = ring_instance();
-                        rte_ring_mp_enqueue_burst(ring->out, (void **)&arp, 1,
-                                                  NULL);
                         if (nsock_tcp_tx_enqueue(sk, f) != 0)
                                 tcp_fragment_free(f);
                         return 0;
@@ -3051,7 +3037,6 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
                         continue;
                 }
 
-                struct inout_ring *ring = ring_instance();
                 rte_ring_mp_enqueue_burst(ring->out, (void **)&tcp_buf, 1,
                                           NULL);
                 /*
