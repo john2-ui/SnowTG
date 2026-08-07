@@ -27,6 +27,9 @@ enum arp_state {
         ARP_STATE_FAILED,
 };
 
+/** Marks a cloned ARP mbuf that may learn but must not emit a reply. */
+#define ARP_MBUF_F_LEARN_ONLY UINT32_C(1)
+
 /**
  * @brief One fixed-capacity IPv4 neighbour entry.
  */
@@ -51,7 +54,13 @@ struct arp_table {
 };
 
 /**
- * @brief Get the singleton ARP table, creating it on first use.
+ * @brief Create one owner-local ARP table.
+ */
+int arp_table_init_owner(unsigned int lcore_id);
+/** Release all owner-local ARP tables after workers have stopped. */
+void arp_table_fini(void);
+/**
+ * @brief Get the current worker's ARP table, creating it on first use.
  * @return Pointer to the initialized ARP table (never NULL).
  */
 struct arp_table *arp_table_instance(void);
@@ -134,5 +143,8 @@ struct rte_mbuf *arp_build_pkt(struct rte_mempool *mp, uint16_t opcode,
  */
 void arp_handle(struct rte_mempool *mp, struct rte_mbuf *mbuf,
                 struct rte_ring *out);
+/** ARP handler variant used for replicated RSS-worker learning packets. */
+void arp_handle_mode(struct rte_mempool *mp, struct rte_mbuf *mbuf,
+                     struct rte_ring *out, bool reply_allowed);
 
 #endif /* NETARCH_ARP_H */

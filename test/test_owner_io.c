@@ -8,12 +8,34 @@
 #include <rte_byteorder.h>
 #include <rte_eal.h>
 #include <rte_lcore.h>
+#include <rte_launch.h>
 #include <rte_timer.h>
 
 static void count_release(void *ctx) {
         unsigned int *count = ctx;
 
         (*count)++;
+}
+
+struct remote_owner_result {
+        struct nsock_handle handle;
+        int status;
+};
+
+static int remote_owner_entry(void *arg) {
+        struct remote_owner_result *result = arg;
+        unsigned int lcore_id = rte_lcore_id();
+
+        result->status = -1;
+        if (socket_registry_init_owner(lcore_id) != 0 ||
+            socket_owner_init(lcore_id) != 0) {
+                result->status = EAGAIN;
+                return 0;
+        }
+        if (owner_io_socket_create_local(IPPROTO_UDP, &result->handle) != 0)
+                return -1;
+        result->status = owner_io_close(result->handle);
+        return result->status;
 }
 
 int main(int argc, char **argv) {
@@ -103,6 +125,26 @@ int main(int argc, char **argv) {
         assert(owner_io_close(local_tcp) == 0);
         assert(release_count == 1);
 
+        unsigned int worker_lcore =
+            rte_get_next_lcore(rte_lcore_id(), 1, 0);
+        if (worker_lcore != RTE_MAX_LCORE && rte_eal_has_hugepages()) {
+                struct remote_owner_result remote = {0};
+
+                assert(rte_eal_remote_launch(remote_owner_entry, &remote,
+                                             worker_lcore) == 0);
+                assert(rte_eal_wait_lcore(worker_lcore) == 0);
+                if (remote.status == 0) {
+                        assert(remote.handle.owner_lcore == worker_lcore);
+                        errno = 0;
+                        assert(owner_io_recvfrom(remote.handle, buf, sizeof(buf),
+                                                 NULL, NULL) == -1);
+                        assert(errno == EPERM);
+                } else {
+                        assert(remote.status == EAGAIN);
+                }
+        }
+
+        socket_owner_fini();
         socket_registry_fini();
         return 0;
 }

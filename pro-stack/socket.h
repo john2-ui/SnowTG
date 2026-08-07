@@ -128,20 +128,21 @@ struct nsock {
         uint8_t registry_flags; /**< Flags indicating the socket's registry
                                    state. */
 
-        struct nsock *prev; /**< Previous socket in @ref g_sock_list. */
-        struct nsock *next; /**< Next socket in @ref g_sock_list. */
+        struct nsock *prev; /**< Previous socket in its owner-local list. */
+        struct nsock *next; /**< Next socket in its owner-local list. */
 };
 
-/** Head of the intrusive list containing every open socket. */
-extern struct nsock *g_sock_list;
-
 /**
- * @brief Create the process-wide fd, bind, listener, and connection indexes.
+ * @brief Create the process-wide fd table and this lcore's protocol indexes.
  * @return 0 on success, or -1 when any DPDK hash table cannot be created.
  */
 int socket_registry_init(void);
-/** @brief Release the process-wide socket indexes during orderly shutdown. */
+/** @brief Create the protocol indexes owned by @p lcore_id. */
+int socket_registry_init_owner(unsigned int lcore_id);
+/** @brief Release the process-wide fd table and all owner-local indexes. */
 void socket_registry_fini(void);
+/** Return the current worker's intrusive socket list, or NULL outside an owner. */
+struct nsock *nsock_list_local(void);
 
 /**
  * @brief Bind a socket to a local endpoint and reserve it in its protocol map.

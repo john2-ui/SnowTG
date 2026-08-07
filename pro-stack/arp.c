@@ -11,11 +11,14 @@
 #include <rte_ethdev.h>
 #include <rte_hash.h>
 #include <rte_jhash.h>
+#include <rte_lcore.h>
 #include <rte_malloc.h>
 #include <rte_mempool.h>
+#include <stdio.h>
 #include <string.h>
 
-static struct arp_table *arpt = NULL;
+static struct arp_table *arpt[RTE_MAX_LCORE];
+static uint8_t arp_sweep_next_host[RTE_MAX_LCORE];
 
 static uint64_t arp_elapsed_ms(uint64_t now, uint64_t then) {
         if (now < then)
@@ -103,7 +106,7 @@ static int arp_send_request(struct rte_mempool *mp, struct rte_ring *out,
 
         if (request == NULL)
                 return -1;
-        if (rte_ring_mp_enqueue_burst(out, (void **)&request, 1, NULL) != 1) {
+        if (rte_ring_sp_enqueue_burst(out, (void **)&request, 1, NULL) != 1) {
                 LOG_WARN("ARP request dropped because TX ring is full");
                 rte_pktmbuf_free(request);
                 return -1;
@@ -118,35 +121,68 @@ static void arp_probe(struct arp_entry *entry, struct rte_mempool *mp,
                 entry->probe_count++;
 }
 
-struct arp_table *arp_table_instance(void) {
-        if (arpt != NULL)
-                return arpt;
+int arp_table_init_owner(unsigned int lcore_id) {
+        struct arp_table *table;
+        char hash_name[RTE_HASH_NAMESIZE];
 
-        arpt = rte_zmalloc("arp_table", sizeof(*arpt), 0);
-        if (arpt == NULL)
-                rte_exit(EXIT_FAILURE, "rte_malloc(arp_table) failed\n");
+        if (lcore_id >= RTE_MAX_LCORE)
+                return -1;
+        if (arpt[lcore_id] != NULL)
+                return 0;
 
-        arpt->capacity = ARP_CACHE_CAPACITY;
-        arpt->entries =
-            rte_zmalloc("arp_entries", sizeof(*arpt->entries) * arpt->capacity,
+        table = rte_zmalloc("arp_table", sizeof(*table), 0);
+        if (table == NULL)
+                return -1;
+
+        table->capacity = ARP_CACHE_CAPACITY;
+        table->entries =
+            rte_zmalloc("arp_entries", sizeof(*table->entries) * table->capacity,
                         RTE_CACHE_LINE_SIZE);
-        if (arpt->entries == NULL)
-                rte_exit(EXIT_FAILURE, "rte_malloc(arp_entries) failed\n");
+        if (table->entries == NULL) {
+                rte_free(table);
+                return -1;
+        }
 
+        (void)snprintf(hash_name, sizeof(hash_name), "arp_cache_%u", lcore_id);
         struct rte_hash_parameters params = {
-            .name = "arp_cache",
+            .name = hash_name,
             .entries = ARP_CACHE_CAPACITY,
             .key_len = sizeof(uint32_t),
             .hash_func = rte_jhash,
             .hash_func_init_val = 0,
             .socket_id = rte_socket_id(),
         };
-        arpt->hash = rte_hash_create(&params);
-        if (arpt->hash == NULL)
-                rte_exit(EXIT_FAILURE,
-                         "rte_hash_create(arp_cache) failed: %s\n",
-                         rte_strerror(rte_errno));
-        return arpt;
+        table->hash = rte_hash_create(&params);
+        if (table->hash == NULL) {
+                rte_free(table->entries);
+                rte_free(table);
+                return -1;
+        }
+        arpt[lcore_id] = table;
+        return 0;
+}
+
+void arp_table_fini(void) {
+        for (unsigned int lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
+                struct arp_table *table = arpt[lcore_id];
+
+                if (table == NULL)
+                        continue;
+                rte_hash_free(table->hash);
+                rte_free(table->entries);
+                rte_free(table);
+                arpt[lcore_id] = NULL;
+                arp_sweep_next_host[lcore_id] = 0;
+        }
+}
+
+struct arp_table *arp_table_instance(void) {
+        unsigned int lcore_id = rte_lcore_id();
+
+        if (lcore_id >= RTE_MAX_LCORE ||
+            arp_table_init_owner(lcore_id) != 0)
+                rte_exit(EXIT_FAILURE, "owner ARP table initialization failed\n");
+        return arpt[lcore_id];
 }
 
 const uint8_t *arp_resolve(struct rte_mempool *mp, struct rte_ring *out,
@@ -269,13 +305,21 @@ void arp_maintain(uint64_t now) {
 
 void arp_debug_sweep(struct rte_mempool *mp, struct rte_ring *out,
                      uint64_t now) {
-        static uint8_t next_host = 1;
+        unsigned int lcore_id = rte_lcore_id();
+        uint8_t *next_host;
+
+        if (lcore_id >= RTE_MAX_LCORE)
+                return;
+        next_host = &arp_sweep_next_host[lcore_id];
+        if (*next_host == 0)
+                *next_host = 1;
 
         for (uint32_t i = 0; i < ARP_SWEEP_BATCH; i++) {
                 uint32_t ip = (g_net.local_ip & 0x00ffffffU) |
-                              ((uint32_t)next_host << 24);
+                              ((uint32_t)*next_host << 24);
                 (void)arp_resolve(mp, out, ip, now);
-                next_host = (next_host == 254U) ? 1U : next_host + 1U;
+                *next_host =
+                    (*next_host == 254U) ? 1U : (uint8_t)(*next_host + 1U);
         }
 }
 
@@ -347,8 +391,8 @@ struct rte_mbuf *arp_build_pkt(struct rte_mempool *mp, uint16_t opcode,
         return mbuf;
 }
 
-void arp_handle(struct rte_mempool *mp, struct rte_mbuf *mbuf,
-                struct rte_ring *out) {
+void arp_handle_mode(struct rte_mempool *mp, struct rte_mbuf *mbuf,
+                     struct rte_ring *out, bool reply_allowed) {
         if (mbuf->pkt_len <
                 sizeof(struct rte_ether_hdr) + sizeof(struct rte_arp_hdr) ||
             mbuf->data_len <
@@ -379,13 +423,17 @@ void arp_handle(struct rte_mempool *mp, struct rte_mbuf *mbuf,
         if (opcode == RTE_ARP_OP_REQUEST) {
                 arp_table_learn(arp->arp_data.arp_sip,
                                 arp->arp_data.arp_sha.addr_bytes);
+                if (!reply_allowed) {
+                        rte_pktmbuf_free(mbuf);
+                        return;
+                }
                 LOG_ARP_INFO("arp request from " IP_FMT ", sending reply",
                              IP_ARG(arp->arp_data.arp_sip));
 
                 struct rte_mbuf *reply = arp_build_pkt(
                     mp, RTE_ARP_OP_REPLY, arp->arp_data.arp_sha.addr_bytes,
                     arp->arp_data.arp_tip, arp->arp_data.arp_sip);
-                if (reply != NULL && rte_ring_mp_enqueue_burst(
+                if (reply != NULL && rte_ring_sp_enqueue_burst(
                                          out, (void **)&reply, 1, NULL) != 1)
                         rte_pktmbuf_free(reply);
         } else if (opcode == RTE_ARP_OP_REPLY) {
@@ -396,4 +444,9 @@ void arp_handle(struct rte_mempool *mp, struct rte_mbuf *mbuf,
         }
 
         rte_pktmbuf_free(mbuf);
+}
+
+void arp_handle(struct rte_mempool *mp, struct rte_mbuf *mbuf,
+                struct rte_ring *out) {
+        arp_handle_mode(mp, mbuf, out, true);
 }

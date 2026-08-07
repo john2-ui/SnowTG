@@ -30,7 +30,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 
-/** Number of TCB slots owned by the current single packet worker. */
+/** Number of TCB slots owned by each packet worker. */
 #define NSOCK_ID_MAX 4096U
 /** Sentinel used before a command has produced a socket handle. */
 #define NSOCK_INVALID_ID UINT32_MAX
@@ -136,7 +136,10 @@ struct socket_owner {
         uint32_t generations[NSOCK_ID_MAX];
 };
 
+/** Initialize the context for one packet-worker lcore. */
 int socket_owner_init(unsigned int lcore_id);
+/** Release every initialized owner context after all workers have stopped. */
+void socket_owner_fini(void);
 /** Submit a command to its owner and wait until it is completed. */
 int socket_owner_call(struct sock_cmd *cmd);
 /** Drain a burst of commands; called only from the packet worker. */

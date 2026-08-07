@@ -20,10 +20,14 @@ struct inout_ring {
 };
 
 /**
- * @brief Get the process-wide ring pair, creating it on first use.
- *
- * @return Pointer to the initialized ring pair. Terminates on failure.
+ * @brief Create the SPSC ring pair assigned to one packet-worker lcore.
  */
+int ring_init_owner(unsigned int lcore_id);
+/** Return a specific worker's ring pair, or NULL when it is not initialized. */
+struct inout_ring *ring_for_lcore(unsigned int lcore_id);
+/** Return the current lcore's ring pair. */
 struct inout_ring *ring_instance(void);
+/** Release every initialized ring pair after all workers have stopped. */
+void ring_fini(void);
 
 #endif /* NETARCH_RING_H */
