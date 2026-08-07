@@ -16,6 +16,7 @@
 #include "port.h"
 #include "rbtree.h"
 #include "ring.h"
+#include "rx_dispatch.h"
 #include "socket.h"
 #include "socket_owner_internal.h"
 #include "stack_runtime.h"
@@ -1366,6 +1367,9 @@ static uint16_t tcp_alloc_ephemeral_port(const struct nsock *sk) {
                         next[lcore_id] = TCP_EPHEMERAL_PORT_MIN;
                 uint16_t be = htons(p);
                 if (nsock_tcp_local_taken(g_net.local_ip, be))
+                        continue;
+                if (rx_dispatch_endpoint_is_registered(IPPROTO_TCP,
+                                                       g_net.local_ip, be))
                         continue;
                 if (stack_runtime_queue_for_lcore(sk->owner_lcore,
                                                   &owner_queue) == 0 &&

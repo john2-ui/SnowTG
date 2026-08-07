@@ -14,6 +14,7 @@
 #include "list.h"
 #include "log.h"
 #include "net_context.h"
+#include "rx_dispatch.h"
 #include "tcp.h"
 
 #include <errno.h>
@@ -223,13 +224,26 @@ int nsock_bind_local(struct nsock *sk, uint32_t ip, uint16_t port) {
                 return -EINVAL;
 
         rc = hash_add_unique(hash, &new_key, sk);
-        if (rc == 0) {
-                sk->local_ip = ip;
-                sk->local_port = port;
-                sk->registry_flags |= flag;
+        if (rc != 0)
+                return rc;
+        /*
+         * UDP lookup is local-port based, so publish its owner before making
+         * the bind visible. TCP active opens instead publish an exact 4-tuple
+         * below; a TCP local bind alone cannot determine connection ownership.
+         */
+        if (sk->protocol == IPPROTO_UDP) {
+                rc = rx_dispatch_register_endpoint(sk->protocol, ip, port,
+                                                   sk->owner_lcore);
+                if (rc != 0) {
+                        hash_del(hash, &new_key);
+                        return rc;
+                }
         }
+        sk->local_ip = ip;
+        sk->local_port = port;
+        sk->registry_flags |= flag;
 
-        return rc;
+        return 0;
 }
 
 int nsock_tcp_local_taken(uint32_t ip, uint16_t port) {
@@ -253,9 +267,16 @@ int nsock_tcp_listener_register(struct nsock *sk) {
         key = local_key_make(sk->local_ip, sk->local_port);
 
         rc = hash_add_unique(registry->tcp_listener_hash, &key, sk);
-        if (rc == 0)
-                sk->registry_flags |= NSOCK_REG_TCP_LISTENER;
-        return rc;
+        if (rc != 0)
+                return rc;
+        rc = rx_dispatch_register_endpoint(IPPROTO_TCP, sk->local_ip,
+                                           sk->local_port, sk->owner_lcore);
+        if (rc != 0) {
+                hash_del(registry->tcp_listener_hash, &key);
+                return rc;
+        }
+        sk->registry_flags |= NSOCK_REG_TCP_LISTENER;
+        return 0;
 }
 
 void nsock_tcp_listener_unregister(struct nsock *sk) {
@@ -267,6 +288,8 @@ void nsock_tcp_listener_unregister(struct nsock *sk) {
 
         key = local_key_make(sk->local_ip, sk->local_port);
         hash_del(registry->tcp_listener_hash, &key);
+        rx_dispatch_unregister_endpoint(IPPROTO_TCP, sk->local_ip,
+                                        sk->local_port, sk->owner_lcore);
         sk->registry_flags &= (uint8_t)~NSOCK_REG_TCP_LISTENER;
 }
 
@@ -281,9 +304,17 @@ int nsock_tcp_conn_register(struct nsock *sk) {
         key = tcp_conn_key_make(sk);
 
         rc = hash_add_unique(registry->tcp_conn_hash, &key, sk);
-        if (rc == 0)
-                sk->registry_flags |= NSOCK_REG_TCP_CONN;
-        return rc;
+        if (rc != 0)
+                return rc;
+        rc = rx_dispatch_register_tcp_connection(
+            sk->u.tcp.remote_ip, sk->local_ip, sk->u.tcp.remote_port,
+            sk->local_port, sk->owner_lcore);
+        if (rc != 0) {
+                hash_del(registry->tcp_conn_hash, &key);
+                return rc;
+        }
+        sk->registry_flags |= NSOCK_REG_TCP_CONN;
+        return 0;
 }
 
 void nsock_tcp_conn_unregister(struct nsock *sk) {
@@ -295,6 +326,9 @@ void nsock_tcp_conn_unregister(struct nsock *sk) {
 
         key = tcp_conn_key_make(sk);
         hash_del(registry->tcp_conn_hash, &key);
+        rx_dispatch_unregister_tcp_connection(
+            sk->u.tcp.remote_ip, sk->local_ip, sk->u.tcp.remote_port,
+            sk->local_port, sk->owner_lcore);
         sk->registry_flags &= (uint8_t)~NSOCK_REG_TCP_CONN;
 }
 
@@ -622,12 +656,18 @@ void nsock_free(struct nsock *sk) {
         if (sk->registry_flags & NSOCK_REG_TCP_CONN) {
                 struct tcp_conn_key key = tcp_conn_key_make(sk);
                 hash_del(registry->tcp_conn_hash, &key);
+                rx_dispatch_unregister_tcp_connection(
+                    sk->u.tcp.remote_ip, sk->local_ip, sk->u.tcp.remote_port,
+                    sk->local_port, sk->owner_lcore);
         }
 
         if (sk->registry_flags & NSOCK_REG_TCP_LISTENER) {
                 struct local_key key =
                     local_key_make(sk->local_ip, sk->local_port);
                 hash_del(registry->tcp_listener_hash, &key);
+                rx_dispatch_unregister_endpoint(
+                    IPPROTO_TCP, sk->local_ip, sk->local_port,
+                    sk->owner_lcore);
         }
 
         if (sk->registry_flags & NSOCK_REG_TCP_BIND) {
@@ -640,6 +680,9 @@ void nsock_free(struct nsock *sk) {
                 struct local_key key =
                     local_key_make(sk->local_ip, sk->local_port);
                 hash_del(registry->udp_bind_hash, &key);
+                rx_dispatch_unregister_endpoint(
+                    IPPROTO_UDP, sk->local_ip, sk->local_port,
+                    sk->owner_lcore);
         }
 
         LL_REMOVE(sk, registry->sock_list);

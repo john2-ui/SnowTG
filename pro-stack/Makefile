@@ -14,7 +14,7 @@ TCP_LOG_INFO_ENABLED ?= 0
 TCP_LOG_DEBUG_ENABLED ?= 0
 TCP_LOG_TRACE_ENABLED ?= 0
 
-STACK_SRCS := net_context.c ring.c arp.c udp.c icmp.c port.c socket.c \
+STACK_SRCS := net_context.c ring.c arp.c udp.c icmp.c port.c rx_dispatch.c socket.c \
 	socket_owner.c pkt_frame.c tcp.c tcp_options.c tcp_rtt.c rbtree.c \
 	owner_io.c stack_runtime.c tcp_memory.c
 STACK_OBJS := $(patsubst %.c,build/lib/%.o,$(STACK_SRCS))
