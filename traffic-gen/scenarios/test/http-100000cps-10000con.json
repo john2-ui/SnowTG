@@ -1,0 +1,23 @@
+{
+    "name": "http-baseline",
+    "duration_sec": 120,
+    "max_concurrency": 10000,
+    "target_cps": 100000,
+    "report_interval_sec": 10,
+    "classes": [
+        {
+            "name": "http_get",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+                "ip": "192.168.21.106",
+                "port": 8888
+            },
+            "http": {
+                "method": "GET",
+                "path": "/",
+                "keepalive": false
+            }
+        }
+    ]
+}

@@ -67,6 +67,34 @@ static int test_plan_load_and_validation(void) {
         return 0;
 }
 
+static int test_plan_partition(void) {
+        struct tg_plan source;
+        struct tg_plan shards[3];
+        uint32_t total_cps = 0;
+        uint32_t total_concurrency = 0;
+
+        make_scheduler_plan(&source);
+        for (unsigned int index = 0; index < 3; index++) {
+                ASSERT_TRUE(
+                    tg_plan_partition(&shards[index], &source, index, 3) == 0);
+                total_cps += shards[index].target_cps;
+                total_concurrency += shards[index].max_concurrency;
+                ASSERT_TRUE(shards[index].classes[0].http_config.method ==
+                            shards[index].classes[0].http_method);
+                ASSERT_TRUE(shards[index].classes[0].http_config.path ==
+                            shards[index].classes[0].http_path);
+        }
+        ASSERT_TRUE(shards[0].target_cps == 4);
+        ASSERT_TRUE(shards[1].target_cps == 3);
+        ASSERT_TRUE(shards[2].target_cps == 3);
+        ASSERT_TRUE(total_cps == source.target_cps);
+        ASSERT_TRUE(total_concurrency == source.max_concurrency);
+        errno = 0;
+        ASSERT_TRUE(tg_plan_partition(&shards[0], &source, 3, 3) == -1);
+        ASSERT_TRUE(errno == EINVAL);
+        return 0;
+}
+
 static int test_weight_token_and_concurrency_bounds(void) {
         struct tg_plan plan;
         struct tg_scheduler scheduler;
@@ -146,6 +174,7 @@ static int test_stats(void) {
 
 int main(void) {
         ASSERT_TRUE(test_plan_load_and_validation() == 0);
+        ASSERT_TRUE(test_plan_partition() == 0);
         ASSERT_TRUE(test_weight_token_and_concurrency_bounds() == 0);
         ASSERT_TRUE(test_failed_start_and_duration_stop() == 0);
         ASSERT_TRUE(test_stats() == 0);
