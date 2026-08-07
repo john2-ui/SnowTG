@@ -3,6 +3,7 @@ CC ?= cc
 CFLAGS ?= -O2 -g
 TEST_CFLAGS := $(CFLAGS) -std=c11 -Wall -Wextra -Werror -Wpedantic
 OWNER_IO_CFLAGS := $(TEST_CFLAGS) -D_GNU_SOURCE
+RX_DISPATCH_CFLAGS := $(TEST_CFLAGS) -D_GNU_SOURCE
 # tcp.c is compiled as a test seam and contains existing GNU variadic logging
 # macros, so build it with the project's GNU dialect without elevating its
 # unrelated legacy warnings to test failures.
@@ -22,6 +23,8 @@ OWNER_IO_TEST := $(BUILD_DIR)/test_owner_io
 HTTP_CLIENT_TEST := $(BUILD_DIR)/test_http_client
 SCENARIO_SCHEDULER_TEST := $(BUILD_DIR)/test_scenario_scheduler
 ARP_TEST := $(BUILD_DIR)/test_arp
+RX_DISPATCH_TEST := $(BUILD_DIR)/test_rx_dispatch
+PORT_TOPOLOGY_TEST := $(BUILD_DIR)/test_port_topology
 LLHTTP_DIR := ../third_party/llhttp
 HTTP_CLIENT_CFLAGS := $(TEST_CFLAGS) -I../traffic-gen/core \
 	-I../traffic-gen/proto -I../traffic-gen/proto/http \
@@ -43,13 +46,15 @@ SCENARIO_SCHEDULER_OBJS := $(BUILD_DIR)/test_scenario_scheduler.o \
 	$(BUILD_DIR)/llhttp_api.o \
 	$(BUILD_DIR)/llhttp_http.o
 
-.PHONY: all test test-arp test-owner-io test-http-client test-scenario-scheduler clean
+.PHONY: all test test-arp test-owner-io test-http-client test-scenario-scheduler \
+	test-rx-dispatch test-port-topology clean
 
 all: test
 
 # Compilation and execution both must succeed for the test target to pass.
 test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(OWNER_IO_TEST) \
-	$(HTTP_CLIENT_TEST) $(SCENARIO_SCHEDULER_TEST) $(ARP_TEST)
+	$(HTTP_CLIENT_TEST) $(SCENARIO_SCHEDULER_TEST) $(ARP_TEST) \
+	$(RX_DISPATCH_TEST) $(PORT_TOPOLOGY_TEST)
 	$(RBTREE_TEST)
 	$(OFO_TEST)
 	$(PAWS_TEST)
@@ -57,6 +62,8 @@ test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(OWNER_IO_TEST) \
 	$(HTTP_CLIENT_TEST)
 	$(SCENARIO_SCHEDULER_TEST)
 	$(ARP_TEST) --no-huge --no-pci --file-prefix arp-test
+	$(RX_DISPATCH_TEST)
+	$(PORT_TOPOLOGY_TEST)
 
 test-arp: $(ARP_TEST)
 
@@ -65,6 +72,10 @@ test-owner-io: $(OWNER_IO_TEST)
 test-http-client: $(HTTP_CLIENT_TEST)
 
 test-scenario-scheduler: $(SCENARIO_SCHEDULER_TEST)
+
+test-rx-dispatch: $(RX_DISPATCH_TEST)
+
+test-port-topology: $(PORT_TOPOLOGY_TEST)
 
 $(RBTREE_TEST): test_rbtree.c ../pro-stack/rbtree.c ../pro-stack/rbtree.h | $(BUILD_DIR)
 	$(CC) $(TEST_CFLAGS) test_rbtree.c ../pro-stack/rbtree.c -o $@
@@ -88,6 +99,17 @@ $(ARP_TEST): test_arp.c ../pro-stack/arp.c ../pro-stack/arp.h \
 		../pro-stack/net_context.c ../pro-stack/net_context.h | $(BUILD_DIR)
 	$(CC) $(ARP_CFLAGS) $(DPDK_CFLAGS) -I../pro-stack test_arp.c \
 		../pro-stack/arp.c ../pro-stack/net_context.c -o $@ $(DPDK_LIBS)
+
+$(RX_DISPATCH_TEST): test_rx_dispatch.c ../pro-stack/rx_dispatch.c \
+		../pro-stack/rx_dispatch.h ../pro-stack/port.c ../pro-stack/port.h | $(BUILD_DIR)
+	$(CC) $(RX_DISPATCH_CFLAGS) $(DPDK_CFLAGS) -DPORT_TESTING -I../pro-stack \
+		test_rx_dispatch.c ../pro-stack/rx_dispatch.c ../pro-stack/port.c \
+		-o $@ $(DPDK_LIBS) -pthread
+
+$(PORT_TOPOLOGY_TEST): test_port_topology.c ../pro-stack/port.c \
+		../pro-stack/port.h ../pro-stack/config.h | $(BUILD_DIR)
+	$(CC) $(RX_DISPATCH_CFLAGS) $(DPDK_CFLAGS) -DPORT_TESTING -I../pro-stack \
+		test_port_topology.c ../pro-stack/port.c -o $@ $(DPDK_LIBS)
 
 $(HTTP_CLIENT_TEST): $(HTTP_CLIENT_OBJS)
 	$(CC) $(HTTP_CLIENT_OBJS) -o $@
