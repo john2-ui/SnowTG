@@ -13,10 +13,12 @@
 #include "net_context.h"
 #include "owner_io.h"
 #include "pkt_frame.h"
+#include "port.h"
 #include "rbtree.h"
 #include "ring.h"
 #include "socket.h"
 #include "socket_owner_internal.h"
+#include "stack_runtime.h"
 #include "tcp_options.h"
 #include "tcp_rtt.h"
 
@@ -38,7 +40,6 @@
 #include <rte_ring.h>
 #include <rte_tcp.h>
 #include <rte_timer.h>
-#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -208,42 +209,42 @@ static int tcp_segment_acceptable(const struct nsock *sk, uint32_t seq,
         return tcp_seq_lt(seq, rcv_nxt + rcv_wnd) &&
                tcp_seq_gt(seg_end, rcv_nxt);
 }
-/** Process-wide payload bytes currently retained in all TCP OFO queues. */
-static atomic_uint_fast64_t g_tcp_ofo_global_bytes = 0;
+/** Payload bytes retained by each owner worker's TCP OFO queues. */
+static uint64_t g_tcp_ofo_bytes[RTE_MAX_LCORE];
 
 /**
- * @brief Reserve bytes from the process-wide OFO memory budget.
+ * @brief Reserve bytes from the current owner's OFO memory budget.
  * @param bytes Payload bytes to reserve.
  * @return 0 when the budget was reserved, or -1 when it is exhausted.
  */
 static int tcp_ofo_global_reserve(uint32_t bytes) {
-        uint_fast64_t used;
+        unsigned int lcore_id = rte_lcore_id();
+        uint64_t *used;
 
         if (bytes == 0)
                 return 0;
-
-        used =
-            atomic_load_explicit(&g_tcp_ofo_global_bytes, memory_order_relaxed);
-
-        for (;;) {
-                if (used > (uint_fast64_t)TCP_OFO_GLOBAL_MAX_BYTES - bytes)
-                        return -1;
-
-                if (atomic_compare_exchange_weak_explicit(
-                        &g_tcp_ofo_global_bytes, &used, used + bytes,
-                        memory_order_acq_rel, memory_order_relaxed))
-                        return 0;
-        }
+        if (lcore_id >= RTE_MAX_LCORE)
+                return -1;
+        used = &g_tcp_ofo_bytes[lcore_id];
+        if (*used > (uint64_t)TCP_OFO_GLOBAL_MAX_BYTES - bytes)
+                return -1;
+        *used += bytes;
+        return 0;
 }
 
 /**
- * @brief Return bytes to the process-wide OFO memory budget.
+ * @brief Return bytes to the current owner's OFO memory budget.
  * @param bytes Payload bytes no longer retained in an OFO queue.
  */
 static void tcp_ofo_global_release(uint32_t bytes) {
-        if (bytes != 0)
-                atomic_fetch_sub_explicit(&g_tcp_ofo_global_bytes, bytes,
-                                          memory_order_release);
+        unsigned int lcore_id = rte_lcore_id();
+
+        if (bytes == 0 || lcore_id >= RTE_MAX_LCORE)
+                return;
+        if (bytes >= g_tcp_ofo_bytes[lcore_id])
+                g_tcp_ofo_bytes[lcore_id] = 0;
+        else
+                g_tcp_ofo_bytes[lcore_id] -= bytes;
 }
 
 /**
@@ -1335,33 +1336,44 @@ static uint64_t tcp_ms_to_cycles(uint64_t ms) {
  * Returns the port in network byte order, or 0 if the range is exhausted.
  * @return Available port in network byte order, or 0 when exhausted.
  */
-static uint16_t tcp_alloc_ephemeral_port(void) {
-        static uint16_t next;
+static uint16_t tcp_alloc_ephemeral_port(const struct nsock *sk) {
+        static uint16_t next[RTE_MAX_LCORE];
+        unsigned int lcore_id = rte_lcore_id();
+        uint16_t owner_queue;
         const uint32_t port_count =
             TCP_EPHEMERAL_PORT_MAX - TCP_EPHEMERAL_PORT_MIN + 1U;
 
+        if (sk == NULL || lcore_id >= RTE_MAX_LCORE)
+                return 0;
         /*
          * EAL seeds rte_rand() during startup.  Selecting a different initial
          * slot for every process avoids immediately reusing 49152 after an
          * abrupt traffic-generator restart, while later allocations retain
          * the deterministic round-robin scan and local collision check.
          */
-        if (next == 0)
-                next =
+        if (next[lcore_id] == 0)
+                next[lcore_id] =
                     TCP_EPHEMERAL_PORT_MIN + (uint16_t)rte_rand_max(port_count);
 
         for (int i = 0;
              i < (TCP_EPHEMERAL_PORT_MAX - TCP_EPHEMERAL_PORT_MIN + 1); i++) {
-                uint16_t p = next++;
+                uint16_t p = next[lcore_id]++;
                 /*
                  * next is uint16_t: incrementing 65535 wraps to zero, so the
                  * lower-bound check handles both wrap and normal cycling.
                  */
-                if (next < TCP_EPHEMERAL_PORT_MIN)
-                        next = TCP_EPHEMERAL_PORT_MIN;
+                if (next[lcore_id] < TCP_EPHEMERAL_PORT_MIN)
+                        next[lcore_id] = TCP_EPHEMERAL_PORT_MIN;
                 uint16_t be = htons(p);
-                if (!nsock_tcp_local_taken(g_net.local_ip, be))
-                        return be;
+                if (nsock_tcp_local_taken(g_net.local_ip, be))
+                        continue;
+                if (stack_runtime_queue_for_lcore(sk->owner_lcore,
+                                                  &owner_queue) == 0 &&
+                    port_rss_queue_for_tcp(sk->u.tcp.remote_ip, sk->local_ip,
+                                           sk->u.tcp.remote_port,
+                                           be) != owner_queue)
+                        continue;
+                return be;
         }
         return 0;
 }
@@ -2727,7 +2739,7 @@ static void tcp_emit_fragment(uint32_t src_ip, uint32_t dst_ip,
         }
 
         struct inout_ring *ring = ring_instance();
-        if (rte_ring_mp_enqueue(ring->out, out) != 0) {
+        if (rte_ring_sp_enqueue(ring->out, out) != 0) {
                 LOG_ERROR("tcp RST: NIC output ring full");
                 rte_pktmbuf_free(out);
         }
@@ -2956,7 +2968,12 @@ static int tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
         if (tcp_buf == NULL)
                 goto out;
 
-        rte_ring_mp_enqueue_burst(ring->out, (void **)&tcp_buf, 1, NULL);
+        if (rte_ring_sp_enqueue(ring->out, tcp_buf) != 0) {
+                LOG_TCP_DEBUG(TCP_SK_FMT " event=tx-drop reason=out-ring-full",
+                              TCP_SK_ARG(sk));
+                rte_pktmbuf_free(tcp_buf);
+                goto out;
+        }
 
         LOG_TCP_PACKET(TCP_SK_FMT " event=tx-data seq=%u ack=%u len=%u una=%u",
                        TCP_SK_ARG(sk), f.sent_seq, f.recv_ack, seglen,
@@ -3037,8 +3054,14 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
                         continue;
                 }
 
-                rte_ring_mp_enqueue_burst(ring->out, (void **)&tcp_buf, 1,
-                                          NULL);
+                if (rte_ring_sp_enqueue(ring->out, tcp_buf) != 0) {
+                        LOG_TCP_DEBUG(TCP_SK_FMT
+                                      " event=tx-drop reason=out-ring-full",
+                                      TCP_SK_ARG(sk));
+                        rte_pktmbuf_free(tcp_buf);
+                        tcp_fragment_free(f);
+                        continue;
+                }
                 /*
                  * App data uses sndbuf + data RTO (kept until ACK).
                  * Control segments on send_buf (SYN / SYN+ACK / FIN) are
@@ -3305,7 +3328,7 @@ int tcp_close(struct nsock *sk) {
                         sk->u.tcp.accept_queue = NULL;
                 }
 
-                struct nsock *cur = g_sock_list;
+                struct nsock *cur = nsock_list_local();
                 while (cur != NULL) {
                         struct nsock *next = cur->next;
                         if (cur != sk && cur->protocol == IPPROTO_TCP &&
@@ -3419,13 +3442,20 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
         }
 
         const struct sockaddr_in *peer = (const struct sockaddr_in *)addr;
+        /*
+         * The remote half of the four-tuple is needed before implicit-port
+         * allocation: under RSS we choose a source port whose return traffic
+         * hashes back to this socket's owner queue.
+         */
+        sk->u.tcp.remote_ip = peer->sin_addr.s_addr;
+        sk->u.tcp.remote_port = peer->sin_port;
 
         /* Implicit bind when the app skipped nbind (typical client path). */
         if (sk->local_ip == 0) {
                 sk->local_ip = g_net.local_ip;
         }
         if (sk->local_port == 0) {
-                sk->local_port = tcp_alloc_ephemeral_port();
+                sk->local_port = tcp_alloc_ephemeral_port(sk);
                 if (sk->local_port == 0) {
                         LOG_ERROR("tcp_connect: " TCP_ID_FMT
                                   " local port allocation failed",
@@ -3436,8 +3466,6 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
                         return -1;
         }
 
-        sk->u.tcp.remote_ip = peer->sin_addr.s_addr;
-        sk->u.tcp.remote_port = peer->sin_port;
         sk->u.tcp.listener = NULL;
         sk->u.tcp.sent_seq = tcp_next_isn();
         sk->u.tcp.snd_una = sk->u.tcp.sent_seq;

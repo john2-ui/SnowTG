@@ -21,10 +21,11 @@ void port_init(uint16_t port_id, struct rte_mempool *mp);
 /**
  * @brief Configure and start a port with an equal number of RX and TX queues.
  *
- * When more than one queue is requested, IPv4 TCP/UDP RSS is enabled so each
- * 4-tuple is consistently delivered to one receive queue.  Callers must
- * arrange for exactly one packet worker to poll each queue; configuring extra
- * queues without polling them drops traffic.
+ * When more than one queue is requested, IPv4 TCP RSS is enabled so each
+ * 4-tuple is consistently delivered to one receive queue. UDP RSS is enabled
+ * when the NIC advertises it. Callers must arrange for exactly one packet
+ * worker to poll each queue; configuring extra queues without polling them
+ * drops traffic.
  *
  * Terminates the process through rte_exit() on configuration failure or when
  * the NIC does not support the requested queue count or RSS hash functions.
@@ -35,5 +36,11 @@ void port_init(uint16_t port_id, struct rte_mempool *mp);
  */
 void port_init_queues(uint16_t port_id, struct rte_mempool *mp,
                       uint16_t queue_count);
+/**
+ * Return the configured RSS RX queue for an inbound TCP packet, or -1 if RSS
+ * queue prediction is unavailable. Arguments use wire byte order.
+ */
+int port_rss_queue_for_tcp(uint32_t remote_ip, uint32_t local_ip,
+                           uint16_t remote_port, uint16_t local_port);
 
 #endif /* NETARCH_PORT_H */

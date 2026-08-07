@@ -104,8 +104,8 @@ void icmp_handle(struct rte_mempool *mp, struct rte_mbuf *mbuf,
         struct rte_mbuf *reply =
             icmp_build_pkt(mp, eth->src_addr.addr_bytes, ip->dst_addr,
                            ip->src_addr, icmp->icmp_ident, icmp->icmp_seq_nb);
-        if (reply != NULL)
-                rte_ring_mp_enqueue_burst(out, (void **)&reply, 1, NULL);
+        if (reply != NULL && rte_ring_sp_enqueue(out, reply) != 0)
+                rte_pktmbuf_free(reply);
 
         rte_pktmbuf_free(mbuf);
 }

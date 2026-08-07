@@ -43,8 +43,6 @@ int main(int argc, char *argv[]) {
         net_context_set_mempool(mp);
         port_init(0, mp);
         net_context_init(0, demo_local_ip);
-        struct inout_ring *ring = ring_instance();
-        arp_table_instance();
         rte_timer_subsystem_init();
 
         unsigned int main_lcore = rte_lcore_id();
@@ -52,8 +50,16 @@ int main(int argc, char *argv[]) {
         if (worker_lcore == RTE_MAX_LCORE)
                 rte_exit(EXIT_FAILURE,
                          "stack demo needs at least two lcores\n");
-        if (socket_owner_init(worker_lcore) != 0)
-                rte_exit(EXIT_FAILURE, "socket owner init failed\n");
+        if (socket_registry_init_owner(worker_lcore) != 0 ||
+            socket_owner_init(worker_lcore) != 0 ||
+            ring_init_owner(worker_lcore) != 0 ||
+            arp_table_init_owner(worker_lcore) != 0)
+                rte_exit(EXIT_FAILURE, "stack owner shard init failed\n");
+        struct inout_ring *ring = ring_for_lcore(worker_lcore);
+        struct stack_runtime_worker runtime;
+        if (stack_runtime_worker_init(&runtime, worker_lcore, 0, mp, ring, NULL,
+                                      NULL) != 0)
+                rte_exit(EXIT_FAILURE, "stack runtime init failed\n");
 
         unsigned int next_app_lcore = worker_lcore;
 #if ENABLE_UDP_APP
@@ -76,7 +82,7 @@ int main(int argc, char *argv[]) {
                 0)
                 rte_exit(EXIT_FAILURE, "failed to launch TCP echo client\n");
 #endif
-        if (rte_eal_remote_launch(stack_runtime_worker_entry, mp,
+        if (rte_eal_remote_launch(stack_runtime_worker_entry, &runtime,
                                   worker_lcore) < 0)
                 rte_exit(EXIT_FAILURE, "failed to launch packet worker\n");
 
@@ -96,7 +102,5 @@ int main(int argc, char *argv[]) {
                     rte_eth_tx_burst(g_net.port_id, 0, tx, nb_tx);
                 for (unsigned int i = sent; i < nb_tx; i++)
                         rte_pktmbuf_free(tx[i]);
-
-                rte_timer_manage();
         }
 }

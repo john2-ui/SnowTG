@@ -170,7 +170,7 @@ int udp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
         }
 
         struct rte_ring *out_ring = ring_instance()->out;
-        if (rte_ring_mp_enqueue_burst(out_ring, (void **)&mbuf, 1, NULL) == 0) {
+        if (rte_ring_sp_enqueue(out_ring, mbuf) != 0) {
                 LOG_ERROR("out ring full, dropping reply");
                 rte_pktmbuf_free(mbuf);
                 return 0;
