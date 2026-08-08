@@ -16,8 +16,8 @@
  *
  * The socket API entry points are command producers.  Protocol lookup, state
  * mutation, timer processing, and final destruction all run on the owner
- * worker.  The list remains an owner-local transitional TX index; it can later
- * be replaced by a dirty-socket queue without changing fd semantics.
+ * worker.  The socket list is retained for lifecycle enumeration; TX
+ * scheduling is driven by the owner-local dirty TX queue.
  */
 #ifndef NETARCH_SOCKET_H
 #define NETARCH_SOCKET_H
@@ -130,6 +130,17 @@ struct nsock {
 
         struct nsock *prev; /**< Previous socket in its owner-local list. */
         struct nsock *next; /**< Next socket in its owner-local list. */
+
+        /*
+         * A socket is linked on at most one TX work list at a time:
+         * dirty_prev/dirty_next are used by either the dirty FIFO or the
+         * ARP-wait bucket selected by tx_arp_ip.
+         */
+        struct nsock *dirty_prev;
+        struct nsock *dirty_next;
+        uint32_t tx_arp_ip; /**< Peer address currently blocking TX. */
+        bool tx_dirty_queued;
+        bool tx_arp_waiting;
 };
 
 /**
@@ -141,8 +152,48 @@ int socket_registry_init(void);
 int socket_registry_init_owner(unsigned int lcore_id);
 /** @brief Release the process-wide fd table and all owner-local indexes. */
 void socket_registry_fini(void);
-/** Return the current worker's intrusive socket list, or NULL outside an owner. */
+/** Return the current worker's intrusive socket list, or NULL outside an owner.
+ */
 struct nsock *nsock_list_local(void);
+
+/**
+ * @brief Per-owner TX scheduler counters.
+ *
+ * These counters are reset by @ref nsock_tx_metrics_take.  The current
+ * dirty_depth remains valid after the snapshot so the worker can detect a
+ * budget-limited drain.
+ */
+struct nsock_tx_metrics {
+        uint64_t dirty_enqueues;
+        uint64_t dirty_dedup_hits;
+        uint64_t dirty_dequeues;
+        uint64_t dirty_requeues;
+        uint64_t flush_calls;
+        uint64_t arp_waits;
+        uint64_t arp_wakeups;
+        uint64_t dirty_budget_exhausted;
+        uint32_t dirty_depth;
+        uint32_t dirty_high_water;
+};
+
+/** Mark an owner-local socket as having immediately runnable TX work. */
+void nsock_tx_mark_dirty(struct nsock *sk);
+/**
+ * Drain at most @p budget dirty sockets.  The transport return value controls
+ * whether a socket is requeued, waits for ARP, or becomes idle.
+ */
+unsigned int nsock_tx_dirty_drain(struct rte_mempool *mp, unsigned int budget);
+/** Remove a socket from the dirty FIFO or ARP-wait bucket before freeing it. */
+void nsock_tx_dirty_unlink(struct nsock *sk);
+/**
+ * Move a socket whose head packet needs neighbour resolution to an ARP-wait
+ * bucket.  The socket is woken when that IPv4 address becomes usable.
+ */
+void nsock_tx_arp_wait(struct nsock *sk, uint32_t remote_ip);
+/** Wake sockets waiting for @p remote_ip after ARP learning or expiry retry. */
+void nsock_tx_arp_resolved(uint32_t remote_ip);
+/** Snapshot and clear per-owner dirty-TX counters. */
+void nsock_tx_metrics_take(struct nsock_tx_metrics *out);
 
 /**
  * @brief Bind a socket to a local endpoint and reserve it in its protocol map.
@@ -186,6 +237,11 @@ struct tcp_rx_blob *nsock_tcp_rx_dequeue(struct nsock *sk);
 uint32_t nsock_tcp_rx_count(const struct nsock *sk);
 int nsock_tcp_tx_enqueue(struct nsock *sk, struct tcp_fragment *fragment);
 struct tcp_fragment *nsock_tcp_tx_dequeue(struct nsock *sk);
+/**
+ * Put a just-dequeued control fragment back at the TX queue head so later
+ * segments keep their relative order across ARP/mempool retries.
+ */
+int nsock_tcp_tx_requeue_head(struct nsock *sk, struct tcp_fragment *fragment);
 /**
  * Retire @p sk from its owner and indexes, then release all object storage.
  * Must be called by the owning packet worker.

@@ -25,6 +25,20 @@
 struct nsock; /* Forward declaration; full definition lives in socket.h. */
 
 /**
+ * Result of one owner-side transmit flush.
+ *
+ * IDLE also covers work that is currently blocked by TCP flow control; a
+ * future ACK/window update will mark the socket dirty again.  RETRY is for
+ * transient output/mempool pressure or additional queued datagrams.  ARP_WAIT
+ * removes the socket from the hot dirty FIFO until neighbour learning wakes it.
+ */
+enum sock_tx_flush_result {
+        SOCK_TX_FLUSH_IDLE = 0,
+        SOCK_TX_FLUSH_RETRY = 1,
+        SOCK_TX_FLUSH_ARP_WAIT = 2,
+};
+
+/**
  * @brief Per-protocol behavior.
  *
  * Pointer-typed hooks may be NULL when the protocol does not support the
@@ -46,6 +60,8 @@ struct sock_ops {
         /**
          * @brief Outbound path: drain the socket send ring toward the NIC out
          *        ring, emitting ARP requests when a peer MAC is unresolved.
+         *
+         * @return One of @ref sock_tx_flush_result.
          */
         int (*tx_flush)(struct nsock *sk, struct rte_mempool *mp);
 

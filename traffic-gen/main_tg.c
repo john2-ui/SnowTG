@@ -428,11 +428,22 @@ static void tg_shard_tick(void *ctx, unsigned int budget) {
                          shard->memory.tcp.alloc_fail[TCP_MEMORY_TX_CHUNK]);
                 LOG_INFO("traffic-gen worker turns=%" PRIu64 " rx=%" PRIu64
                          " scans=%" PRIu64 " flush=%" PRIu64
+                         " dirty_enq=%" PRIu64 " dirty_dedup=%" PRIu64
+                         " dirty_requeue=%" PRIu64 " arp_wait=%" PRIu64
+                         " arp_wake=%" PRIu64 " dirty_depth=%u dirty_hwm=%u"
+                         " budget=%" PRIu64
                          " turn_avg_us=%" PRIu64 " rx_us=%" PRIu64
                          " maint_us=%" PRIu64 " reactor_us=%" PRIu64
                          " flush_us=%" PRIu64,
                          runtime.worker_turns, runtime.rx_packets,
                          runtime.socket_scans, runtime.tx_flush_calls,
+                         runtime.dirty_tx_enqueues,
+                         runtime.dirty_tx_dedup_hits,
+                         runtime.dirty_tx_requeues,
+                         runtime.dirty_tx_arp_waits,
+                         runtime.dirty_tx_arp_wakeups,
+                         runtime.dirty_tx_depth, runtime.dirty_tx_high_water,
+                         runtime.dirty_tx_budget_exhausted,
                          tg_cycles_to_us(tg_average_cycles(
                              runtime.turn_cycles, runtime.worker_turns)),
                          tg_cycles_to_us(runtime.rx_cycles),

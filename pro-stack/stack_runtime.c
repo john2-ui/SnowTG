@@ -59,6 +59,7 @@ int stack_runtime_stop_requested(void) {
 
 void stack_runtime_metrics_take(struct stack_runtime_metrics *out) {
         struct stack_runtime_worker *worker;
+        struct nsock_tx_metrics tx = {0};
 
         if (out == NULL)
                 return;
@@ -69,6 +70,18 @@ void stack_runtime_metrics_take(struct stack_runtime_metrics *out) {
                 return;
         }
         *out = worker->metrics;
+        nsock_tx_metrics_take(&tx);
+        out->socket_scans += tx.dirty_dequeues;
+        out->tx_flush_calls += tx.flush_calls;
+        out->dirty_tx_enqueues = tx.dirty_enqueues;
+        out->dirty_tx_dedup_hits = tx.dirty_dedup_hits;
+        out->dirty_tx_dequeues = tx.dirty_dequeues;
+        out->dirty_tx_requeues = tx.dirty_requeues;
+        out->dirty_tx_arp_waits = tx.arp_waits;
+        out->dirty_tx_arp_wakeups = tx.arp_wakeups;
+        out->dirty_tx_budget_exhausted = tx.dirty_budget_exhausted;
+        out->dirty_tx_high_water = tx.dirty_high_water;
+        out->dirty_tx_depth = tx.dirty_depth;
         memset(&worker->metrics, 0, sizeof(worker->metrics));
 }
 
@@ -214,19 +227,9 @@ int stack_runtime_worker_entry(void *arg) {
                 metrics->reactor_cycles +=
                     rte_get_timer_cycles() - phase_start;
 
-                /*
-                 * Keep the current all-socket scan observable: it is expected
-                 * to become the dominant cost while TIME_WAIT grows.
-                 */
+                /* Flush only sockets that have runnable TX work. */
                 phase_start = rte_get_timer_cycles();
-                for (struct nsock *sk = nsock_list_local(); sk != NULL;
-                     sk = sk->next) {
-                        metrics->socket_scans++;
-                        if (sk->ops->tx_flush != NULL) {
-                                metrics->tx_flush_calls++;
-                                sk->ops->tx_flush(sk, mp);
-                        }
-                }
+                (void)nsock_tx_dirty_drain(mp, TX_DIRTY_BUDGET);
                 metrics->tx_flush_cycles +=
                     rte_get_timer_cycles() - phase_start;
                 unsigned int out_depth = rte_ring_count(ring->out);

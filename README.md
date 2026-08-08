@@ -81,7 +81,7 @@ flowchart LR
 ### 三线程模型
 
 - **main lcore**：NIC RX → `ring->in`；`ring->out` → NIC TX；只管理 ARP 等基础设施 timer。
-- **worker lcore（socket owner）**：处理 command ring、`ring->in`、协议状态机、TCP timer 和最终释放；当前仍遍历 socket 调 `ops->tx_flush`（过渡实现）。
+- **worker lcore（socket owner）**：处理 command ring、`ring->in`、协议状态机、TCP timer 和最终释放；TX 通过 owner-local dirty queue 只冲洗有发送工作的 socket。
 - **app lcore**：示例 echo app 只持有整数 fd；其 API 调用通过 command ring 阻塞等待结果，不直接访问 TCB。高并发 `traffic-gen` 则注册在 owner worker 的 reactor callback 中。
 
 
@@ -221,7 +221,7 @@ flowchart LR
 
 ##### P2 — 性能与多 worker 扩展
 
-- [ ] **用 dirty socket queue 替代全量 TX 遍历**：socket 从无发送工作变为有发送工作时入队，worker 只 flush 活跃 socket，消除每轮 O(全部 socket 数) 的 `g_sock_list` 扫描。
+- [x] **用 dirty socket queue 替代全量 TX 遍历**：socket 从无发送工作变为有发送工作时入队，worker 只 flush 活跃 socket；ARP 未解析时进入按邻居分桶的等待队列。
 - [ ] **扩展为 per-worker socket owner**：将当前单例 `g_owner` 改为按 worker/lcore 分片的 context；结合硬件 RSS 保证同一四元组固定归属同一 worker，并同步分片 slot、协议 hash、timer 与 dirty queue。
 - [ ] **分片 socket registry**：单 owner 下将 endpoint hash 转为 owner-local；多 worker 时按 RSS/owner 分片 fd 之外的协议注册表，避免全局 `registry_lock` 回到数据路径。
 
@@ -303,8 +303,8 @@ flowchart LR
 - [ ] **per-core per-reactor 分片**：依赖 A/P2 的 per-worker socket owner、
   registry 分片和 RSS；每个 RSS worker 同时承载协议 owner 和 traffic-gen
   shard，四元组、flow、timer 与 L7 parser 不跨核迁移，指标低频汇总。
-- [ ] **定时器与发送路径扩展**：以 timer wheel 支撑事务超时；结合 dirty TX
-  queue，避免大量空闲连接时扫描所有 socket。
+- [ ] **定时器与发送路径扩展**：以 timer wheel 支撑事务超时；dirty TX
+  queue 已避免大量空闲连接的全 socket 扫描，后续仍需验证 timer wheel 的收益。
 - [ ] **扩展协议与连接复用**：HTTP keep-alive；Redis 或 MQTT 二选一；补充
   延迟直方图、失败分类和容量/内存预算。
 
@@ -329,8 +329,8 @@ flowchart LR
 
 | 现状（低效）                                                                                    | 目标（高效）                                                                                                   |
 | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| fd、UDP bind、TCP listener/4-tuple 与 ARP 已使用 `rte_hash`；`g_sock_list` 仍供 TX 遍历  | TX 改为 dirty socket 队列                                                                           |
-| worker 每轮遍历全部 socket 调 `tx_flush`                                                         | 仅冲洗有待发数据的 socket：dirty 队列，或 `send_buf` / `sndbuf` 非空时入队                                                  |
+| fd、UDP bind、TCP listener/4-tuple 与 ARP 已使用 `rte_hash`；`g_sock_list` 保留作生命周期索引  | TX 使用 owner-local dirty socket 队列                                                                           |
+| worker 每轮遍历全部 socket 调 `tx_flush`                                                         | 仅冲洗有待发数据的 socket；ARP 等待由邻居学习事件唤醒                                                  |
 | TCP OFO 使用 RB-tree（按 seq）+ 双向链表，插入定位 O(log n)、从 `recv_ack` drain O(1)，并限制节点、每 TCB 字节与全局字节 | 增加可观测性指标；依据压力和乱序距离自适应调节上限                                                                                |
 | `tcp_send` → owner-local ACK-retained chunk 链（仅未确认数据占用内存）                      | （可选）零拷贝 / mbuf 引用计数                                                                                      |
 | ARP 解析：按需 probe、缓存老化、容量淘汰与退避已实现                                                      | 全网扫描仅保留为可选、批量限速的调试手段                                                                                  |

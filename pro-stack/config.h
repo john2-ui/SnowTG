@@ -75,6 +75,8 @@
 #define NUM_MBUFS (16384 - 1)
 /** Maximum packets pulled/pushed per burst. */
 #define BURST_SIZE 32
+/** Maximum dirty sockets flushed by one owner-worker turn. */
+#define TX_DIRTY_BUDGET 64
 /** Depth of the rx/tx software rings. */
 #define RING_SIZE 1024
 /** Rx/Tx descriptor ring size for the NIC queues. */

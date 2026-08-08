@@ -7,7 +7,7 @@
 - [ARC-001：TCP 接收路径的跨 lcore 所有权缺陷](#arc-001tcp-接收路径的跨-lcore-所有权缺陷) — 接收路径已实施；生命周期收敛待后续处理
 - [ARC-002：Socket 单 owner、代际句柄与命令队列](#arc-002socket-单-owner代际句柄与命令队列) — 已实施；取代跨 lcore 裸指针与 `tcp_rx_events` 过渡模型
 - [ARC-003：traffic-gen owner-local 队列与按需 TCP 缓冲](#arc-003traffic-gen-owner-local-队列与按需-tcp-缓冲) — 已实施；原有单 worker 限制由 ARC-005 解除
-- [ARC-004：短连接压测的全 socket TX 扫描与对端 RST](#arc-004短连接压测的全-socket-tx-扫描与对端-rst) — 已识别；诊断指标已实施，dirty TX queue 待实施
+- [ARC-004：短连接压测的全 socket TX 扫描与对端 RST](#arc-004短连接压测的全-socket-tx-扫描与对端-rst) — dirty TX queue 已实施；真实 NIC 回归待验证
 - [ARC-005：多 owner worker、硬件 RSS 与软件接收分流](#arc-005多-owner-worker硬件-rss-与软件接收分流) — 已实施；真实 NIC 回退与压力回归待验证
 
 ## 条目格式
@@ -335,7 +335,7 @@ worker 清除 pending
 
 - `nsend()` 仍直接操作 `sndbuf`，尚未完全遵循 worker 独占发送状态的长期原则；
 - `nclose()` / `nsock_free()` 尚未改为 worker 事件，事件携带裸 `struct nsock *` 的生命周期收敛仍是后续架构项；
-- worker 仍遍历 `g_sock_list` 调用 `tx_flush`，尚未替换为仅处理活跃 socket 的 dirty 队列；
+- worker 已改为仅处理 dirty socket；`g_sock_list` 只保留作生命周期索引；
 - 暂未引入窗口更新阈值或 delayed ACK；当前每次观察到应用消费都会排一个 window-update ACK，优先保证正确性与可观察性。
 
 ### 结论与后续实施要点
@@ -480,7 +480,10 @@ IDE lints
 
 #### 2. dirty TX queue
 
-`g_sock_list` 的遍历现在是 owner-local，因此生命周期安全，但每轮仍为 O(全部 socket 数)。应改为 socket 从“无发送工作”变为“有发送工作”时进入 dirty queue，只 flush 活跃 socket。
+owner-local dirty TX queue 已实现。socket 在产生控制段、应用数据、RTO
+重传或窗口恢复工作时去重入队；worker 按预算只 flush dirty socket。
+`g_sock_list` 仍保留给生命周期枚举，不再位于每轮 TX 热路径。ARP 未解析的
+socket 会进入按 IPv4 分桶的等待队列，邻居学习或失败条目过期时重新唤醒。
 
 #### 3. 多 worker / RSS
 
@@ -605,8 +608,8 @@ owner 发布和软件接收分流，解除过程与当前不变量见 ARC-005。
 
 ## ARC-004：短连接压测的全 socket TX 扫描与对端 RST
 
-- **状态**：已识别；worker/flow 诊断指标已实施，dirty TX queue 与多 worker
-  扩展待实施。
+- **状态**：dirty TX queue 已实施；worker/flow 诊断指标已保留，多 worker
+  与真实 NIC 回归仍待继续验证。
 - **范围**：`pro-stack/stack_runtime.c`、`tcp.c`、`socket.c`、`traffic-gen`
   reactor/scheduler、TCP TIME_WAIT 生命周期，以及对端
   `192.168.21.106:8888` 的短连接服务。
@@ -620,12 +623,39 @@ owner 发布和软件接收分流，解除过程与当前不变量见 ARC-005。
 
 短 HTTP 连接在应用响应完成后立即归还 `tg_flow`，但其 TCP socket 仍要经历
 FIN_WAIT/TIME_WAIT，因而 `scheduler.active` 与 `live_sockets` 不等价。
-当前 worker 每一轮均遍历 `g_sock_list` 并调用每个 socket 的 `tx_flush`：
+实施前 worker 每一轮均遍历 `g_sock_list` 并调用每个 socket 的 `tx_flush`：
 
 ```text
 worker turn
   → RX ingress / timer / reactor
   → for every g_sock_list node: tx_flush()
+```
+
+当前 worker 从 owner-local dirty FIFO 取 socket，并以 `TX_DIRTY_BUDGET`
+限制单轮 flush 数；ARP 未解析时从 FIFO 移到对应邻居的等待桶。
+
+端到端调用路径（worker turn）：
+
+```mermaid
+flowchart TD
+  W[stack_runtime_worker_entry] --> CMD[process commands]
+  CMD --> RX[drain ring->in / ingress]
+  RX --> MAINT[timers + arp_maintain]
+  MAINT --> REACT[reactor]
+  REACT --> DRAIN["nsock_tx_dirty_drain(mp, 64)"]
+
+  DRAIN --> POP{dirty head?}
+  POP -->|no| DONE[end turn]
+  POP -->|yes| TF[sk->ops->tx_flush]
+  TF -->|TCP| TCPF[tcp_tx_flush]
+  TF -->|UDP| UDPF[udp_tx_flush]
+  TCPF --> DEC{result}
+  UDPF --> DEC
+  DEC -->|IDLE| POP
+  DEC -->|RETRY| REQ[requeue tail]
+  DEC -->|ARP_WAIT| PARK[already in arp_wait]
+  REQ --> POP
+  PARK --> POP
 ```
 
 在 2026-08-07 的稳定阶段，`active=1000`、`live_sockets≈2800–3000`。
@@ -660,9 +690,9 @@ worker turn
 
 ### 推荐方案与验证
 
-1. **优先实现 owner-local dirty TX queue**：socket 从无发送工作变为有发送工作
+1. **已实现 owner-local dirty TX queue**：socket 从无发送工作变为有发送工作
    时只入队一次；worker 只 flush dirty socket。发送完成、ARP 未解析、RTO 或
-   新数据到达必须正确维护入队状态，不能丢失待发送工作。
+   新数据到达均维护入队状态，不丢失待发送工作。
 2. **保留 TIME_WAIT 语义**：压测专用缩短 `TCP_2MSL_MS` 或提高 socket 容量只能
    在测量 slot 压力后作为显式 benchmark 配置，不得改变默认协议语义。
 3. **服务端联合取证**：记录服务端 accept rate、SYN backlog、`ss -s`、TCP
@@ -858,5 +888,5 @@ reactor、socket owner 资源和 stack runtime。主 lcore：
    L4 信息分流；当前不支持重组。
 4. endpoint/flow 表当前为固定容量开放寻址表。需要增加容量占用、探测长度和
    `ENOSPC` 指标，并验证 tombstone 复用期间的无锁读取可见性。
-5. ARC-004 的全 socket TX 扫描仍是独立瓶颈。多 worker 和 RSS 只把扫描按
-   owner 分片，不能代替 owner-local dirty TX queue。
+5. ARC-004 的全 socket TX 扫描已由 owner-local dirty TX queue 替代；多 worker
+   和 RSS 仍需结合真实 NIC 压力回归验证。

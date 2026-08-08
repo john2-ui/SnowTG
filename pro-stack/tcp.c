@@ -48,6 +48,14 @@
 #include <sys/types.h>
 #include <time.h>
 
+static inline void tcp_mark_tx_dirty(struct nsock *sk) {
+#ifndef TCP_TESTING
+        nsock_tx_mark_dirty(sk);
+#else
+        (void)sk;
+#endif
+}
+
 /*
  * Stable connection identity for lifecycle and diagnostic logs.  Application
  * fds live in a separate handle table and can be reused, so sock/generation
@@ -1276,6 +1284,7 @@ static int tcp_enqueue_fragment(struct nsock *sk, struct tcp_fragment *f) {
                 tcp_fragment_free(f);
                 return -1;
         }
+        tcp_mark_tx_dirty(sk);
         return 0;
 }
 
@@ -1491,6 +1500,7 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                              sk->u.tcp.snd_una, sk->u.tcp.rto_ms);
                 tcp_arm_data_rto(sk, sk->u.tcp.rto_ms);
                 pthread_mutex_unlock(&sk->mutex);
+                tcp_mark_tx_dirty(sk);
         } else if (sk->u.tcp.status == TCP_STATUS_SYN_RECV) {
                 /*
                  * Passive-open SYN+ACK RTO. Mirror of SYN_SENT: the first
@@ -1568,8 +1578,10 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                 sk->u.tcp.retries++;
                 tcp_rtt_on_timeout(sk);
 
+                bool rewound_data = false;
                 if (sk->u.tcp.sndbuf.len > 0) {
                         sk->u.tcp.sent_seq = sk->u.tcp.snd_una;
+                        rewound_data = true;
                         LOG_TCP_INFO(TCP_SK_FMT
                                      " event=rto-retransmit kind=fin-data "
                                      "retry=%u from_seq=%u rto_ms=%u",
@@ -1590,6 +1602,8 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
 
                 tcp_arm_data_rto(sk, sk->u.tcp.rto_ms);
                 pthread_mutex_unlock(&sk->mutex);
+                if (rewound_data)
+                        tcp_mark_tx_dirty(sk);
         }
 }
 
@@ -1662,12 +1676,24 @@ static void tcp_process_peer_ack(struct nsock *sk, uint32_t ack) {
                       sk->u.tcp.snd_una == sk->u.tcp.sent_seq ? "stopped"
                                                               : "rearmed",
                       rtt_sampled, sk->u.tcp.rto_ms);
+        /*
+         * Only re-arm the dirty TX queue when unsent payload remains.  Pure
+         * ACK progress with an empty send cursor does not create TX work.
+         */
+        bool need_tx = false;
+        if (sk->u.tcp.sndbuf.len > 0) {
+                uint32_t buf_end =
+                    sk->u.tcp.sndbuf.head_seq + sk->u.tcp.sndbuf.len;
+                need_tx = tcp_seq_lt(sk->u.tcp.sent_seq, buf_end);
+        }
         pthread_mutex_unlock(&sk->mutex);
         /* Retry commands parked by zero local/peer send-window space. */
 #ifndef TCP_TESTING
         socket_owner_wake_send(sk);
 #endif
         socket_owner_ready_post(sk, OWNER_IO_EV_WRITE);
+        if (need_tx)
+                tcp_mark_tx_dirty(sk);
 }
 
 /**
@@ -1688,6 +1714,8 @@ static void tcp_update_snd_wnd(struct nsock *sk, uint32_t seg_seq,
                                uint8_t scale) {
         struct tcp_stream *tp = &sk->u.tcp;
         uint32_t scaled_wnd = (uint32_t)seg_wnd << scale;
+        bool accepted = false;
+        bool need_tx = false;
 
         pthread_mutex_lock(&sk->mutex);
 
@@ -1702,6 +1730,11 @@ static void tcp_update_snd_wnd(struct nsock *sk, uint32_t seg_seq,
                 tp->snd_wl1 = seg_seq;
                 tp->snd_wl2 = seg_ack;
                 tp->snd_wnd_valid = true;
+                accepted = true;
+                if (tp->sndbuf.len > 0) {
+                        uint32_t buf_end = tp->sndbuf.head_seq + tp->sndbuf.len;
+                        need_tx = tcp_seq_lt(tp->sent_seq, buf_end);
+                }
                 LOG_TCP_DEBUG(TCP_SK_FMT
                               " event=peer-window accepted wire=%u scale=%u "
                               "wnd=%u->%u seg_seq=%u seg_ack=%u",
@@ -1716,12 +1749,16 @@ static void tcp_update_snd_wnd(struct nsock *sk, uint32_t seg_seq,
         }
 
         pthread_mutex_unlock(&sk->mutex);
+        if (!accepted)
+                return;
         /* Harmless if no sender is parked or the accepted window stayed zero.
          */
 #ifndef TCP_TESTING
         socket_owner_wake_send(sk);
 #endif
         socket_owner_ready_post(sk, OWNER_IO_EV_WRITE);
+        if (need_tx)
+                tcp_mark_tx_dirty(sk);
 }
 
 #ifdef TCP_TESTING
@@ -1832,8 +1869,7 @@ static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
                                     child->u.tcp.timestamps_ok,
                                     child->u.tcp.ts_recent);
         child->u.tcp.recv_ack = f->recv_ack;
-        if (nsock_tcp_tx_enqueue(child, f) != 0) {
-                tcp_fragment_free(f);
+        if (tcp_enqueue_fragment(child, f) != 0) {
                 tcp_stream_set_status(child, TCP_STATUS_CLOSED);
                 nsock_free(child);
                 listener->u.tcp.syn_pending--;
@@ -2193,11 +2229,11 @@ static int tcp_state_last_ack(struct nsock *sk, struct rte_tcp_hdr *hdr,
                     tcp_make_fragment(sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
                                       sk->u.tcp.recv_ack);
                 if (tcp_enqueue_fragment(sk, ack_f) == 0) {
-                        LOG_INFO("tcp LAST_ACK re-ACK peer FIN " IP_FMT
-                                 ":%u ack=%u",
-                                 IP_ARG(sk->u.tcp.remote_ip),
-                                 rte_be_to_cpu_16(sk->u.tcp.remote_port),
-                                 sk->u.tcp.recv_ack);
+                        LOG_TCP_INFO("tcp LAST_ACK re-ACK peer FIN " IP_FMT
+                                     ":%u ack=%u",
+                                     IP_ARG(sk->u.tcp.remote_ip),
+                                     rte_be_to_cpu_16(sk->u.tcp.remote_port),
+                                     sk->u.tcp.recv_ack);
                 }
         }
 
@@ -2247,11 +2283,11 @@ static int tcp_state_time_wait(struct nsock *sk, struct rte_tcp_hdr *hdr,
                     tcp_make_fragment(sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
                                       sk->u.tcp.recv_ack);
                 if (tcp_enqueue_fragment(sk, ack_f) == 0) {
-                        LOG_INFO("tcp TIME_WAIT re-ACK peer FIN " IP_FMT
-                                 ":%u ack=%u",
-                                 IP_ARG(sk->u.tcp.remote_ip),
-                                 rte_be_to_cpu_16(sk->u.tcp.remote_port),
-                                 sk->u.tcp.recv_ack);
+                        LOG_TCP_INFO("tcp TIME_WAIT re-ACK peer FIN " IP_FMT
+                                     ":%u ack=%u",
+                                     IP_ARG(sk->u.tcp.remote_ip),
+                                     rte_be_to_cpu_16(sk->u.tcp.remote_port),
+                                     sk->u.tcp.recv_ack);
                 }
         }
         return 0;
@@ -2277,11 +2313,11 @@ static int tcp_state_closing(struct nsock *sk, struct rte_tcp_hdr *hdr,
                     tcp_make_fragment(sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
                                       sk->u.tcp.recv_ack);
                 if (tcp_enqueue_fragment(sk, ack_f) == 0) {
-                        LOG_INFO("tcp CLOSING re-ACK peer FIN " IP_FMT
-                                 ":%u ack=%u",
-                                 IP_ARG(sk->u.tcp.remote_ip),
-                                 rte_be_to_cpu_16(sk->u.tcp.remote_port),
-                                 sk->u.tcp.recv_ack);
+                        LOG_TCP_INFO("tcp CLOSING re-ACK peer FIN " IP_FMT
+                                     ":%u ack=%u",
+                                     IP_ARG(sk->u.tcp.remote_ip),
+                                     rte_be_to_cpu_16(sk->u.tcp.remote_port),
+                                     sk->u.tcp.recv_ack);
                 }
         }
 
@@ -2299,7 +2335,8 @@ static int tcp_state_closing(struct nsock *sk, struct rte_tcp_hdr *hdr,
                 return 0;
         }
 
-        LOG_INFO("tcp CLOSING rx ACK -> TIME_WAIT " TCP_ID_FMT, TCP_ID_ARG(sk));
+        LOG_TCP_INFO("tcp CLOSING rx ACK -> TIME_WAIT " TCP_ID_FMT,
+                     TCP_ID_ARG(sk));
         tcp_enter_time_wait(sk);
         return 0;
 }
@@ -2892,8 +2929,17 @@ static void tcp_abort_on_rst(struct nsock *sk) {
  * copies the payload from @c sndbuf; this prevents concurrent compaction by
  * @ref tcp_send from invalidating the source pointer.
  */
-static int tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
-        int sent = 0;
+enum tcp_sndbuf_flush_result {
+        TCP_SNDBUF_IDLE = 0,
+        TCP_SNDBUF_SENT,
+        TCP_SNDBUF_RETRY,
+        TCP_SNDBUF_ARP_WAIT,
+};
+
+static enum tcp_sndbuf_flush_result
+tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
+        enum tcp_sndbuf_flush_result result = TCP_SNDBUF_IDLE;
+        uint32_t arp_wait_ip = 0;
 
         /*
          * tcp_send() may compact and append to sndbuf concurrently.  Keep the
@@ -2948,7 +2994,13 @@ static int tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
         const uint8_t *dst_mac = arp_resolve(mp, ring->out, sk->u.tcp.remote_ip,
                                              rte_get_timer_cycles());
         if (dst_mac == NULL) {
-                /* Resolver rate-limits probes; retry on the next flush. */
+                /*
+                 * Resolver rate-limits probes.  Park this socket until ARP
+                 * learning wakes it instead of retrying every worker turn.
+                 * Defer the wait-list move until after unlocking sk->mutex.
+                 */
+                arp_wait_ip = sk->u.tcp.remote_ip;
+                result = TCP_SNDBUF_ARP_WAIT;
                 goto out;
         }
 
@@ -2969,13 +3021,16 @@ static int tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
 
         struct rte_mbuf *tcp_buf =
             tcp_build_pkt(mp, g_net.local_ip, sk->u.tcp.remote_ip, dst_mac, &f);
-        if (tcp_buf == NULL)
+        if (tcp_buf == NULL) {
+                result = TCP_SNDBUF_RETRY;
                 goto out;
+        }
 
         if (rte_ring_sp_enqueue(ring->out, tcp_buf) != 0) {
                 LOG_TCP_DEBUG(TCP_SK_FMT " event=tx-drop reason=out-ring-full",
                               TCP_SK_ARG(sk));
                 rte_pktmbuf_free(tcp_buf);
+                result = TCP_SNDBUF_RETRY;
                 goto out;
         }
 
@@ -2996,11 +3051,13 @@ static int tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
                 sk->u.tcp.retries = 0;
                 tcp_arm_data_rto(sk, sk->u.tcp.rto_ms);
         }
-        sent = 1;
+        result = TCP_SNDBUF_SENT;
 
 out:
         pthread_mutex_unlock(&sk->mutex);
-        return sent;
+        if (result == TCP_SNDBUF_ARP_WAIT)
+                nsock_tx_arp_wait(sk, arp_wait_ip);
+        return result;
 }
 
 /**
@@ -3026,98 +3083,132 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
         case TCP_STATUS_CLOSING:
                 break;
         default:
-                return 0;
+                return SOCK_TX_FLUSH_IDLE;
         }
-
-        /* Drain send_buf so ACK-of-FIN + our FIN leave in the same pass. */
-        for (;;) {
-                struct tcp_fragment *f = NULL;
-                f = nsock_tcp_tx_dequeue(sk);
-                if (f == NULL)
-                        break;
-
-                uint32_t peer_ip = sk->u.tcp.remote_ip;
-                struct inout_ring *ring = ring_instance();
-                const uint8_t *dst_mac =
-                    arp_resolve(mp, ring->out, peer_ip, rte_get_timer_cycles());
-                if (dst_mac == NULL) {
-                        LOG_TCP_DEBUG(
-                            TCP_SK_FMT " event=tx-wait-arp flags=%s seq=%u "
-                                       "ack=%u",
-                            TCP_SK_ARG(sk), tcp_flags_str(f->tcp_flags),
-                            f->sent_seq, f->recv_ack);
-                        if (nsock_tcp_tx_enqueue(sk, f) != 0)
-                                tcp_fragment_free(f);
-                        return 0;
-                }
-
-                struct rte_mbuf *tcp_buf =
-                    tcp_build_pkt(mp, g_net.local_ip, peer_ip, dst_mac, f);
-                if (tcp_buf == NULL) {
-                        tcp_fragment_free(f);
-                        continue;
-                }
-
-                if (rte_ring_sp_enqueue(ring->out, tcp_buf) != 0) {
-                        LOG_TCP_DEBUG(TCP_SK_FMT
-                                      " event=tx-drop reason=out-ring-full",
-                                      TCP_SK_ARG(sk));
-                        rte_pktmbuf_free(tcp_buf);
-                        tcp_fragment_free(f);
-                        continue;
-                }
-                /*
-                 * App data uses sndbuf + data RTO (kept until ACK).
-                 * Control segments on send_buf (SYN / SYN+ACK / FIN) are
-                 * freed here after TX; independent RTOs re-queue them:
-                 * SYN_SENT, SYN_RECV, and FIN_WAIT_1 / LAST_ACK / CLOSING.
-                 */
-
-                if ((f->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG)) ==
-                    (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG)) {
-                        LOG_TCP_INFO(TCP_SK_FMT
-                                     " event=handshake step=2/3 tx=SYN-ACK "
-                                     "seq=%u ack=%u",
-                                     TCP_SK_ARG(sk), f->sent_seq, f->recv_ack);
-                } else {
-                        LOG_TCP_PACKET(
-                            TCP_SK_FMT " event=tx-control flags=%s seq=%u "
-                                       "ack=%u len=%zu",
-                            TCP_SK_ARG(sk), tcp_flags_str(f->tcp_flags),
-                            f->sent_seq, f->recv_ack, f->payload_len);
-                }
-
-                tcp_fragment_free(f);
-        }
-
-        while (tcp_tx_flush_sndbuf(sk, mp) > 0)
-                ;
 
         /*
-         * FIN re-queue after data Go-Back-N.
-         *
-         * tcp_close leaves sent_seq == snd_una + sndbuf.len + 1 (FIN counted).
-         * A FIN-state RTO with unacked data only rewinds sent_seq to snd_una;
-         * flush then advances it through sndbuf. When the cursor reaches
-         * una+len, the FIN sequence slot is still missing -- enqueue FIN and
-         * bump sent_seq. Right after tcp_close the equality fails
-         * (already +1), so this does not double-send on the first close.
+         * Outer loop lets a FIN re-queued after data Go-Back-N be transmitted
+         * in the same flush instead of waiting for another dirty-queue turn.
+         * sent_seq advances on enqueue, so the FIN condition cannot loop.
          */
-        if ((sk->u.tcp.status == TCP_STATUS_FIN_WAIT_1 ||
-             sk->u.tcp.status == TCP_STATUS_LAST_ACK ||
-             sk->u.tcp.status == TCP_STATUS_CLOSING) &&
-            sk->u.tcp.sent_seq == sk->u.tcp.snd_una + sk->u.tcp.sndbuf.len) {
-                struct tcp_fragment *fin_f =
-                    tcp_make_fragment(sk, RTE_TCP_FIN_FLAG | RTE_TCP_ACK_FLAG,
-                                      sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
-                if (tcp_enqueue_fragment(sk, fin_f) == 0) {
-                        sk->u.tcp.sent_seq += 1;
-                        LOG_INFO("tcp FIN re-queue after data GBN " TCP_ID_FMT
-                                 " seq=%u",
-                                 TCP_ID_ARG(sk), sk->u.tcp.sent_seq - 1);
+        for (;;) {
+                /* Drain send_buf so ACK-of-FIN + our FIN leave in the same
+                 * pass. */
+                for (;;) {
+                        struct tcp_fragment *f = NULL;
+                        f = nsock_tcp_tx_dequeue(sk);
+                        if (f == NULL)
+                                break;
+
+                        uint32_t peer_ip = sk->u.tcp.remote_ip;
+                        struct inout_ring *ring = ring_instance();
+                        const uint8_t *dst_mac = arp_resolve(
+                            mp, ring->out, peer_ip, rte_get_timer_cycles());
+                        if (dst_mac == NULL) {
+                                LOG_TCP_DEBUG(
+                                    TCP_SK_FMT
+                                    " event=tx-wait-arp flags=%s seq=%u "
+                                    "ack=%u",
+                                    TCP_SK_ARG(sk), tcp_flags_str(f->tcp_flags),
+                                    f->sent_seq, f->recv_ack);
+                                if (nsock_tcp_tx_requeue_head(sk, f) != 0)
+                                        tcp_fragment_free(f);
+                                else {
+                                        nsock_tx_arp_wait(sk, peer_ip);
+                                        return SOCK_TX_FLUSH_ARP_WAIT;
+                                }
+                                return SOCK_TX_FLUSH_IDLE;
+                        }
+
+                        struct rte_mbuf *tcp_buf = tcp_build_pkt(
+                            mp, g_net.local_ip, peer_ip, dst_mac, f);
+                        if (tcp_buf == NULL) {
+                                if (nsock_tcp_tx_requeue_head(sk, f) != 0)
+                                        tcp_fragment_free(f);
+                                else
+                                        return SOCK_TX_FLUSH_RETRY;
+                                return SOCK_TX_FLUSH_IDLE;
+                        }
+
+                        if (rte_ring_sp_enqueue(ring->out, tcp_buf) != 0) {
+                                LOG_TCP_DEBUG(
+                                    TCP_SK_FMT
+                                    " event=tx-drop reason=out-ring-full",
+                                    TCP_SK_ARG(sk));
+                                rte_pktmbuf_free(tcp_buf);
+                                if (nsock_tcp_tx_requeue_head(sk, f) != 0)
+                                        tcp_fragment_free(f);
+                                else
+                                        return SOCK_TX_FLUSH_RETRY;
+                                return SOCK_TX_FLUSH_IDLE;
+                        }
+                        /*
+                         * App data uses sndbuf + data RTO (kept until ACK).
+                         * Control segments on send_buf (SYN / SYN+ACK / FIN)
+                         * are freed here after TX; independent RTOs re-queue
+                         * them: SYN_SENT, SYN_RECV, and FIN_WAIT_1 / LAST_ACK /
+                         * CLOSING.
+                         */
+
+                        if ((f->tcp_flags &
+                             (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG)) ==
+                            (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG)) {
+                                LOG_TCP_INFO(
+                                    TCP_SK_FMT
+                                    " event=handshake step=2/3 tx=SYN-ACK "
+                                    "seq=%u ack=%u",
+                                    TCP_SK_ARG(sk), f->sent_seq, f->recv_ack);
+                        } else {
+                                LOG_TCP_PACKET(
+                                    TCP_SK_FMT
+                                    " event=tx-control flags=%s seq=%u "
+                                    "ack=%u len=%zu",
+                                    TCP_SK_ARG(sk), tcp_flags_str(f->tcp_flags),
+                                    f->sent_seq, f->recv_ack, f->payload_len);
+                        }
+
+                        tcp_fragment_free(f);
                 }
+
+                enum tcp_sndbuf_flush_result sndbuf_result;
+                do {
+                        sndbuf_result = tcp_tx_flush_sndbuf(sk, mp);
+                } while (sndbuf_result == TCP_SNDBUF_SENT);
+                if (sndbuf_result == TCP_SNDBUF_ARP_WAIT)
+                        return SOCK_TX_FLUSH_ARP_WAIT;
+                if (sndbuf_result == TCP_SNDBUF_RETRY)
+                        return SOCK_TX_FLUSH_RETRY;
+
+                /*
+                 * FIN re-queue after data Go-Back-N.
+                 *
+                 * tcp_close leaves sent_seq == snd_una + sndbuf.len + 1 (FIN
+                 * counted). A FIN-state RTO with unacked data only rewinds
+                 * sent_seq to snd_una; flush then advances it through sndbuf.
+                 * When the cursor reaches una+len, the FIN sequence slot is
+                 * still missing -- enqueue FIN and bump sent_seq. Right after
+                 * tcp_close the equality fails (already +1), so this does not
+                 * double-send on the first close.
+                 */
+                if ((sk->u.tcp.status == TCP_STATUS_FIN_WAIT_1 ||
+                     sk->u.tcp.status == TCP_STATUS_LAST_ACK ||
+                     sk->u.tcp.status == TCP_STATUS_CLOSING) &&
+                    sk->u.tcp.sent_seq ==
+                        sk->u.tcp.snd_una + sk->u.tcp.sndbuf.len) {
+                        struct tcp_fragment *fin_f = tcp_make_fragment(
+                            sk, RTE_TCP_FIN_FLAG | RTE_TCP_ACK_FLAG,
+                            sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
+                        if (tcp_enqueue_fragment(sk, fin_f) == 0) {
+                                sk->u.tcp.sent_seq += 1;
+                                LOG_INFO("tcp FIN re-queue after data "
+                                         "GBN " TCP_ID_FMT " seq=%u",
+                                         TCP_ID_ARG(sk),
+                                         sk->u.tcp.sent_seq - 1);
+                                continue;
+                        }
+                }
+                return SOCK_TX_FLUSH_IDLE;
         }
-        return 0;
 }
 
 /**
@@ -3163,6 +3254,7 @@ ssize_t tcp_send(struct nsock *sk, const void *buf, size_t len, int flags) {
                 return -1;
         }
 
+        tcp_mark_tx_dirty(sk);
         LOG_TCP_DEBUG(TCP_SK_FMT
                       " event=send-queued len=%zd sndbuf=%u una=%u nxt=%u",
                       TCP_SK_ARG(sk), n, sk->u.tcp.sndbuf.len,

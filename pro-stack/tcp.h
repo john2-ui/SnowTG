@@ -376,7 +376,8 @@ int tcp_ingress(struct rte_mbuf *mbuf);
  * Dequeues one @ref tcp_fragment, resolves the peer MAC (emitting ARP if
  * needed), builds a packet, and enqueues it on the NIC output ring.
  *
- * @return 0 after attempting one dequeue.
+ * @return A @ref sock_tx_flush_result scheduling result: idle, retry, or
+ *         ARP-wait.
  */
 int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp);
 

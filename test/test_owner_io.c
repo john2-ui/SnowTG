@@ -7,8 +7,8 @@
 #include <netinet/in.h>
 #include <rte_byteorder.h>
 #include <rte_eal.h>
-#include <rte_lcore.h>
 #include <rte_launch.h>
+#include <rte_lcore.h>
 #include <rte_timer.h>
 
 static void count_release(void *ctx) {
@@ -16,6 +16,20 @@ static void count_release(void *ctx) {
 
         (*count)++;
 }
+
+static unsigned int fake_flush_calls;
+static int fake_flush_result;
+
+static int fake_tx_flush(__attribute__((unused)) struct nsock *sk,
+                         __attribute__((unused)) struct rte_mempool *mp) {
+        fake_flush_calls++;
+        return fake_flush_result;
+}
+
+static const struct sock_ops fake_tx_ops = {
+    .name = "test-tx",
+    .tx_flush = fake_tx_flush,
+};
 
 struct remote_owner_result {
         struct nsock_handle handle;
@@ -120,13 +134,66 @@ int main(int argc, char **argv) {
         assert(sk->io_mode == NSOCK_IO_OWNER_LOCAL);
         assert(sk->recv_buf == NULL);
         assert(sk->send_buf == NULL);
+        const struct sock_ops *local_ops = sk->ops;
+        struct nsock_tx_metrics tx_metrics = {0};
+
+        /*
+         * The dirty queue is owner-local and coalesced independently of the
+         * protocol queues.  A fake ops vector keeps this test independent of
+         * NIC/ARP state while exercising drain, retry, and ARP wakeup.
+         */
+        sk->ops = &fake_tx_ops;
+        fake_flush_calls = 0;
+        fake_flush_result = SOCK_TX_FLUSH_IDLE;
+        nsock_tx_metrics_take(&tx_metrics);
+        nsock_tx_mark_dirty(sk);
+        nsock_tx_mark_dirty(sk);
+        nsock_tx_metrics_take(&tx_metrics);
+        assert(tx_metrics.dirty_enqueues == 1);
+        assert(tx_metrics.dirty_dedup_hits == 1);
+        assert(tx_metrics.dirty_depth == 1);
+        assert(nsock_tx_dirty_drain(NULL, 1) == 1);
+        nsock_tx_metrics_take(&tx_metrics);
+        assert(fake_flush_calls == 1);
+        assert(tx_metrics.dirty_dequeues == 1);
+        assert(tx_metrics.flush_calls == 1);
+        assert(tx_metrics.dirty_depth == 0);
+
+        fake_flush_result = SOCK_TX_FLUSH_RETRY;
+        nsock_tx_mark_dirty(sk);
+        assert(nsock_tx_dirty_drain(NULL, 1) == 1);
+        nsock_tx_metrics_take(&tx_metrics);
+        assert(tx_metrics.dirty_requeues == 1);
+        assert(tx_metrics.dirty_depth == 1);
+        fake_flush_result = SOCK_TX_FLUSH_IDLE;
+        assert(nsock_tx_dirty_drain(NULL, 1) == 1);
+        nsock_tx_metrics_take(&tx_metrics);
+        assert(tx_metrics.dirty_depth == 0);
+
+        nsock_tx_mark_dirty(sk);
+        nsock_tx_arp_wait(sk, 0x01020304U);
+        nsock_tx_metrics_take(&tx_metrics);
+        assert(tx_metrics.arp_waits == 1);
+        assert(tx_metrics.dirty_depth == 0);
+        nsock_tx_arp_resolved(0x01020304U);
+        nsock_tx_metrics_take(&tx_metrics);
+        assert(tx_metrics.arp_wakeups == 1);
+        assert(tx_metrics.dirty_depth == 1);
+        assert(nsock_tx_dirty_drain(NULL, 1) == 1);
+        nsock_tx_metrics_take(&tx_metrics);
+        assert(tx_metrics.dirty_depth == 0);
+        nsock_tx_mark_dirty(sk);
+        nsock_tx_arp_wait(sk, 0x01020304U);
+        sk->ops = local_ops;
+
         assert(owner_io_set_release_observer(local_tcp, count_release,
                                              &release_count) == 0);
         assert(owner_io_close(local_tcp) == 0);
         assert(release_count == 1);
+        /* nsock_free() must have removed the ARP-wait pointer. */
+        nsock_tx_arp_resolved(0x01020304U);
 
-        unsigned int worker_lcore =
-            rte_get_next_lcore(rte_lcore_id(), 1, 0);
+        unsigned int worker_lcore = rte_get_next_lcore(rte_lcore_id(), 1, 0);
         if (worker_lcore != RTE_MAX_LCORE && rte_eal_has_hugepages()) {
                 struct remote_owner_result remote = {0};
 
@@ -136,8 +203,9 @@ int main(int argc, char **argv) {
                 if (remote.status == 0) {
                         assert(remote.handle.owner_lcore == worker_lcore);
                         errno = 0;
-                        assert(owner_io_recvfrom(remote.handle, buf, sizeof(buf),
-                                                 NULL, NULL) == -1);
+                        assert(owner_io_recvfrom(remote.handle, buf,
+                                                 sizeof(buf), NULL,
+                                                 NULL) == -1);
                         assert(errno == EPERM);
                 } else {
                         assert(remote.status == EAGAIN);

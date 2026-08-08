@@ -3,6 +3,7 @@
 #include "config.h"
 #include "log.h"
 #include "net_context.h"
+#include "socket.h"
 
 #include <rte_arp.h>
 #include <rte_cycles.h>
@@ -19,6 +20,14 @@
 
 static struct arp_table *arpt[RTE_MAX_LCORE];
 static uint8_t arp_sweep_next_host[RTE_MAX_LCORE];
+
+static void arp_wake_tx_waiters(uint32_t ip) {
+#ifndef ARP_TESTING
+        nsock_tx_arp_resolved(ip);
+#else
+        (void)ip;
+#endif
+}
 
 static uint64_t arp_elapsed_ms(uint64_t now, uint64_t then) {
         if (now < then)
@@ -135,9 +144,9 @@ int arp_table_init_owner(unsigned int lcore_id) {
                 return -1;
 
         table->capacity = ARP_CACHE_CAPACITY;
-        table->entries =
-            rte_zmalloc("arp_entries", sizeof(*table->entries) * table->capacity,
-                        RTE_CACHE_LINE_SIZE);
+        table->entries = rte_zmalloc("arp_entries",
+                                     sizeof(*table->entries) * table->capacity,
+                                     RTE_CACHE_LINE_SIZE);
         if (table->entries == NULL) {
                 rte_free(table);
                 return -1;
@@ -179,9 +188,9 @@ void arp_table_fini(void) {
 struct arp_table *arp_table_instance(void) {
         unsigned int lcore_id = rte_lcore_id();
 
-        if (lcore_id >= RTE_MAX_LCORE ||
-            arp_table_init_owner(lcore_id) != 0)
-                rte_exit(EXIT_FAILURE, "owner ARP table initialization failed\n");
+        if (lcore_id >= RTE_MAX_LCORE || arp_table_init_owner(lcore_id) != 0)
+                rte_exit(EXIT_FAILURE,
+                         "owner ARP table initialization failed\n");
         return arpt[lcore_id];
 }
 
@@ -260,6 +269,12 @@ static void arp_table_learn_at(struct arp_table *table, uint32_t ip,
         entry->probe_count = 0;
         entry->confirmed_at = now;
         entry->last_used_at = now;
+        /*
+         * Wake owner-local TX sockets that parked behind this neighbour.
+         * The same wakeup is useful when a FAILED entry is retried after
+         * expiry: arp_resolve() will probe again on the next flush.
+         */
+        arp_wake_tx_waiters(ip);
         LOG_ARP_INFO("arp learn " IP_FMT " -> " MAC_FMT " (entries=%u)",
                      IP_ARG(ip), MAC_ARG(mac), table->count);
 }
@@ -294,11 +309,20 @@ void arp_maintain(uint64_t now) {
                 if (entry->state == ARP_STATE_REACHABLE &&
                     arp_elapsed_ms(now, entry->confirmed_at) >=
                         ARP_REACHABLE_TTL_MS) {
+                        /*
+                         * Reachable expiry only drops the cache entry.  Sockets
+                         * are not parked on a still-reachable neighbour, so no
+                         * TX wakeup is required here.
+                         */
                         arp_remove(table, entry);
                 } else if (entry->state == ARP_STATE_FAILED &&
                            arp_elapsed_ms(now, entry->last_probe_at) >=
                                ARP_FAILED_TTL_MS) {
+                        uint32_t ip = entry->ip;
                         arp_remove(table, entry);
+                        /* Allow parked sockets to probe again after cooldown.
+                         */
+                        arp_wake_tx_waiters(ip);
                 }
         }
 }

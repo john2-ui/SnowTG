@@ -9,7 +9,7 @@ RX_DISPATCH_CFLAGS := $(TEST_CFLAGS) -D_GNU_SOURCE
 # unrelated legacy warnings to test failures.
 OFO_CFLAGS := $(CFLAGS) -std=gnu11 -Wall -Wextra -D_GNU_SOURCE -fdata-sections
 PAWS_CFLAGS := $(CFLAGS) -std=gnu11 -Wall -Wextra -Werror -D_GNU_SOURCE
-ARP_CFLAGS := $(PAWS_CFLAGS) -DLOG_LEVEL=LOG_LVL_ERROR
+ARP_CFLAGS := $(PAWS_CFLAGS) -DLOG_LEVEL=LOG_LVL_ERROR -DARP_TESTING
 
 DPDK_PKGCONF := pkg-config --define-prefix
 DPDK_CFLAGS := $(shell $(DPDK_PKGCONF) --cflags libdpdk)

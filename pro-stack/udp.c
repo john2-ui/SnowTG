@@ -144,7 +144,7 @@ int udp_ingress(struct rte_mbuf *mbuf) {
 int udp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
         struct rte_mbuf *mbuf;
         if (rte_ring_sc_dequeue(sk->send_buf, (void **)&mbuf) < 0)
-                return 0;
+                return SOCK_TX_FLUSH_IDLE;
 
         /* A queue slot became available for a non-blocking sender. */
         socket_owner_ready_post(sk, OWNER_IO_EV_WRITE);
@@ -164,16 +164,22 @@ int udp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
                         if (rte_ring_mp_enqueue(sk->send_buf, mbuf) != 0) {
                                 LOG_ERROR("send_buf full while waiting ARP");
                                 rte_pktmbuf_free(mbuf);
+                                return SOCK_TX_FLUSH_IDLE;
                         }
-                        return 0;
+                        nsock_tx_arp_wait(sk, ip->dst_addr);
+                        return SOCK_TX_FLUSH_ARP_WAIT;
                 }
         }
 
         struct rte_ring *out_ring = ring_instance()->out;
         if (rte_ring_sp_enqueue(out_ring, mbuf) != 0) {
-                LOG_ERROR("out ring full, dropping reply");
-                rte_pktmbuf_free(mbuf);
-                return 0;
+                LOG_ERROR("out ring full, retrying datagram");
+                if (rte_ring_mp_enqueue(sk->send_buf, mbuf) != 0) {
+                        LOG_ERROR("send_buf full while retrying datagram");
+                        rte_pktmbuf_free(mbuf);
+                        return SOCK_TX_FLUSH_IDLE;
+                }
+                return SOCK_TX_FLUSH_RETRY;
         }
 
         struct rte_udp_hdr *udp = udp_header(ip);
@@ -184,7 +190,8 @@ int udp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
                  IP_ARG(ip->src_addr), rte_be_to_cpu_16(udp->src_port),
                  IP_ARG(ip->dst_addr), rte_be_to_cpu_16(udp->dst_port),
                  payload_len, payload_len, payload);
-        return 0;
+        return rte_ring_count(sk->send_buf) == 0 ? SOCK_TX_FLUSH_IDLE
+                                                 : SOCK_TX_FLUSH_RETRY;
 }
 
 ssize_t udp_sendto(struct nsock *sk, const void *buf, size_t len,
@@ -226,6 +233,7 @@ ssize_t udp_sendto(struct nsock *sk, const void *buf, size_t len,
                 errno = EAGAIN;
                 return -1;
         }
+        nsock_tx_mark_dirty(sk);
         LOG_INFO("udp_sendto " UDP_SK_FMT " " IP_FMT ":%u -> " IP_FMT
                  ":%u len=%zu data=%.*s",
                  UDP_SK_ARG(sk), IP_ARG(sk->local_ip),

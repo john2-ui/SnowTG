@@ -30,6 +30,8 @@
 #include <stdint.h>
 #include <string.h>
 
+#define NSOCK_TX_ARP_BUCKETS 64U
+
 struct local_key {
         uint32_t ip;
         uint16_t port;
@@ -56,6 +58,12 @@ struct socket_registry {
         struct rte_hash *tcp_listener_hash;
         struct rte_hash *tcp_conn_hash;
         struct nsock *sock_list;
+        struct nsock *dirty_tx_head;
+        struct nsock *dirty_tx_tail;
+        struct nsock *arp_wait[NSOCK_TX_ARP_BUCKETS];
+        struct nsock_tx_metrics tx_metrics;
+        uint32_t dirty_depth;
+        uint64_t dirty_budget_exhausted;
         bool ready;
 };
 
@@ -130,7 +138,8 @@ int socket_registry_init_owner(unsigned int lcore_id) {
         registry->tcp_conn_hash = registry_hash_create(
             "nsock_tcp_conn", lcore_id, sizeof(struct tcp_conn_key));
 
-        if (registry->udp_bind_hash == NULL || registry->tcp_bind_hash == NULL ||
+        if (registry->udp_bind_hash == NULL ||
+            registry->tcp_bind_hash == NULL ||
             registry->tcp_listener_hash == NULL ||
             registry->tcp_conn_hash == NULL) {
                 if (registry->udp_bind_hash != NULL)
@@ -326,9 +335,9 @@ void nsock_tcp_conn_unregister(struct nsock *sk) {
 
         key = tcp_conn_key_make(sk);
         hash_del(registry->tcp_conn_hash, &key);
-        rx_dispatch_unregister_tcp_connection(
-            sk->u.tcp.remote_ip, sk->local_ip, sk->u.tcp.remote_port,
-            sk->local_port, sk->owner_lcore);
+        rx_dispatch_unregister_tcp_connection(sk->u.tcp.remote_ip, sk->local_ip,
+                                              sk->u.tcp.remote_port,
+                                              sk->local_port, sk->owner_lcore);
         sk->registry_flags &= (uint8_t)~NSOCK_REG_TCP_CONN;
 }
 
@@ -356,6 +365,202 @@ struct nsock *nsock_list_local(void) {
         struct socket_registry *registry = registry_current();
 
         return registry == NULL ? NULL : registry->sock_list;
+}
+
+static uint32_t tx_arp_bucket(uint32_t ip) {
+        ip ^= ip >> 16;
+        ip ^= ip >> 8;
+        return ip & (NSOCK_TX_ARP_BUCKETS - 1U);
+}
+
+static void dirty_fifo_append(struct socket_registry *registry,
+                              struct nsock *sk, bool requeue) {
+        if (sk->tx_dirty_queued || sk->tx_arp_waiting)
+                return;
+
+        sk->dirty_prev = registry->dirty_tx_tail;
+        sk->dirty_next = NULL;
+        if (registry->dirty_tx_tail != NULL)
+                registry->dirty_tx_tail->dirty_next = sk;
+        else
+                registry->dirty_tx_head = sk;
+        registry->dirty_tx_tail = sk;
+        sk->tx_dirty_queued = true;
+        registry->dirty_depth++;
+        if (requeue)
+                registry->tx_metrics.dirty_requeues++;
+        else
+                registry->tx_metrics.dirty_enqueues++;
+        if (registry->dirty_depth > registry->tx_metrics.dirty_high_water)
+                registry->tx_metrics.dirty_high_water = registry->dirty_depth;
+}
+
+static void dirty_fifo_unlink(struct socket_registry *registry,
+                              struct nsock *sk) {
+        if (!sk->tx_dirty_queued)
+                return;
+        if (sk->dirty_prev != NULL)
+                sk->dirty_prev->dirty_next = sk->dirty_next;
+        else
+                registry->dirty_tx_head = sk->dirty_next;
+        if (sk->dirty_next != NULL)
+                sk->dirty_next->dirty_prev = sk->dirty_prev;
+        else
+                registry->dirty_tx_tail = sk->dirty_prev;
+        sk->dirty_prev = NULL;
+        sk->dirty_next = NULL;
+        sk->tx_dirty_queued = false;
+        if (registry->dirty_depth > 0)
+                registry->dirty_depth--;
+}
+
+static struct nsock *dirty_fifo_pop(struct socket_registry *registry) {
+        struct nsock *sk = registry->dirty_tx_head;
+
+        if (sk == NULL)
+                return NULL;
+        dirty_fifo_unlink(registry, sk);
+        registry->tx_metrics.dirty_dequeues++;
+        return sk;
+}
+
+static void arp_wait_link(struct socket_registry *registry, struct nsock *sk) {
+        uint32_t bucket = tx_arp_bucket(sk->tx_arp_ip);
+
+        sk->dirty_prev = NULL;
+        sk->dirty_next = registry->arp_wait[bucket];
+        if (sk->dirty_next != NULL)
+                sk->dirty_next->dirty_prev = sk;
+        registry->arp_wait[bucket] = sk;
+        sk->tx_arp_waiting = true;
+        registry->tx_metrics.arp_waits++;
+}
+
+static void arp_wait_unlink(struct socket_registry *registry,
+                            struct nsock *sk) {
+        uint32_t bucket;
+
+        if (!sk->tx_arp_waiting)
+                return;
+        bucket = tx_arp_bucket(sk->tx_arp_ip);
+        if (sk->dirty_prev != NULL)
+                sk->dirty_prev->dirty_next = sk->dirty_next;
+        else
+                registry->arp_wait[bucket] = sk->dirty_next;
+        if (sk->dirty_next != NULL)
+                sk->dirty_next->dirty_prev = sk->dirty_prev;
+        sk->dirty_prev = NULL;
+        sk->dirty_next = NULL;
+        sk->tx_arp_ip = 0;
+        sk->tx_arp_waiting = false;
+}
+
+void nsock_tx_mark_dirty(struct nsock *sk) {
+        struct socket_registry *registry = registry_current();
+
+        if (sk == NULL || registry == NULL)
+                return;
+        if (sk->tx_dirty_queued || sk->tx_arp_waiting) {
+                registry->tx_metrics.dirty_dedup_hits++;
+                return;
+        }
+        dirty_fifo_append(registry, sk, false);
+}
+
+void nsock_tx_dirty_unlink(struct nsock *sk) {
+        struct socket_registry *registry = registry_current();
+
+        if (sk == NULL || registry == NULL)
+                return;
+        if (sk->tx_dirty_queued)
+                dirty_fifo_unlink(registry, sk);
+        if (sk->tx_arp_waiting)
+                arp_wait_unlink(registry, sk);
+        sk->tx_dirty_queued = false;
+        sk->tx_arp_waiting = false;
+        sk->tx_arp_ip = 0;
+}
+
+void nsock_tx_arp_wait(struct nsock *sk, uint32_t remote_ip) {
+        struct socket_registry *registry = registry_current();
+
+        if (sk == NULL || registry == NULL)
+                return;
+        if (sk->tx_arp_waiting)
+                arp_wait_unlink(registry, sk);
+        if (sk->tx_dirty_queued)
+                dirty_fifo_unlink(registry, sk);
+        sk->tx_arp_ip = remote_ip;
+        arp_wait_link(registry, sk);
+}
+
+void nsock_tx_arp_resolved(uint32_t remote_ip) {
+        struct socket_registry *registry = registry_current();
+        uint32_t bucket;
+        struct nsock *sk;
+
+        if (registry == NULL)
+                return;
+        bucket = tx_arp_bucket(remote_ip);
+        sk = registry->arp_wait[bucket];
+        while (sk != NULL) {
+                struct nsock *next = sk->dirty_next;
+                if (sk->tx_arp_ip == remote_ip) {
+                        arp_wait_unlink(registry, sk);
+                        registry->tx_metrics.arp_wakeups++;
+                        dirty_fifo_append(registry, sk, false);
+                }
+                sk = next;
+        }
+}
+
+void nsock_tx_metrics_take(struct nsock_tx_metrics *out) {
+        struct socket_registry *registry;
+
+        if (out == NULL)
+                return;
+        registry = registry_current();
+        if (registry == NULL) {
+                memset(out, 0, sizeof(*out));
+                return;
+        }
+        *out = registry->tx_metrics;
+        out->dirty_budget_exhausted = registry->dirty_budget_exhausted;
+        out->dirty_depth = registry->dirty_depth;
+        memset(&registry->tx_metrics, 0, sizeof(registry->tx_metrics));
+        registry->dirty_budget_exhausted = 0;
+}
+
+unsigned int nsock_tx_dirty_drain(struct rte_mempool *mp, unsigned int budget) {
+        struct socket_registry *registry = registry_current();
+        unsigned int flushed = 0;
+
+        if (registry == NULL || budget == 0)
+                return 0;
+        while (flushed < budget) {
+                struct nsock *sk = dirty_fifo_pop(registry);
+                int result;
+
+                if (sk == NULL)
+                        break;
+                result = SOCK_TX_FLUSH_IDLE;
+                if (sk->ops != NULL && sk->ops->tx_flush != NULL) {
+                        result = sk->ops->tx_flush(sk, mp);
+                        registry->tx_metrics.flush_calls++;
+                        flushed++;
+                }
+                /*
+                 * A transport may have queued fresh work while flushing
+                 * (for example FIN-after-data).  Do not duplicate that entry.
+                 * ARP_WAIT has already moved the socket off the hot FIFO.
+                 */
+                if (!sk->tx_dirty_queued && !sk->tx_arp_waiting &&
+                    result == SOCK_TX_FLUSH_RETRY)
+                        dirty_fifo_append(registry, sk, true);
+        }
+        if (flushed == budget && registry->dirty_tx_head != NULL)
+                registry->dirty_budget_exhausted++;
+        return flushed;
 }
 
 /*
@@ -496,6 +701,26 @@ struct tcp_fragment *nsock_tcp_tx_dequeue(struct nsock *sk) {
         fragment->next = NULL;
         sk->u.tcp.tx_queue_count--;
         return fragment;
+}
+
+int nsock_tcp_tx_requeue_head(struct nsock *sk, struct tcp_fragment *fragment) {
+        if (sk == NULL || fragment == NULL)
+                return -1;
+        if (sk->io_mode == NSOCK_IO_RINGS) {
+                /*
+                 * rte_ring has no head-push; preserve the fragment at the cost
+                 * of possible reordering with any still-queued segments.
+                 */
+                return rte_ring_mp_enqueue(sk->send_buf, fragment);
+        }
+        if (sk->u.tcp.tx_queue_count >= RING_SIZE)
+                return -1;
+        fragment->next = sk->u.tcp.tx_queue_head;
+        sk->u.tcp.tx_queue_head = fragment;
+        if (sk->u.tcp.tx_queue_tail == NULL)
+                sk->u.tcp.tx_queue_tail = fragment;
+        sk->u.tcp.tx_queue_count++;
+        return 0;
 }
 
 void nsock_set_release_observer(struct nsock *sk, nsock_release_fn fn,
@@ -648,6 +873,9 @@ void nsock_free(struct nsock *sk) {
                 return;
         }
 
+        /* A queued TX pointer must not outlive the socket object. */
+        nsock_tx_dirty_unlink(sk);
+
         /* Drop any pending retransmission/TIME_WAIT callback before free. */
         if (sk->protocol == IPPROTO_TCP) {
                 rte_timer_stop(&sk->u.tcp.timer);
@@ -666,8 +894,7 @@ void nsock_free(struct nsock *sk) {
                     local_key_make(sk->local_ip, sk->local_port);
                 hash_del(registry->tcp_listener_hash, &key);
                 rx_dispatch_unregister_endpoint(
-                    IPPROTO_TCP, sk->local_ip, sk->local_port,
-                    sk->owner_lcore);
+                    IPPROTO_TCP, sk->local_ip, sk->local_port, sk->owner_lcore);
         }
 
         if (sk->registry_flags & NSOCK_REG_TCP_BIND) {
@@ -681,8 +908,7 @@ void nsock_free(struct nsock *sk) {
                     local_key_make(sk->local_ip, sk->local_port);
                 hash_del(registry->udp_bind_hash, &key);
                 rx_dispatch_unregister_endpoint(
-                    IPPROTO_UDP, sk->local_ip, sk->local_port,
-                    sk->owner_lcore);
+                    IPPROTO_UDP, sk->local_ip, sk->local_port, sk->owner_lcore);
         }
 
         LL_REMOVE(sk, registry->sock_list);

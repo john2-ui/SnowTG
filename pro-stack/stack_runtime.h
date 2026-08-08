@@ -17,17 +17,27 @@ typedef void (*stack_runtime_reactor_fn)(void *ctx, unsigned int budget);
 struct stack_runtime_metrics {
         uint64_t worker_turns;       /**< Completed worker-loop iterations. */
         uint64_t rx_packets;         /**< Packets dispatched from ring->in. */
-        uint64_t tx_flush_calls;     /**< Per-socket transport flush calls. */
-        uint64_t socket_scans;       /**< Nodes visited in the local socket list. */
+        uint64_t tx_flush_calls;     /**< Dirty-socket transport flush calls. */
+        /** Dirty queue entries dequeued; retained under the old log name. */
+        uint64_t socket_scans;
+        uint64_t dirty_tx_enqueues;
+        uint64_t dirty_tx_dedup_hits;
+        uint64_t dirty_tx_dequeues;
+        uint64_t dirty_tx_requeues;
+        uint64_t dirty_tx_arp_waits;
+        uint64_t dirty_tx_arp_wakeups;
+        uint64_t dirty_tx_budget_exhausted;
         uint64_t turn_cycles;        /**< End-to-end worker-loop time. */
         uint64_t rx_cycles;          /**< ring->in dequeue plus ingress time. */
         uint64_t maintenance_cycles; /**< Timer and ARP maintenance time. */
         uint64_t reactor_cycles;     /**< Upper-layer reactor callback time. */
-        uint64_t tx_flush_cycles;    /**< Full socket-list TX scan time. */
+        uint64_t tx_flush_cycles;    /**< Dirty queue drain time. */
         uint32_t
             in_ring_high_water; /**< Largest observed NIC-to-worker depth. */
         uint32_t
             out_ring_high_water; /**< Largest observed worker-to-NIC depth. */
+        uint32_t dirty_tx_high_water; /**< Largest dirty queue depth. */
+        uint32_t dirty_tx_depth;      /**< Dirty queue depth at snapshot time. */
 };
 
 /**
