@@ -21,6 +21,7 @@ OFO_TEST := $(BUILD_DIR)/test_ofo
 PAWS_TEST := $(BUILD_DIR)/test_tcp_paws
 OWNER_IO_TEST := $(BUILD_DIR)/test_owner_io
 HTTP_CLIENT_TEST := $(BUILD_DIR)/test_http_client
+DNS_CLIENT_TEST := $(BUILD_DIR)/test_dns_client
 SCENARIO_SCHEDULER_TEST := $(BUILD_DIR)/test_scenario_scheduler
 ARP_TEST := $(BUILD_DIR)/test_arp
 RX_DISPATCH_TEST := $(BUILD_DIR)/test_rx_dispatch
@@ -30,6 +31,8 @@ LLHTTP_DIR := ../third_party/llhttp
 HTTP_CLIENT_CFLAGS := $(TEST_CFLAGS) -I../traffic-gen/core \
 	-I../traffic-gen/proto -I../traffic-gen/proto/http \
 	-I$(LLHTTP_DIR)/include
+DNS_CLIENT_CFLAGS := $(TEST_CFLAGS) -I../traffic-gen/core \
+	-I../traffic-gen/proto -I../traffic-gen/proto/dns
 LLHTTP_CFLAGS := $(CFLAGS) -std=c11 -Wall -Wextra -Wno-unused-parameter \
 	-I$(LLHTTP_DIR)/include
 HTTP_CLIENT_OBJS := $(BUILD_DIR)/test_http_client.o \
@@ -38,29 +41,39 @@ HTTP_CLIENT_OBJS := $(BUILD_DIR)/test_http_client.o \
 	$(BUILD_DIR)/llhttp.o \
 	$(BUILD_DIR)/llhttp_api.o \
 	$(BUILD_DIR)/llhttp_http.o
+DNS_CLIENT_OBJS := $(BUILD_DIR)/test_dns_client.o \
+	$(BUILD_DIR)/tg_txn.o \
+	$(BUILD_DIR)/tg_dns_client.o
 SCENARIO_SCHEDULER_OBJS := $(BUILD_DIR)/test_scenario_scheduler.o \
 	$(BUILD_DIR)/tg_scenario.o \
+	$(BUILD_DIR)/tg_scenario_json.o \
+	$(BUILD_DIR)/tg_registry.o \
 	$(BUILD_DIR)/tg_scheduler.o \
 	$(BUILD_DIR)/tg_stats.o \
 	$(BUILD_DIR)/tg_http_client.o \
+	$(BUILD_DIR)/tg_http_scenario.o \
+	$(BUILD_DIR)/tg_dns_client.o \
+	$(BUILD_DIR)/tg_dns_scenario.o \
 	$(BUILD_DIR)/llhttp.o \
 	$(BUILD_DIR)/llhttp_api.o \
 	$(BUILD_DIR)/llhttp_http.o
 
-.PHONY: all test test-arp test-owner-io test-http-client test-scenario-scheduler \
+.PHONY: all test test-arp test-owner-io test-http-client test-dns-client \
+	test-scenario-scheduler \
 	test-rx-dispatch test-port-topology test-flow-udp clean
 
 all: test
 
 # Compilation and execution both must succeed for the test target to pass.
 test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(OWNER_IO_TEST) \
-	$(HTTP_CLIENT_TEST) $(SCENARIO_SCHEDULER_TEST) $(ARP_TEST) \
+	$(HTTP_CLIENT_TEST) $(DNS_CLIENT_TEST) $(SCENARIO_SCHEDULER_TEST) $(ARP_TEST) \
 	$(RX_DISPATCH_TEST) $(PORT_TOPOLOGY_TEST) $(FLOW_UDP_TEST)
 	$(RBTREE_TEST)
 	$(OFO_TEST)
 	$(PAWS_TEST)
 	$(OWNER_IO_TEST) --no-huge --no-pci --file-prefix ownerio-test
 	$(HTTP_CLIENT_TEST)
+	$(DNS_CLIENT_TEST)
 	$(SCENARIO_SCHEDULER_TEST)
 	$(ARP_TEST) --no-huge --no-pci --file-prefix arp-test
 	$(RX_DISPATCH_TEST)
@@ -72,6 +85,8 @@ test-arp: $(ARP_TEST)
 test-owner-io: $(OWNER_IO_TEST)
 
 test-http-client: $(HTTP_CLIENT_TEST)
+
+test-dns-client: $(DNS_CLIENT_TEST)
 
 test-scenario-scheduler: $(SCENARIO_SCHEDULER_TEST)
 
@@ -128,6 +143,9 @@ $(FLOW_UDP_TEST): test_flow_udp.c ../traffic-gen/core/flow.c \
 $(HTTP_CLIENT_TEST): $(HTTP_CLIENT_OBJS)
 	$(CC) $(HTTP_CLIENT_OBJS) -o $@
 
+$(DNS_CLIENT_TEST): $(DNS_CLIENT_OBJS)
+	$(CC) $(DNS_CLIENT_OBJS) -o $@
+
 $(SCENARIO_SCHEDULER_TEST): $(SCENARIO_SCHEDULER_OBJS)
 	$(CC) $(SCENARIO_SCHEDULER_OBJS) -o $@
 
@@ -136,6 +154,11 @@ $(BUILD_DIR)/test_http_client.o: test_http_client.c \
 		../traffic-gen/proto/http/http_client.h | $(BUILD_DIR)
 	$(CC) $(HTTP_CLIENT_CFLAGS) -c $< -o $@
 
+$(BUILD_DIR)/test_dns_client.o: test_dns_client.c \
+		../traffic-gen/core/txn.h \
+		../traffic-gen/proto/dns/dns_client.h | $(BUILD_DIR)
+	$(CC) $(DNS_CLIENT_CFLAGS) -c $< -o $@
+
 $(BUILD_DIR)/tg_txn.o: ../traffic-gen/core/txn.c \
 		../traffic-gen/core/txn.h ../traffic-gen/proto/proto.h | $(BUILD_DIR)
 	$(CC) $(HTTP_CLIENT_CFLAGS) -c $< -o $@
@@ -143,13 +166,27 @@ $(BUILD_DIR)/tg_txn.o: ../traffic-gen/core/txn.c \
 $(BUILD_DIR)/test_scenario_scheduler.o: test_scenario_scheduler.c \
 		../traffic-gen/core/scenario.h ../traffic-gen/core/scheduler.h \
 		../traffic-gen/core/stats.h \
-		../traffic-gen/proto/http/http_client.h | $(BUILD_DIR)
+		../traffic-gen/proto/http/http_client.h \
+		../traffic-gen/proto/dns/dns_client.h | $(BUILD_DIR)
 	$(CC) $(HTTP_CLIENT_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/tg_scenario.o: ../traffic-gen/core/scenario.c \
-		../traffic-gen/core/scenario.h \
+		../traffic-gen/core/scenario.h ../traffic-gen/core/scenario_json.h \
+		../traffic-gen/proto/registry.h \
 		../traffic-gen/proto/http/http_client.h \
-		../traffic-gen/proto/proto.h ../third_party/jsmn/jsmn.h | $(BUILD_DIR)
+		../traffic-gen/proto/dns/dns_client.h \
+		../third_party/jsmn/jsmn.h | $(BUILD_DIR)
+	$(CC) $(HTTP_CLIENT_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/tg_scenario_json.o: ../traffic-gen/core/scenario_json.c \
+		../traffic-gen/core/scenario_json.h ../third_party/jsmn/jsmn.h | \
+		$(BUILD_DIR)
+	$(CC) $(HTTP_CLIENT_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/tg_registry.o: ../traffic-gen/proto/registry.c \
+		../traffic-gen/proto/registry.h \
+		../traffic-gen/proto/http/http_scenario.h \
+		../traffic-gen/proto/dns/dns_scenario.h | $(BUILD_DIR)
 	$(CC) $(HTTP_CLIENT_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/tg_scheduler.o: ../traffic-gen/core/scheduler.c \
@@ -163,6 +200,25 @@ $(BUILD_DIR)/tg_stats.o: ../traffic-gen/core/stats.c \
 $(BUILD_DIR)/tg_http_client.o: ../traffic-gen/proto/http/http_client.c \
 		../traffic-gen/proto/http/http_client.h \
 		../traffic-gen/core/txn.h $(LLHTTP_DIR)/include/llhttp.h | $(BUILD_DIR)
+	$(CC) $(HTTP_CLIENT_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/tg_http_scenario.o: \
+		../traffic-gen/proto/http/http_scenario.c \
+		../traffic-gen/proto/http/http_scenario.h \
+		../traffic-gen/proto/http/http_client.h \
+		../traffic-gen/core/scenario.h | $(BUILD_DIR)
+	$(CC) $(HTTP_CLIENT_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/tg_dns_client.o: ../traffic-gen/proto/dns/dns_client.c \
+		../traffic-gen/proto/dns/dns_client.h \
+		../traffic-gen/core/txn.h | $(BUILD_DIR)
+	$(CC) $(DNS_CLIENT_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/tg_dns_scenario.o: \
+		../traffic-gen/proto/dns/dns_scenario.c \
+		../traffic-gen/proto/dns/dns_scenario.h \
+		../traffic-gen/proto/dns/dns_client.h \
+		../traffic-gen/core/scenario.h | $(BUILD_DIR)
 	$(CC) $(HTTP_CLIENT_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/llhttp.o: $(LLHTTP_DIR)/src/llhttp.c \

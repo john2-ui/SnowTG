@@ -15,10 +15,15 @@ SRCS := main_tg.c \
 	core/flow.c \
 	core/flow_pool.c \
 	core/scenario.c \
+	core/scenario_json.c \
 	core/scheduler.c \
 	core/stats.c \
 	core/txn.c \
+	proto/registry.c \
 	proto/http/http_client.c \
+	proto/http/http_scenario.c \
+	proto/dns/dns_client.c \
+	proto/dns/dns_scenario.c \
 	$(LLHTTP_DIR)/src/llhttp.c \
 	$(LLHTTP_DIR)/src/api.c \
 	$(LLHTTP_DIR)/src/http.c

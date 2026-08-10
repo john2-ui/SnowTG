@@ -8,9 +8,9 @@
  */
 
 #include "scenario.h"
+#include "scenario_json.h"
 
-#include "../../third_party/jsmn/jsmn.h"
-#include "../proto/http/http_client.h"
+#include "../proto/registry.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -25,100 +25,6 @@
 /** @brief Tokenization bound that limits parser stack and startup work. */
 #define TG_SCENARIO_MAX_TOKENS 512U
 
-/** @brief Compares a JSON token with an unescaped schema literal. */
-static bool tg_token_equal(const char *json, const jsmntok_t *token,
-                           const char *literal) {
-        size_t length;
-
-        if (token == NULL || literal == NULL)
-                return false;
-        length = strlen(literal);
-        return token->end - token->start == (int)length &&
-               memcmp(json + token->start, literal, length) == 0;
-}
-
-/**
- * @brief Copies an unescaped nonempty JSON string into fixed plan storage.
- *
- * Escape sequences are rejected intentionally until an explicit JSON unescape
- * implementation exists; passing raw escape bytes into a request would be
- * incorrect.
- */
-static int tg_copy_string(char *out, size_t out_cap, const char *json,
-                          const jsmntok_t *token) {
-        size_t length;
-
-        if (out == NULL || out_cap == 0 || json == NULL || token == NULL ||
-            token->type != JSMN_STRING || token->start < 0 ||
-            token->end < token->start) {
-                errno = EINVAL;
-                return -1;
-        }
-        length = (size_t)(token->end - token->start);
-        if (length == 0 || length >= out_cap ||
-            memchr(json + token->start, '\\', length) != NULL) {
-                errno = EINVAL;
-                return -1;
-        }
-        memcpy(out, json + token->start, length);
-        out[length] = '\0';
-        return 0;
-}
-
-/** @brief Parses an unsigned decimal primitive within inclusive schema bounds.
- */
-static int tg_parse_u32(const char *json, const jsmntok_t *token,
-                        uint32_t minimum, uint32_t maximum,
-                        uint32_t *value_out) {
-        uint64_t value = 0;
-
-        if (json == NULL || token == NULL || value_out == NULL ||
-            token->type != JSMN_PRIMITIVE || token->start >= token->end) {
-                errno = EINVAL;
-                return -1;
-        }
-        for (int i = token->start; i < token->end; i++) {
-                unsigned int digit;
-
-                if (json[i] < '0' || json[i] > '9') {
-                        errno = EINVAL;
-                        return -1;
-                }
-                digit = (unsigned int)(json[i] - '0');
-                if (value > (UINT32_MAX - digit) / 10U) {
-                        errno = ERANGE;
-                        return -1;
-                }
-                value = value * 10U + digit;
-        }
-        if (value < minimum || value > maximum) {
-                errno = ERANGE;
-                return -1;
-        }
-        *value_out = (uint32_t)value;
-        return 0;
-}
-
-/** @brief Parses only the JSON @c true or @c false primitive values. */
-static int tg_parse_bool(const char *json, const jsmntok_t *token,
-                         bool *value_out) {
-        if (json == NULL || token == NULL || value_out == NULL ||
-            token->type != JSMN_PRIMITIVE) {
-                errno = EINVAL;
-                return -1;
-        }
-        if (tg_token_equal(json, token, "true")) {
-                *value_out = true;
-                return 0;
-        }
-        if (tg_token_equal(json, token, "false")) {
-                *value_out = false;
-                return 0;
-        }
-        errno = EINVAL;
-        return -1;
-}
-
 /** @brief Releases one protocol-owned class configuration. */
 static void tg_class_plan_fini(struct tg_class_plan *class_plan) {
         if (class_plan == NULL)
@@ -129,111 +35,28 @@ static void tg_class_plan_fini(struct tg_class_plan *class_plan) {
         memset(class_plan, 0, sizeof(*class_plan));
 }
 
-/** @brief Returns the token index of a direct object member's value. */
-static int tg_object_value(const jsmntok_t *tokens, int token_count,
-                           int object_index, const char *json,
-                           const char *key) {
-        for (int i = object_index + 1; i < token_count; i++) {
-                if (tokens[i].parent != object_index)
-                        continue;
-                if (tokens[i].type != JSMN_STRING)
-                        continue;
-                if (!tg_token_equal(json, &tokens[i], key))
-                        continue;
-                if (i + 1 >= token_count || tokens[i + 1].parent != i)
-                        return -1;
-                return i + 1;
-        }
-        return -1;
-}
-
-/** @brief Verifies that every direct object key occurs in an allowed-key list.
+/**
+ * @brief Aborts a partially cloned shard without touching unreached classes.
+ *
+ * The class array is copied from the source plan before cloning begins, so
+ * only the prefix through the failed clone may contain owned allocations.
+ * Config pointers for that prefix are initialized before each clone; later
+ * classes are deliberately outside this cleanup range.
  */
-static bool tg_object_has_only(const jsmntok_t *tokens, int token_count,
-                               int object_index, const char *json,
-                               const char *const allowed[],
-                               size_t allowed_count) {
-        for (int i = object_index + 1; i < token_count; i++) {
-                bool found = false;
-
-                if (tokens[i].parent != object_index)
-                        continue;
-                if (tokens[i].type != JSMN_STRING)
-                        return false;
-                for (size_t j = 0; j < allowed_count; j++) {
-                        if (tg_token_equal(json, &tokens[i], allowed[j])) {
-                                found = true;
-                                break;
-                        }
-                }
-                if (!found)
-                        return false;
-        }
-        return true;
+static void tg_plan_partition_abort(struct tg_plan *partitioned,
+                                    uint32_t covered_class_count) {
+        if (partitioned == NULL)
+                return;
+        if (covered_class_count > TG_PLAN_MAX_CLASSES)
+                covered_class_count = TG_PLAN_MAX_CLASSES;
+        for (uint32_t class_index = 0; class_index < covered_class_count;
+             class_index++)
+                tg_class_plan_fini(&partitioned->classes[class_index]);
+        memset(partitioned, 0, sizeof(*partitioned));
 }
 
-/** @brief Compiles one HTTP object into an owning protocol configuration. */
-static int tg_parse_http(const char *json, const jsmntok_t *tokens,
-                         int token_count, int object_index,
-                         struct tg_class_plan *class_plan) {
-        static const char *const allowed[] = {"method", "path", "keepalive"};
-        struct tg_http_config *config;
-        int method_index;
-        int path_index;
-        int keepalive_index;
-        bool keepalive = false;
-
-        if (class_plan == NULL) {
-                errno = EINVAL;
-                return -1;
-        }
-        config = calloc(1, sizeof(*config));
-        if (config == NULL)
-                return -1;
-        class_plan->proto = &tg_http_proto_ops;
-        class_plan->proto_config = config;
-        if (tokens[object_index].type != JSMN_OBJECT ||
-            !tg_object_has_only(tokens, token_count, object_index, json,
-                                allowed,
-                                sizeof(allowed) / sizeof(allowed[0]))) {
-                errno = EINVAL;
-                return -1;
-        }
-        method_index =
-            tg_object_value(tokens, token_count, object_index, json, "method");
-        path_index =
-            tg_object_value(tokens, token_count, object_index, json, "path");
-        keepalive_index = tg_object_value(tokens, token_count, object_index,
-                                          json, "keepalive");
-        if (method_index < 0 || path_index < 0 ||
-            tg_copy_string(config->method, sizeof(config->method), json,
-                           &tokens[method_index]) != 0 ||
-            tg_copy_string(config->path, sizeof(config->path), json,
-                           &tokens[path_index]) != 0 ||
-            config->path[0] != '/') {
-                errno = EINVAL;
-                return -1;
-        }
-        if (keepalive_index >= 0 &&
-            tg_parse_bool(json, &tokens[keepalive_index], &keepalive) != 0)
-                return -1;
-
-        config->connection_close = !keepalive;
-        if (class_plan->proto->build_request(
-                config, class_plan->request_template,
-                sizeof(class_plan->request_template),
-                &class_plan->request_template_len) != 0 ||
-            class_plan->request_template_len == 0) {
-                if (errno == 0)
-                        errno = EINVAL;
-                return -1;
-        }
-        return 0;
-}
-
-/** @brief Validates and compiles an IPv4 TCP peer object. */
-static int tg_parse_peer(const char *json, const jsmntok_t *tokens,
-                         int token_count, int object_index,
+/** @brief Validates and compiles an IPv4 peer object. */
+static int tg_parse_peer(const struct tg_json_doc *doc, int object_index,
                          struct tg_class_plan *class_plan) {
         static const char *const allowed[] = {"ip", "port"};
         char ip[INET_ADDRSTRLEN];
@@ -241,21 +64,21 @@ static int tg_parse_peer(const char *json, const jsmntok_t *tokens,
         int port_index;
         uint32_t port;
 
-        if (tokens[object_index].type != JSMN_OBJECT ||
-            !tg_object_has_only(tokens, token_count, object_index, json,
-                                allowed,
-                                sizeof(allowed) / sizeof(allowed[0]))) {
+        if (doc == NULL || doc->tokens == NULL || object_index < 0 ||
+            object_index >= doc->token_count ||
+            doc->tokens[object_index].type != JSMN_OBJECT ||
+            !tg_json_object_has_only(doc, object_index, allowed,
+                                     sizeof(allowed) / sizeof(allowed[0]))) {
                 errno = EINVAL;
                 return -1;
         }
-        ip_index =
-            tg_object_value(tokens, token_count, object_index, json, "ip");
-        port_index =
-            tg_object_value(tokens, token_count, object_index, json, "port");
+        ip_index = tg_json_object_value(doc, object_index, "ip");
+        port_index = tg_json_object_value(doc, object_index, "port");
         if (ip_index < 0 || port_index < 0 ||
-            tg_copy_string(ip, sizeof(ip), json, &tokens[ip_index]) != 0 ||
-            tg_parse_u32(json, &tokens[port_index], 1, UINT16_MAX, &port) !=
-                0) {
+            tg_json_copy_string(ip, sizeof(ip), doc, &doc->tokens[ip_index]) !=
+                0 ||
+            tg_json_parse_u32(doc, &doc->tokens[port_index], 1, UINT16_MAX,
+                              &port) != 0) {
                 errno = EINVAL;
                 return -1;
         }
@@ -270,79 +93,146 @@ static int tg_parse_peer(const char *json, const jsmntok_t *tokens,
         return 0;
 }
 
-/**
- * @brief Compiles one complete TCP/HTTP traffic-class declaration.
+/** @brief Returns whether a class object key is common or registered. */
+static bool tg_class_key_allowed(const struct tg_json_doc *doc,
+                                 const jsmntok_t *key_token) {
+        static const char *const common[] = {"name", "weight", "transport",
+                                             "peer"};
+
+        for (size_t index = 0; index < sizeof(common) / sizeof(common[0]);
+             index++) {
+                if (tg_json_token_equal(doc, key_token, common[index]))
+                        return true;
+        }
+        return tg_proto_scenario_find_token(doc, key_token) != NULL;
+}
+
+/** @brief Reject unknown keys in one class while allowing registered plugins.
  */
-static int tg_parse_class(const char *json, const jsmntok_t *tokens,
-                          int token_count, int object_index,
+static bool tg_class_has_only_allowed(const struct tg_json_doc *doc,
+                                      int object_index) {
+        if (doc == NULL || doc->tokens == NULL || object_index < 0 ||
+            object_index >= doc->token_count)
+                return false;
+        for (int index = object_index + 1; index < doc->token_count; index++) {
+                if (doc->tokens[index].parent != object_index)
+                        continue;
+                if (doc->tokens[index].type != JSMN_STRING ||
+                    !tg_class_key_allowed(doc, &doc->tokens[index]))
+                        return false;
+        }
+        return true;
+}
+
+/** @brief Converts a schema transport string to its runtime enum. */
+static int tg_parse_transport(const struct tg_json_doc *doc,
+                              const jsmntok_t *token,
+                              enum tg_transport *transport_out) {
+        if (transport_out == NULL) {
+                errno = EINVAL;
+                return -1;
+        }
+        if (tg_json_token_equal(doc, token, "tcp")) {
+                *transport_out = TG_TRANSPORT_TCP;
+                return 0;
+        }
+        if (tg_json_token_equal(doc, token, "udp")) {
+                *transport_out = TG_TRANSPORT_UDP;
+                return 0;
+        }
+        errno = EINVAL;
+        return -1;
+}
+
+/**
+ * @brief Compiles one complete traffic-class declaration.
+ */
+static int tg_parse_class(const struct tg_json_doc *doc, int object_index,
                           struct tg_class_plan *class_plan) {
-        static const char *const allowed[] = {"name", "weight", "transport",
-                                              "peer", "http"};
+        const struct tg_proto_scenario *protocol = NULL;
         int name_index;
         int weight_index;
         int transport_index;
         int peer_index;
-        int http_index;
+        int protocol_index = -1;
+        enum tg_transport transport;
 
-        if (tokens[object_index].type != JSMN_OBJECT ||
-            !tg_object_has_only(tokens, token_count, object_index, json,
-                                allowed,
-                                sizeof(allowed) / sizeof(allowed[0]))) {
+        if (doc == NULL || doc->tokens == NULL || class_plan == NULL ||
+            object_index < 0 || object_index >= doc->token_count ||
+            doc->tokens[object_index].type != JSMN_OBJECT ||
+            !tg_class_has_only_allowed(doc, object_index)) {
                 errno = EINVAL;
                 return -1;
         }
-        name_index =
-            tg_object_value(tokens, token_count, object_index, json, "name");
-        weight_index =
-            tg_object_value(tokens, token_count, object_index, json, "weight");
-        transport_index = tg_object_value(tokens, token_count, object_index,
-                                          json, "transport");
-        peer_index =
-            tg_object_value(tokens, token_count, object_index, json, "peer");
-        http_index =
-            tg_object_value(tokens, token_count, object_index, json, "http");
+
+        name_index = tg_json_object_value(doc, object_index, "name");
+        weight_index = tg_json_object_value(doc, object_index, "weight");
+        transport_index = tg_json_object_value(doc, object_index, "transport");
+        peer_index = tg_json_object_value(doc, object_index, "peer");
+        for (size_t index = 0; index < tg_proto_scenario_count(); index++) {
+                const struct tg_proto_scenario *candidate =
+                    tg_proto_scenario_at(index);
+                int candidate_index = tg_json_object_value(
+                    doc, object_index, candidate->schema_key);
+
+                if (candidate_index < 0)
+                        continue;
+                if (protocol != NULL) {
+                        errno = EINVAL;
+                        return -1;
+                }
+                protocol = candidate;
+                protocol_index = candidate_index;
+        }
         if (name_index < 0 || weight_index < 0 || transport_index < 0 ||
-            peer_index < 0 || http_index < 0 ||
-            !tg_token_equal(json, &tokens[transport_index], "tcp") ||
-            tg_copy_string(class_plan->name, sizeof(class_plan->name), json,
-                           &tokens[name_index]) != 0 ||
-            tg_parse_u32(json, &tokens[weight_index], 1, UINT32_MAX,
-                         &class_plan->weight) != 0 ||
-            tg_parse_peer(json, tokens, token_count, peer_index, class_plan) !=
-                0 ||
-            tg_parse_http(json, tokens, token_count, http_index, class_plan) !=
-                0) {
-                errno = EINVAL;
+            peer_index < 0 || protocol == NULL ||
+            tg_parse_transport(doc, &doc->tokens[transport_index],
+                               &transport) != 0 ||
+            transport != protocol->transport ||
+            tg_json_copy_string(class_plan->name, sizeof(class_plan->name), doc,
+                                &doc->tokens[name_index]) != 0 ||
+            tg_json_parse_u32(doc, &doc->tokens[weight_index], 1, UINT32_MAX,
+                              &class_plan->weight) != 0 ||
+            tg_parse_peer(doc, peer_index, class_plan) != 0) {
+                if (errno == 0)
+                        errno = EINVAL;
                 return -1;
         }
-        class_plan->transport = TG_TRANSPORT_TCP;
+        class_plan->transport = transport;
+        class_plan->proto = protocol->ops;
+        if (protocol->compile == NULL ||
+            protocol->compile(doc, protocol_index, class_plan) != 0) {
+                if (errno == 0)
+                        errno = EINVAL;
+                return -1;
+        }
         return 0;
 }
 
 /**
  * @brief Compiles the class array and validates its aggregate weight.
  */
-static int tg_parse_classes(const char *json, const jsmntok_t *tokens,
-                            int token_count, int array_index,
+static int tg_parse_classes(const struct tg_json_doc *doc, int array_index,
                             struct tg_plan *plan) {
         uint64_t total_weight = 0;
 
-        if (tokens[array_index].type != JSMN_ARRAY ||
-            tokens[array_index].size == 0 ||
-            tokens[array_index].size > (int)TG_PLAN_MAX_CLASSES) {
+        if (doc == NULL || doc->tokens == NULL || plan == NULL ||
+            array_index < 0 || array_index >= doc->token_count ||
+            doc->tokens[array_index].type != JSMN_ARRAY ||
+            doc->tokens[array_index].size == 0 ||
+            doc->tokens[array_index].size > (int)TG_PLAN_MAX_CLASSES) {
                 errno = EINVAL;
                 return -1;
         }
-        for (int i = array_index + 1; i < token_count; i++) {
+        for (int i = array_index + 1; i < doc->token_count; i++) {
                 struct tg_class_plan *class_plan;
 
-                if (tokens[i].parent != array_index)
+                if (doc->tokens[i].parent != array_index)
                         continue;
                 if (plan->class_count >= TG_PLAN_MAX_CLASSES)
                         return -1;
                 class_plan = &plan->classes[plan->class_count];
-                if (tg_parse_class(json, tokens, token_count, i, class_plan) !=
-                    0) {
+                if (tg_parse_class(doc, i, class_plan) != 0) {
                         tg_class_plan_fini(class_plan);
                         return -1;
                 }
@@ -407,6 +297,7 @@ int tg_plan_load_file(struct tg_plan *plan, const char *path) {
             "target_cps", "report_interval_sec", "classes"};
         jsmntok_t tokens[TG_SCENARIO_MAX_TOKENS];
         jsmn_parser parser;
+        struct tg_json_doc doc;
         char *json = NULL;
         size_t length;
         int token_count;
@@ -429,39 +320,38 @@ int tg_plan_load_file(struct tg_plan *plan, const char *path) {
         jsmn_init(&parser);
         token_count =
             jsmn_parse(&parser, json, length, tokens, TG_SCENARIO_MAX_TOKENS);
+        doc.text = json;
+        doc.tokens = tokens;
+        doc.token_count = token_count;
         if (token_count <= 0 || tokens[0].type != JSMN_OBJECT ||
-            !tg_object_has_only(tokens, token_count, 0, json, allowed,
-                                sizeof(allowed) / sizeof(allowed[0]))) {
+            !tg_json_object_has_only(&doc, 0, allowed,
+                                     sizeof(allowed) / sizeof(allowed[0]))) {
                 errno = EINVAL;
                 goto out;
         }
-        name_index = tg_object_value(tokens, token_count, 0, json, "name");
-        duration_index =
-            tg_object_value(tokens, token_count, 0, json, "duration_sec");
-        concurrency_index =
-            tg_object_value(tokens, token_count, 0, json, "max_concurrency");
-        cps_index = tg_object_value(tokens, token_count, 0, json, "target_cps");
-        report_index = tg_object_value(tokens, token_count, 0, json,
-                                       "report_interval_sec");
-        classes_index =
-            tg_object_value(tokens, token_count, 0, json, "classes");
+        name_index = tg_json_object_value(&doc, 0, "name");
+        duration_index = tg_json_object_value(&doc, 0, "duration_sec");
+        concurrency_index = tg_json_object_value(&doc, 0, "max_concurrency");
+        cps_index = tg_json_object_value(&doc, 0, "target_cps");
+        report_index = tg_json_object_value(&doc, 0, "report_interval_sec");
+        classes_index = tg_json_object_value(&doc, 0, "classes");
         if (name_index < 0 || duration_index < 0 || concurrency_index < 0 ||
             cps_index < 0 || classes_index < 0 ||
-            tg_copy_string(plan->name, sizeof(plan->name), json,
-                           &tokens[name_index]) != 0 ||
-            tg_parse_u32(json, &tokens[duration_index], 1,
-                         TG_PLAN_MAX_DURATION_SEC, &plan->duration_sec) != 0 ||
-            tg_parse_u32(json, &tokens[concurrency_index], 1,
-                         TG_PLAN_MAX_CONCURRENCY,
-                         &plan->max_concurrency) != 0 ||
-            tg_parse_u32(json, &tokens[cps_index], 1, TG_PLAN_MAX_CPS,
-                         &plan->target_cps) != 0 ||
+            tg_json_copy_string(plan->name, sizeof(plan->name), &doc,
+                                &tokens[name_index]) != 0 ||
+            tg_json_parse_u32(&doc, &tokens[duration_index], 1,
+                              TG_PLAN_MAX_DURATION_SEC,
+                              &plan->duration_sec) != 0 ||
+            tg_json_parse_u32(&doc, &tokens[concurrency_index], 1,
+                              TG_PLAN_MAX_CONCURRENCY,
+                              &plan->max_concurrency) != 0 ||
+            tg_json_parse_u32(&doc, &tokens[cps_index], 1, TG_PLAN_MAX_CPS,
+                              &plan->target_cps) != 0 ||
             (report_index >= 0 &&
-             tg_parse_u32(json, &tokens[report_index], 1,
-                          TG_PLAN_MAX_REPORT_INTERVAL_SEC,
-                          &plan->report_interval_sec) != 0) ||
-            tg_parse_classes(json, tokens, token_count, classes_index, plan) !=
-                0)
+             tg_json_parse_u32(&doc, &tokens[report_index], 1,
+                               TG_PLAN_MAX_REPORT_INTERVAL_SEC,
+                               &plan->report_interval_sec) != 0) ||
+            tg_parse_classes(&doc, classes_index, plan) != 0)
                 goto out;
         if (report_index < 0)
                 plan->report_interval_sec = 1;
@@ -501,6 +391,7 @@ int tg_plan_partition(struct tg_plan *destination, const struct tg_plan *source,
             shard_index >= shard_count || destination == source ||
             source->target_cps == 0 || source->max_concurrency == 0 ||
             source->class_count == 0 || source->total_weight == 0 ||
+            source->class_count > TG_PLAN_MAX_CLASSES ||
             shard_count > source->target_cps ||
             shard_count > source->max_concurrency) {
                 errno = EINVAL;
@@ -541,7 +432,9 @@ int tg_plan_partition(struct tg_plan *destination, const struct tg_plan *source,
                         &destination_class->proto_config) != 0) {
                         if (errno == 0)
                                 errno = EINVAL;
-                        tg_plan_fini(&partitioned);
+                        int saved_errno = errno;
+                        tg_plan_partition_abort(&partitioned, class_index + 1U);
+                        errno = saved_errno;
                         return -1;
                 }
         }

@@ -1,0 +1,21 @@
+{
+  "name": "invalid-dns-transport",
+  "duration_sec": 1,
+  "max_concurrency": 1,
+  "target_cps": 1,
+  "classes": [
+    {
+      "name": "dns_over_tcp",
+      "weight": 1,
+      "transport": "tcp",
+      "peer": {
+        "ip": "192.168.21.1",
+        "port": 53
+      },
+      "dns": {
+        "qname": "example.com",
+        "qtype": "A"
+      }
+    }
+  ]
+}

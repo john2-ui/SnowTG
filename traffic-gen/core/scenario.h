@@ -42,8 +42,8 @@ enum tg_transport {
 /**
  * @brief Precompiled behavior and destination for one traffic class.
  *
- * The HTTP configuration references the method and path arrays in this same
- * object.  Do not point it at the transient JSON parsing buffer.
+ * Protocol-specific configuration is owned through @c proto_config.  Do not
+ * point it at the transient JSON parsing buffer.
  */
 struct tg_class_plan {
         char name[TG_PLAN_CLASS_NAME_CAP];
