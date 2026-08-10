@@ -109,6 +109,14 @@ static void udp_local_rx_drain(struct nsock *sk) {
                 rte_pktmbuf_free(mbuf);
 }
 
+/** Release the owner-held datagram, including any short-read state. */
+static void udp_rx_current_release(struct nsock *sk) {
+        if (sk->u.udp.rx_current != NULL)
+                rte_pktmbuf_free(sk->u.udp.rx_current);
+        sk->u.udp.rx_current = NULL;
+        sk->u.udp.rx_current_off = 0;
+}
+
 /**
  * @brief Build and submit a local UDP datagram without retaining a TX mbuf.
  *
@@ -436,7 +444,10 @@ ssize_t udp_recvfrom(struct nsock *sk, void *buf, size_t len,
                 errno = EAGAIN;
                 return -1;
         }
-        sk->u.udp.rx_current = mbuf;
+        if (sk->u.udp.rx_current == NULL) {
+                sk->u.udp.rx_current = mbuf;
+                sk->u.udp.rx_current_off = 0;
+        }
 
         struct rte_ether_hdr *eth =
             rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
@@ -450,21 +461,57 @@ ssize_t udp_recvfrom(struct nsock *sk, void *buf, size_t len,
                 sin->sin_addr.s_addr = ip->src_addr;
         }
 
-        size_t payload_len =
-            rte_be_to_cpu_16(udp->dgram_len) - sizeof(struct rte_udp_hdr);
-        void *data = (void *)(udp + 1);
+        const uint8_t *pkt = rte_pktmbuf_mtod(mbuf, const uint8_t *);
+        size_t pkt_len = rte_pktmbuf_data_len(mbuf);
+        size_t udp_offset = (size_t)((const uint8_t *)udp - pkt);
+        size_t udp_total = rte_be_to_cpu_16(udp->dgram_len);
+        size_t payload_len;
 
-        if (len < payload_len) {
-                rte_memcpy(buf, data, len);
-                memmove(data, (uint8_t *)data + len, payload_len - len);
-                udp->dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) +
-                                                  payload_len - len);
-                return (ssize_t)len;
+        /*
+         * Trust only datagrams whose UDP length fits the captured mbuf.  A
+         * truncated or overstated dgram_len must not be readable past pkt_len,
+         * especially across short-read retries that keep the original image.
+         */
+        if (udp_total < sizeof(struct rte_udp_hdr) ||
+            udp_offset > pkt_len ||
+            udp_total > pkt_len - udp_offset) {
+                udp_rx_current_release(sk);
+                errno = EPROTO;
+                return -1;
         }
-        rte_memcpy(buf, data, payload_len);
-        rte_pktmbuf_free(mbuf);
-        sk->u.udp.rx_current = NULL;
-        return (ssize_t)payload_len;
+        payload_len = udp_total - sizeof(struct rte_udp_hdr);
+
+        /*
+         * A short read must not rewrite the wire image in the mbuf.  In
+         * particular, changing dgram_len or moving the payload makes the
+         * packet no longer self-consistent while rx_current owns it.  Keep
+         * the original datagram and carry only the consumed-payload offset in
+         * socket state.
+         */
+        if (sk->u.udp.rx_current_off > payload_len) {
+                udp_rx_current_release(sk);
+                errno = EPROTO;
+                return -1;
+        }
+
+        const uint8_t *data = (const uint8_t *)(udp + 1);
+        size_t remaining = payload_len - sk->u.udp.rx_current_off;
+        size_t copied = len < remaining ? len : remaining;
+
+        if (copied > 0) {
+                if (buf == NULL) {
+                        errno = EFAULT;
+                        return -1;
+                }
+                rte_memcpy(buf, data + sk->u.udp.rx_current_off, copied);
+        }
+        if (copied < remaining) {
+                sk->u.udp.rx_current_off += copied;
+                return (ssize_t)copied;
+        }
+
+        udp_rx_current_release(sk);
+        return (ssize_t)copied;
 }
 
 static void udp_drain_ring(struct rte_ring *ring) {
@@ -482,10 +529,7 @@ int udp_close(struct nsock *sk) {
 #if ENABLE_UDP_DEBUG
         LOG_INFO("udp_close socket=%u", sk->id);
 #endif
-        if (sk->u.udp.rx_current != NULL) {
-                rte_pktmbuf_free(sk->u.udp.rx_current);
-                sk->u.udp.rx_current = NULL;
-        }
+        udp_rx_current_release(sk);
         if (sk->io_mode == NSOCK_IO_OWNER_LOCAL) {
                 udp_local_rx_drain(sk);
         } else {

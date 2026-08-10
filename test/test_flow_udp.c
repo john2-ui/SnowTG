@@ -12,11 +12,13 @@
 #include <netinet/in.h>
 #include <rte_byteorder.h>
 #include <rte_eal.h>
+#include <rte_ip.h>
 #include <rte_lcore.h>
 #include <rte_mbuf.h>
 #include <rte_mempool.h>
 #include <rte_ring.h>
 #include <rte_timer.h>
+#include <rte_udp.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -125,27 +127,60 @@ static void test_local_udp_short_read(uint32_t local_ip, uint32_t peer_ip,
         static const uint8_t first[] = {0x10, 0x11, 0x12};
         static const uint8_t second[] = {0x20};
         struct nsock_handle handle = create_local_udp(local_ip);
+        struct nsock *sk = socket_owner_resolve_local(handle);
         struct sockaddr_in source = {0};
         socklen_t source_len = sizeof(source);
         uint8_t one = 0;
         uint8_t rest[sizeof(first)] = {0};
 
+        assert(sk != NULL);
         enqueue_response(handle, peer_ip, peer_port, first, sizeof(first));
         enqueue_response(handle, peer_ip, peer_port, second, sizeof(second));
 
         assert(owner_io_recvfrom(handle, &one, sizeof(one),
                                  (struct sockaddr *)&source, &source_len) == 1);
         assert(one == first[0]);
+        assert(sk->u.udp.rx_current != NULL);
+        struct rte_ether_hdr *eth =
+            rte_pktmbuf_mtod(sk->u.udp.rx_current, struct rte_ether_hdr *);
+        struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *)(eth + 1);
+        struct rte_udp_hdr *udp = (struct rte_udp_hdr *)(ip + 1);
+        assert(rte_be_to_cpu_16(udp->dgram_len) ==
+               sizeof(struct rte_udp_hdr) + sizeof(first));
+        assert(memcmp((const uint8_t *)(udp + 1), first, sizeof(first)) == 0);
+        assert(sk->u.udp.rx_current_off == sizeof(one));
+
         source_len = sizeof(source);
         assert(owner_io_recvfrom(handle, rest, sizeof(rest),
                                  (struct sockaddr *)&source, &source_len) == 2);
         assert(rest[0] == first[1]);
         assert(rest[1] == first[2]);
+        assert(sk->u.udp.rx_current == NULL);
+        assert(sk->u.udp.rx_current_off == 0);
         source_len = sizeof(source);
         assert(owner_io_recvfrom(handle, rest, sizeof(rest),
                                  (struct sockaddr *)&source, &source_len) == 1);
         assert(rest[0] == second[0]);
         assert(owner_io_close(handle) == 0);
+}
+
+static void test_local_udp_short_read_close(uint32_t local_ip, uint32_t peer_ip,
+                                            uint16_t peer_port) {
+        static const uint8_t payload[] = {0x30, 0x31, 0x32};
+        struct nsock_handle handle = create_local_udp(local_ip);
+        struct rte_mempool *mp = g_net.mp;
+        unsigned int available_before = rte_mempool_avail_count(mp);
+        unsigned int available_after_enqueue;
+        uint8_t first = 0;
+
+        enqueue_response(handle, peer_ip, peer_port, payload, sizeof(payload));
+        available_after_enqueue = rte_mempool_avail_count(mp);
+        assert(available_after_enqueue < available_before);
+        assert(owner_io_recvfrom(handle, &first, sizeof(first), NULL, NULL) ==
+               1);
+        assert(first == payload[0]);
+        assert(owner_io_close(handle) == 0);
+        assert(rte_mempool_avail_count(mp) == available_before);
 }
 
 static void test_local_udp_rx_drop(uint32_t local_ip, uint32_t peer_ip,
@@ -342,6 +377,8 @@ int main(int argc, char **argv) {
         drain_output_ring();
         drain_ready_events();
         test_local_udp_short_read(local_ip, peer_ip, peer_port);
+        drain_ready_events();
+        test_local_udp_short_read_close(local_ip, peer_ip, peer_port);
         drain_ready_events();
         test_local_udp_rx_drop(local_ip, peer_ip, peer_port);
         drain_ready_events();

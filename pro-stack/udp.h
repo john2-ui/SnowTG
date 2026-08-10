@@ -29,6 +29,7 @@ struct udp_stream {
         struct udp_rx_node *rx_queue_tail;
         uint32_t rx_queue_count;
         struct rte_mbuf *rx_current;
+        size_t rx_current_off; /**< Payload bytes consumed by short reads. */
 };
 
 /**

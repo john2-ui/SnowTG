@@ -1,0 +1,39 @@
+---
+description: 中文 Conventional Commit 提交说明规范
+alwaysApply: true
+---
+
+# Commit Message 规范
+
+编写或生成 git commit message 时，必须遵循本仓库历史风格（参考 `ae1707c`）。
+
+## 格式
+
+```text
+<type>(<scope>): <中文摘要>
+
+- <变更要点 1>
+- <变更要点 2>
+
+```
+
+## 约束
+
+- 第一行使用 Conventional Commits：`type(scope): 摘要`
+- `type` 常用：`feat` / `fix` / `test` / `docs` / `refactor` / `chore`
+- `scope` 对应该次改动边界，例如 `traffic-gen`、`stack`、`socket`
+- 摘要与条目使用中文；摘要简洁说明“做了什么/为何”，不要只堆文件名
+- 正文用 `-` 列表，每条一行，写清关键行为、边界或不变量
+- 由 Cursor 协助产生的提交保留 `Co-authored-by: Cursor <cursoragent@cursor.com>`
+- 一次提交只覆盖一个逻辑主题；UDP 短读修复与 DNS 场景接入等应拆分
+
+## 示例
+
+```text
+docs(traffic-gen): 补充 owner reactor 架构与实施路线
+
+- 记录流量发生器的分期目标、事件语义、容量约束和验证口径。
+- 同步更新协议栈目录边界、构建入口及 owner-local I/O 使用说明。
+
+Co-authored-by: Cursor <cursoragent@cursor.com>
+```
