@@ -25,6 +25,7 @@ SCENARIO_SCHEDULER_TEST := $(BUILD_DIR)/test_scenario_scheduler
 ARP_TEST := $(BUILD_DIR)/test_arp
 RX_DISPATCH_TEST := $(BUILD_DIR)/test_rx_dispatch
 PORT_TOPOLOGY_TEST := $(BUILD_DIR)/test_port_topology
+FLOW_UDP_TEST := $(BUILD_DIR)/test_flow_udp
 LLHTTP_DIR := ../third_party/llhttp
 HTTP_CLIENT_CFLAGS := $(TEST_CFLAGS) -I../traffic-gen/core \
 	-I../traffic-gen/proto -I../traffic-gen/proto/http \
@@ -47,14 +48,14 @@ SCENARIO_SCHEDULER_OBJS := $(BUILD_DIR)/test_scenario_scheduler.o \
 	$(BUILD_DIR)/llhttp_http.o
 
 .PHONY: all test test-arp test-owner-io test-http-client test-scenario-scheduler \
-	test-rx-dispatch test-port-topology clean
+	test-rx-dispatch test-port-topology test-flow-udp clean
 
 all: test
 
 # Compilation and execution both must succeed for the test target to pass.
 test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(OWNER_IO_TEST) \
 	$(HTTP_CLIENT_TEST) $(SCENARIO_SCHEDULER_TEST) $(ARP_TEST) \
-	$(RX_DISPATCH_TEST) $(PORT_TOPOLOGY_TEST)
+	$(RX_DISPATCH_TEST) $(PORT_TOPOLOGY_TEST) $(FLOW_UDP_TEST)
 	$(RBTREE_TEST)
 	$(OFO_TEST)
 	$(PAWS_TEST)
@@ -64,6 +65,7 @@ test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(OWNER_IO_TEST) \
 	$(ARP_TEST) --no-huge --no-pci --file-prefix arp-test
 	$(RX_DISPATCH_TEST)
 	$(PORT_TOPOLOGY_TEST)
+	$(FLOW_UDP_TEST) --no-huge --no-pci --file-prefix flow-udp-test
 
 test-arp: $(ARP_TEST)
 
@@ -76,6 +78,8 @@ test-scenario-scheduler: $(SCENARIO_SCHEDULER_TEST)
 test-rx-dispatch: $(RX_DISPATCH_TEST)
 
 test-port-topology: $(PORT_TOPOLOGY_TEST)
+
+test-flow-udp: $(FLOW_UDP_TEST)
 
 $(RBTREE_TEST): test_rbtree.c ../pro-stack/rbtree.c ../pro-stack/rbtree.h | $(BUILD_DIR)
 	$(CC) $(TEST_CFLAGS) test_rbtree.c ../pro-stack/rbtree.c -o $@
@@ -111,6 +115,16 @@ $(PORT_TOPOLOGY_TEST): test_port_topology.c ../pro-stack/port.c \
 	$(CC) $(RX_DISPATCH_CFLAGS) $(DPDK_CFLAGS) -DPORT_TESTING -I../pro-stack \
 		test_port_topology.c ../pro-stack/port.c -o $@ $(DPDK_LIBS)
 
+$(FLOW_UDP_TEST): test_flow_udp.c ../traffic-gen/core/flow.c \
+		../traffic-gen/core/flow_pool.c ../traffic-gen/core/txn.c \
+		../pro-stack/arp.h ../pro-stack/config.h ../pro-stack/ring.h \
+		../pro-stack/udp.h ../pro-stack/build/libpro-stack.a | $(BUILD_DIR)
+	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) \
+		-I../pro-stack -I../traffic-gen/core -I../traffic-gen/proto \
+		test_flow_udp.c ../traffic-gen/core/flow.c \
+		../traffic-gen/core/flow_pool.c ../traffic-gen/core/txn.c \
+		../pro-stack/build/libpro-stack.a -o $@ $(DPDK_LIBS)
+
 $(HTTP_CLIENT_TEST): $(HTTP_CLIENT_OBJS)
 	$(CC) $(HTTP_CLIENT_OBJS) -o $@
 
@@ -128,11 +142,14 @@ $(BUILD_DIR)/tg_txn.o: ../traffic-gen/core/txn.c \
 
 $(BUILD_DIR)/test_scenario_scheduler.o: test_scenario_scheduler.c \
 		../traffic-gen/core/scenario.h ../traffic-gen/core/scheduler.h \
-		../traffic-gen/core/stats.h | $(BUILD_DIR)
+		../traffic-gen/core/stats.h \
+		../traffic-gen/proto/http/http_client.h | $(BUILD_DIR)
 	$(CC) $(HTTP_CLIENT_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/tg_scenario.o: ../traffic-gen/core/scenario.c \
-		../traffic-gen/core/scenario.h ../third_party/jsmn/jsmn.h | $(BUILD_DIR)
+		../traffic-gen/core/scenario.h \
+		../traffic-gen/proto/http/http_client.h \
+		../traffic-gen/proto/proto.h ../third_party/jsmn/jsmn.h | $(BUILD_DIR)
 	$(CC) $(HTTP_CLIENT_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/tg_scheduler.o: ../traffic-gen/core/scheduler.c \

@@ -10,9 +10,9 @@
  *
  * Lifecycle contract for @c ingress:
  *   - The handler always consumes @p mbuf. On a successful delivery it either
- *     hands the mbuf to the socket receive ring (ownership transfers to the
- *     ring) or frees it; on a drop it frees the mbuf itself. Callers must not
- *     touch @p mbuf after the call returns.
+ *     hands the mbuf to the socket's configured receive queue (ring-backed or
+ *     owner-local) or frees it; on a drop it frees the mbuf itself. Callers
+ *     must not touch @p mbuf after the call returns.
  */
 #ifndef NETARCH_SOCK_OPS_H
 #define NETARCH_SOCK_OPS_H
@@ -58,7 +58,7 @@ struct sock_ops {
         int (*ingress)(struct rte_mbuf *mbuf);
 
         /**
-         * @brief Outbound path: drain the socket send ring toward the NIC out
+         * @brief Outbound path: drain transport TX work toward the NIC out
          *        ring, emitting ARP requests when a peer MAC is unresolved.
          *
          * @return One of @ref sock_tx_flush_result.

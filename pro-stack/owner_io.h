@@ -48,8 +48,10 @@ struct owner_io_memory_snapshot {
  */
 int owner_io_socket_create(uint8_t protocol, struct nsock_handle *out);
 /**
- * Create an owner-local socket whose TCP queues are embedded lists rather than
- * per-socket DPDK rings. This is intended for same-lcore reactors only.
+ * Create an owner-local socket whose transport queues are kept in owner state
+ * rather than per-socket DPDK rings. TCP uses embedded payload/control lists;
+ * traffic-generator UDP uses a lazy bounded RX queue and direct TX. This is
+ * intended for same-lcore reactors only.
  */
 int owner_io_socket_create_local(uint8_t protocol, struct nsock_handle *out);
 /** Register a callback invoked only after this socket is finally destroyed. */
@@ -58,6 +60,11 @@ int owner_io_set_release_observer(struct nsock_handle handle,
 /** Bind an owner-local socket to a valid IPv4 endpoint without blocking. */
 int owner_io_bind(struct nsock_handle handle, const struct sockaddr *addr,
                   socklen_t addrlen);
+/**
+ * Allocate and bind an owner-local UDP socket to an ephemeral IPv4 port.
+ * @p local_ip is in network byte order and must not be INADDR_ANY.
+ */
+int owner_io_bind_ephemeral(struct nsock_handle handle, uint32_t local_ip);
 /**
  * Start a non-blocking connection to a valid IPv4 endpoint; TCP returns
  * -1/EINPROGRESS while handshaking.

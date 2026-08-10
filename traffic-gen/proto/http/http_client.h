@@ -14,16 +14,21 @@
 
 #include <stdbool.h>
 
+/** @brief Capacity, including NUL, of an HTTP method token. */
+#define TG_HTTP_METHOD_CAP 16U
+/** @brief Capacity, including NUL, of an HTTP request path. */
+#define TG_HTTP_PATH_CAP 768U
+
 /**
- * @brief Immutable request parameters supplied by an HTTP traffic class.
+ * @brief Owning immutable request parameters for an HTTP traffic class.
  *
- * @p method and @p path must remain valid for the complete transaction.  A
- * compiled scenario stores them in its class plan, rather than in the JSON
- * input buffer, to satisfy that lifetime requirement.
+ * The protocol configuration owns method and path storage so a compiled plan
+ * can clone it without retaining pointers into another plan or the JSON input
+ * buffer.
  */
 struct tg_http_config {
-        const char *method;
-        const char *path;
+        char method[TG_HTTP_METHOD_CAP];
+        char path[TG_HTTP_PATH_CAP];
         bool connection_close;
 };
 

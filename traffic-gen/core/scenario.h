@@ -10,7 +10,7 @@
  * @ref tg_plan, which is thereafter read-only for the lifetime of a shard.
  */
 
-#include "../proto/http/http_client.h"
+#include "../proto/proto.h"
 
 #include <netinet/in.h>
 #include <stddef.h>
@@ -20,10 +20,6 @@
 #define TG_PLAN_MAX_CLASSES 16U
 /** @brief Capacity, including NUL terminator, of plan and class names. */
 #define TG_PLAN_CLASS_NAME_CAP 64U
-/** @brief Capacity, including NUL terminator, of an HTTP method token. */
-#define TG_PLAN_HTTP_METHOD_CAP 16U
-/** @brief Capacity, including NUL terminator, of an HTTP request path. */
-#define TG_PLAN_HTTP_PATH_CAP 768U
 /** Largest immutable serialized request retained once per traffic class. */
 #define TG_PLAN_REQUEST_TEMPLATE_CAP 1024U
 /** @brief Largest flow-pool and scheduler concurrency supported by a plan. */
@@ -39,6 +35,8 @@
 enum tg_transport {
         /** @brief Nonblocking IPv4 TCP flow handled by core/flow.c. */
         TG_TRANSPORT_TCP = 0,
+        /** @brief Owner-local IPv4 UDP datagram flow handled by core/flow.c. */
+        TG_TRANSPORT_UDP,
 };
 
 /**
@@ -53,10 +51,14 @@ struct tg_class_plan {
         enum tg_transport transport;
         struct sockaddr_in peer;
 
-        char http_method[TG_PLAN_HTTP_METHOD_CAP];
-        char http_path[TG_PLAN_HTTP_PATH_CAP];
-        struct tg_http_config http_config;
         const struct tg_proto_ops *proto;
+        /**
+         * Stable plugin configuration selected by the class parser.
+         *
+         * The pointed-to object is immutable on the hot path and owned by
+         * the protocol plugin's config_free callback.
+         */
+        void *proto_config;
         uint8_t request_template[TG_PLAN_REQUEST_TEMPLATE_CAP];
         size_t request_template_len;
 };
@@ -74,6 +76,8 @@ struct tg_plan {
         uint32_t target_cps;
         uint32_t report_interval_sec;
         uint32_t total_weight;
+        /** Initial weighted-round-robin phase for this scheduling shard. */
+        uint32_t selection_phase;
         uint32_t class_count;
         struct tg_class_plan classes[TG_PLAN_MAX_CLASSES];
 };
@@ -86,18 +90,27 @@ struct tg_plan {
  */
 int tg_plan_load_file(struct tg_plan *plan, const char *path);
 /**
+ * Return the number of active scheduling shards for a worker count.
+ *
+ * A worker with no CPS or concurrency share is not initialized as a scheduler.
+ * The returned value is zero when the inputs cannot produce an active shard.
+ */
+unsigned int tg_plan_active_shards(const struct tg_plan *plan,
+                                   unsigned int worker_count);
+/**
  * Copy an immutable source plan into one scheduling shard while preserving the
  * source plan's global CPS and concurrency totals across all shards.
+ *
+ * The destination must be zero-initialized or already finalized, and must not
+ * alias source.  Protocol-owned configuration is cloned through its generic
+ * protocol contract.
  */
 int tg_plan_partition(struct tg_plan *destination, const struct tg_plan *source,
                       unsigned int shard_index, unsigned int shard_count);
 
 /**
- * @brief Clears all compiled plan state.
+ * @brief Releases protocol-owned configuration and clears plan state.
  * @param plan Plan to clear; @c NULL is accepted.
- *
- * This is currently a reset-only operation because plans own no dynamic
- * allocations after compilation.
  */
 void tg_plan_fini(struct tg_plan *plan);
 

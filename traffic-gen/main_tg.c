@@ -301,8 +301,8 @@ static void tg_dispatch_rx_burst(struct tg_worker *workers,
                         tg_replicate_arp(workers, worker_count, target, mp,
                                          rx[packet]);
                 if (result.owner_hit)
-                        atomic_fetch_add(
-                            &workers[target].shard.rx_owner_hits, 1);
+                        atomic_fetch_add(&workers[target].shard.rx_owner_hits,
+                                         1);
                 if (result.software_hash)
                         atomic_fetch_add(
                             &workers[target].shard.rx_software_hashes, 1);
@@ -330,23 +330,42 @@ static void tg_dispatch_rx_burst(struct tg_worker *workers,
 }
 
 /**
- * @brief Scheduler admission callback that starts one TCP flow for a class.
+ * @brief Scheduler admission callback that starts one transport flow.
  *
  * A synchronous setup failure is counted but does not consume an active-flow
  * slot.  The scheduler itself still consumes the CPS token for the attempt.
  */
 static int tg_start_class(void *ctx, const struct tg_class_plan *class_plan) {
         struct tg_shard *shard = ctx;
+        const void *class_config;
+        int start_result;
 
         if (shard == NULL || class_plan == NULL)
                 return -1;
-        if (tg_flow_start_tcp(
-                &shard->flow_map, &shard->flow_pool,
-                (const struct sockaddr *)&class_plan->peer,
-                sizeof(class_plan->peer), class_plan->proto,
-                &class_plan->http_config, class_plan->request_template,
-                class_plan->request_template_len, tg_on_flow_finished, shard,
-                tg_on_socket_created, tg_on_socket_released, shard) != 0) {
+        class_config = class_plan->proto_config;
+
+        if (class_plan->transport == TG_TRANSPORT_TCP) {
+                start_result = tg_flow_start_tcp(
+                    &shard->flow_map, &shard->flow_pool,
+                    (const struct sockaddr *)&class_plan->peer,
+                    sizeof(class_plan->peer), class_plan->proto, class_config,
+                    class_plan->request_template,
+                    class_plan->request_template_len, tg_on_flow_finished,
+                    shard, tg_on_socket_created, tg_on_socket_released, shard);
+        } else if (class_plan->transport == TG_TRANSPORT_UDP) {
+                start_result = tg_flow_start_udp(
+                    &shard->flow_map, &shard->flow_pool,
+                    (const struct sockaddr *)&class_plan->peer,
+                    sizeof(class_plan->peer), class_plan->proto, class_config,
+                    class_plan->request_template,
+                    class_plan->request_template_len, tg_on_flow_finished,
+                    shard, tg_on_socket_created, tg_on_socket_released, shard);
+        } else {
+                errno = EINVAL;
+                start_result = -1;
+        }
+
+        if (start_result != 0) {
                 if (errno == ENOBUFS)
                         tg_stats_on_resource_deferred(&shard->stats);
                 else
@@ -368,9 +387,12 @@ static void tg_shard_tick(void *ctx, unsigned int budget) {
         struct tg_shard *shard = ctx;
         uint64_t now_cycles;
 
-        if (shard == NULL || budget == 0 || !shard->scheduling_enabled)
+        if (shard == NULL || budget == 0)
                 return;
         now_cycles = rte_get_timer_cycles();
+        tg_flow_expire(&shard->flow_map, &shard->flow_pool, now_cycles);
+        if (!shard->scheduling_enabled)
+                return;
         if (owner_io_memory_snapshot(&shard->memory) == 0) {
                 bool available = shard->scheduler.resource_paused
                                      ? shard->memory.above_high_water
@@ -431,18 +453,15 @@ static void tg_shard_tick(void *ctx, unsigned int budget) {
                          " dirty_enq=%" PRIu64 " dirty_dedup=%" PRIu64
                          " dirty_requeue=%" PRIu64 " arp_wait=%" PRIu64
                          " arp_wake=%" PRIu64 " dirty_depth=%u dirty_hwm=%u"
-                         " budget=%" PRIu64
-                         " turn_avg_us=%" PRIu64 " rx_us=%" PRIu64
-                         " maint_us=%" PRIu64 " reactor_us=%" PRIu64
-                         " flush_us=%" PRIu64,
+                         " budget=%" PRIu64 " turn_avg_us=%" PRIu64
+                         " rx_us=%" PRIu64 " maint_us=%" PRIu64
+                         " reactor_us=%" PRIu64 " flush_us=%" PRIu64,
                          runtime.worker_turns, runtime.rx_packets,
                          runtime.socket_scans, runtime.tx_flush_calls,
-                         runtime.dirty_tx_enqueues,
-                         runtime.dirty_tx_dedup_hits,
-                         runtime.dirty_tx_requeues,
-                         runtime.dirty_tx_arp_waits,
-                         runtime.dirty_tx_arp_wakeups,
-                         runtime.dirty_tx_depth, runtime.dirty_tx_high_water,
+                         runtime.dirty_tx_enqueues, runtime.dirty_tx_dedup_hits,
+                         runtime.dirty_tx_requeues, runtime.dirty_tx_arp_waits,
+                         runtime.dirty_tx_arp_wakeups, runtime.dirty_tx_depth,
+                         runtime.dirty_tx_high_water,
                          runtime.dirty_tx_budget_exhausted,
                          tg_cycles_to_us(tg_average_cycles(
                              runtime.turn_cycles, runtime.worker_turns)),
@@ -450,22 +469,21 @@ static void tg_shard_tick(void *ctx, unsigned int budget) {
                          tg_cycles_to_us(runtime.maintenance_cycles),
                          tg_cycles_to_us(runtime.reactor_cycles),
                          tg_cycles_to_us(runtime.tx_flush_cycles));
-                LOG_INFO("traffic-gen reactor turns=%" PRIu64 " events=%" PRIu64
-                         " event_burst_hwm=%u starts=%" PRIu64
-                         " tokens=%" PRIu64 " socket_releases=%" PRIu64
-                         " ring_hwm_in=%u ring_hwm_out=%u"
-                         " rx_ring_drops=%" PRIu64 " tx_nic_drops=%" PRIu64
-                         " rx_owner_hits=%" PRIu64
-                         " rx_software_hashes=%" PRIu64
-                         " rx_parse_fallbacks=%" PRIu64,
-                         reactor_turns, reactor_events,
-                         reactor_burst_high_water, shard->scheduler_starts,
-                         shard->scheduler.token_numerator /
-                             shard->scheduler.cycles_per_second,
-                         shard->socket_releases, runtime.in_ring_high_water,
-                         runtime.out_ring_high_water, rx_ring_drops,
-                         tx_nic_drops, rx_owner_hits, rx_software_hashes,
-                         rx_parse_fallbacks);
+                LOG_INFO(
+                    "traffic-gen reactor turns=%" PRIu64 " events=%" PRIu64
+                    " event_burst_hwm=%u starts=%" PRIu64 " tokens=%" PRIu64
+                    " socket_releases=%" PRIu64
+                    " ring_hwm_in=%u ring_hwm_out=%u"
+                    " rx_ring_drops=%" PRIu64 " tx_nic_drops=%" PRIu64
+                    " rx_owner_hits=%" PRIu64 " rx_software_hashes=%" PRIu64
+                    " rx_parse_fallbacks=%" PRIu64,
+                    reactor_turns, reactor_events, reactor_burst_high_water,
+                    shard->scheduler_starts,
+                    shard->scheduler.token_numerator /
+                        shard->scheduler.cycles_per_second,
+                    shard->socket_releases, runtime.in_ring_high_water,
+                    runtime.out_ring_high_water, rx_ring_drops, tx_nic_drops,
+                    rx_owner_hits, rx_software_hashes, rx_parse_fallbacks);
                 LOG_INFO("traffic-gen latency connect_avg_us=%" PRIu64
                          " connect_max_us=%" PRIu64 " first_rx_avg_us=%" PRIu64
                          " first_rx_max_us=%" PRIu64 " complete_avg_us=%" PRIu64
@@ -568,11 +586,73 @@ static void tg_report_aggregate(const struct tg_worker *workers,
             worker_count, started, done, success, failed, bytes_tx, bytes_rx);
 }
 
+/*
+ * ============================================================================
+ * traffic-gen main() execution flow
+ *
+ *   +-------+
+ *   | Start |
+ *   +---+---+
+ *       |
+ *       v
+ *   +---+---------------------------+
+ *   | Initialize DPDK EAL          |
+ *   +---+---------------------------+
+ *       |
+ *       v
+ *   +---+---------------------------+
+ *   | Parse arguments and load the  |
+ *   | scenario plan                 |
+ *   +---+---------------------------+
+ *       |
+ *       v
+ *   +---+---------------------------+
+ *   | Initialize global networking |
+ *   | resources and runtime state  |
+ *   +---+---------------------------+
+ *       |
+ *       v
+ *   +---+---------------------------+
+ *   | Initialize every worker:     |
+ *   | shard, reactor, and runtime  |
+ *   +---+---------------------------+
+ *       |
+ *       v
+ *   +---+---------------------------+
+ *   | Configure RX dispatch and    |
+ *   | launch worker lcores         |
+ *   +---+---------------------------+
+ *       |
+ *       v
+ *   +---+---------------------------+
+ *   | Main loop: receive/dispatch  |
+ *   | RX packets and transmit TX  |
+ *   +---+---------------------------+
+ *       |
+ *       v
+ *   +---+---------------------------+
+ *   | Stop requested?              |
+ *   +--+------------------------+--+
+ *      | No                     | Yes
+ *      |                        v
+ *      +------------------+  +--+---------------------------+
+ *                         |  | Wait, drain, report, and    |
+ *                         +->| release resources           |
+ *                            +--+---------------------------+
+ *                                |
+ *                                v
+ *                            +---+---+
+ *                            | Exit  |
+ *                            +-------+
+ *
+ * Initialization failures follow DPDK's EXIT_FAILURE path.
+ * ============================================================================
+ */
 /**
  * @brief Initializes DPDK, scenario state, and the owner-worker runtime.
  * @param argc EAL arguments followed by an optional scenario JSON path.
  * @param argv EAL and application argument vector.
- * @return Never returns during normal operation; failures exit through DPDK.
+ * @return EXIT_SUCCESS after clean shutdown; failures exit through DPDK.
  */
 int main(int argc, char *argv[]) {
         const char *scenario_path;
@@ -586,27 +666,43 @@ int main(int argc, char *argv[]) {
         struct rte_mempool *mp;
         struct port_topology port_topology;
 
+        /* Stage 1: Initialize DPDK and separate EAL arguments from app args. */
         eal_args = rte_eal_init(argc, argv);
         if (eal_args < 0)
                 rte_exit(EXIT_FAILURE, "rte_eal_init() failed\n");
         argc -= eal_args;
         argv += eal_args;
+
+        /* Stage 2: Parse application options and locate the scenario file. */
         if (tg_parse_app_args(argc, argv, &worker_count, &scenario_path) != 0)
                 rte_exit(EXIT_FAILURE,
                          "usage: traffic-gen [--workers N] [scenario.json]\n");
+
+        /* Stage 3: Load the scenario and validate its shard constraints. */
         if (worker_count > RTE_MAX_LCORE)
                 rte_exit(EXIT_FAILURE, "--workers %u exceeds lcore capacity\n",
                          worker_count);
         if (tg_plan_load_file(&plan, scenario_path) != 0)
                 rte_exit(EXIT_FAILURE, "scenario load failed (%s): errno=%d\n",
                          scenario_path, errno);
-        if (plan.max_concurrency > (uint64_t)NSOCK_ID_MAX * worker_count)
+        active_shards = tg_plan_active_shards(&plan, worker_count);
+        if (active_shards == 0)
                 rte_exit(EXIT_FAILURE,
-                         "scenario max_concurrency exceeds shard capacity\n");
-        LOG_INFO("traffic-gen scenario=%s classes=%u cps=%u concurrency=%u",
-                 plan.name, plan.class_count, plan.target_cps,
-                 plan.max_concurrency);
+                         "scenario has no active scheduling shard\n");
+        if (((uint64_t)plan.max_concurrency + active_shards - 1U) /
+                active_shards >
+            NSOCK_ID_MAX)
+                rte_exit(EXIT_FAILURE,
+                         "scenario concurrency exceeds per-shard socket "
+                         "capacity for %u active shards\n",
+                         active_shards);
+        LOG_INFO(
+            "traffic-gen scenario=%s classes=%u workers=%u active_shards=%u "
+            "cps=%u concurrency=%u",
+            plan.name, plan.class_count, worker_count, active_shards,
+            plan.target_cps, plan.max_concurrency);
 
+        /* Stage 4: Initialize global packet, network, and timer resources. */
         if (socket_registry_init() != 0)
                 rte_exit(EXIT_FAILURE, "socket registry init failed\n");
 
@@ -621,22 +717,24 @@ int main(int argc, char *argv[]) {
         net_context_init(0, tg_local_ip);
         rte_timer_subsystem_init();
 
+        /* Stage 5: Allocate worker contexts and initialize shared runtime
+         * state. */
         main_lcore = rte_lcore_id();
         workers = calloc(worker_count, sizeof(*workers));
         if (workers == NULL)
                 rte_exit(EXIT_FAILURE, "worker context allocation failed\n");
 
-        active_shards = worker_count;
-        if (active_shards > plan.target_cps)
-                active_shards = plan.target_cps;
-        if (active_shards > plan.max_concurrency)
-                active_shards = plan.max_concurrency;
         atomic_init(&runtime.remaining_shards, active_shards);
 
+        /*
+         * Stage 6: Initialize each worker's lcore assignment, ownership
+         * resources, flow state, scheduler, reactor, and stack runtime.
+         */
         unsigned int previous_lcore = main_lcore;
         for (unsigned int index = 0; index < worker_count; index++) {
                 struct tg_worker *worker = &workers[index];
 
+                /* Assign a worker lcore and map its packet queues. */
                 worker->lcore_id = rte_get_next_lcore(previous_lcore, 1, 0);
                 if (worker->lcore_id == RTE_MAX_LCORE)
                         rte_exit(EXIT_FAILURE,
@@ -651,6 +749,7 @@ int main(int argc, char *argv[]) {
                 worker->shard.scheduling_enabled = index < active_shards;
                 tg_stats_init(&worker->shard.stats);
 
+                /* Initialize resources owned by this worker's lcore. */
                 if (socket_registry_init_owner(worker->lcore_id) != 0 ||
                     socket_owner_init(worker->lcore_id) != 0 ||
                     ring_init_owner(worker->lcore_id) != 0 ||
@@ -663,6 +762,8 @@ int main(int argc, char *argv[]) {
                                      worker->lcore_id) != 0)
                         rte_exit(EXIT_FAILURE, "worker %u flow map failed\n",
                                  index);
+
+                /* Build the scheduler and flow pool for active shards only. */
                 if (worker->shard.scheduling_enabled) {
                         if (tg_plan_partition(&worker->shard.plan, &plan, index,
                                               active_shards) != 0 ||
@@ -677,18 +778,21 @@ int main(int argc, char *argv[]) {
                                          "failed\n",
                                          index);
                 }
+
+                /* Attach the reactor and start-ready stack runtime context. */
                 tg_reactor_init(&worker->reactor, tg_shard_tick, tg_on_event,
                                 &worker->shard);
                 worker->shard.reactor = &worker->reactor;
                 if (stack_runtime_worker_init(
                         &worker->runtime, worker->lcore_id,
-                        worker->flow_queue_id,
-                        mp, worker->ring, tg_reactor_run,
+                        worker->flow_queue_id, mp, worker->ring, tg_reactor_run,
                         &worker->reactor) != 0)
                         rte_exit(EXIT_FAILURE,
                                  "worker %u runtime initialization failed\n",
                                  index);
         }
+
+        /* Stage 7: Configure RX dispatch with the worker lcore assignments. */
         {
                 unsigned int worker_lcores[RTE_MAX_LCORE];
 
@@ -700,6 +804,8 @@ int main(int argc, char *argv[]) {
                                  "traffic-gen RX dispatcher initialization "
                                  "failed\n");
         }
+
+        /* Stage 8: Launch one stack runtime on each worker lcore. */
         for (unsigned int index = 0; index < worker_count; index++) {
                 if (rte_eal_remote_launch(stack_runtime_worker_entry,
                                           &workers[index].runtime,
@@ -709,7 +815,12 @@ int main(int argc, char *argv[]) {
                                  index, workers[index].lcore_id);
         }
 
+        /*
+         * Stage 9: Poll NIC RX, dispatch packets to workers, and transmit
+         * worker output until the runtime requests shutdown.
+         */
         while (!stack_runtime_stop_requested()) {
+                /* Receive bursts from every RX queue and dispatch them. */
                 for (uint16_t rx_queue = 0;
                      rx_queue < port_topology.rx_queue_count; rx_queue++) {
                         struct rte_mbuf *rx[BURST_SIZE];
@@ -720,6 +831,8 @@ int main(int argc, char *argv[]) {
                                 tg_dispatch_rx_burst(workers, worker_count, mp,
                                                      rx_queue, rx, nb_rx);
                 }
+
+                /* Drain each worker's TX ring and account for NIC drops. */
                 for (unsigned int index = 0; index < worker_count; index++) {
                         struct tg_worker *worker = &workers[index];
                         struct rte_mbuf *tx[BURST_SIZE];
@@ -738,12 +851,18 @@ int main(int argc, char *argv[]) {
                         }
                 }
         }
+
+        /* Stage 10: Wait for workers to stop and flush pending TX packets. */
         for (unsigned int index = 0; index < worker_count; index++)
                 (void)rte_eal_wait_lcore(workers[index].lcore_id);
         for (unsigned int index = 0; index < worker_count; index++)
                 tg_drain_tx_ring(workers[index].ring,
                                  workers[index].tx_queue_id);
+
+        /* Stage 11: Report aggregate traffic statistics from all workers. */
         tg_report_aggregate(workers, worker_count);
+
+        /* Stage 12: Release per-worker and global resources before exit. */
         for (unsigned int index = 0; index < worker_count; index++) {
                 tg_flow_pool_fini(&workers[index].shard.flow_pool);
                 tg_flow_map_fini(&workers[index].shard.flow_map);

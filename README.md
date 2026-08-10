@@ -88,7 +88,10 @@ flowchart LR
 
 ### 接收交付模型（长期目标）
 
-**当前**：UDP 仍在 `recv_buf` 挂整包 `mbuf`；TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`tcp_recv` 不再剥 L2–L4。
+**当前**：BSD/app-visible UDP 仍在 `recv_buf` 挂整包 `mbuf`；traffic-gen
+owner-local UDP 使用按需节点的有界 RX FIFO，TX mbuf 直接进入 worker 输出环；
+TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`tcp_recv`
+不再剥 L2–L4。
 
 **目标（高效）**：
 
@@ -125,7 +128,8 @@ flowchart LR
 - **单 owner 生命周期**：fd 表保存代际句柄；应用命令不携带裸指针；packet ingress、TCP timer、状态迁移与 `nsock_free` 全部归同一 worker
 - 阻塞 `send/recv/connect/accept` 使用 owner-only waiter 队列；owner 遇到 `EAGAIN/EINPROGRESS` 时挂起命令但不阻塞包处理
 - `nclose` 原子撤销 fd 后仅发起协议关闭；TCP TCB 可继续经历 FIN/TIME_WAIT，终态由 owner 延迟释放；generation 防止 slot 复用 ABA
-- 唯一命名的 recv/send 环 `sock_recv_%u / sock_send_%u`
+- BSD/app-visible socket 使用唯一命名的 recv/send 环
+  `sock_recv_%u / sock_send_%u`；traffic-gen owner-local socket 不创建这两个环
 - BSD 风格 API：`nsocket / nbind / nsend / nrecv / nsendto / nrecvfrom / nclose / nconnect / nlisten / naccept`
 - `sock_ops` + `sock_ops_lookup`；TCP 已接线 `connect/listen/accept/close`
 
@@ -203,7 +207,7 @@ flowchart LR
 
 ##### P0 — 正确性与回归门槛
 
-- [ ] **补齐生命周期并发压力测试**：覆盖 `nclose` 与 SEND/RECV 并发、fd/owner slot 高频复用、SYN_SENT timeout 与 close、RST 与 pending waiter、listener close 与半连接/已 accept child、FIN/TIME_WAIT 回收、UDP pending RECVFROM，以及多 app lcore 共享 fd。
+- [ ] ~~**补齐生命周期并发压力测试**：覆盖~~ `nclose` ~~与 SEND/RECV 并发、fd/owner slot 高频复用、SYN_SENT timeout 与 close、RST 与 pending waiter、listener close 与半连接/已 accept child、FIN/TIME_WAIT 回收、UDP pending RECVFROM，以及多 app lcore 共享 fd。~~
 - [ ] **引入动态竞态检查**：在构建环境允许时运行 ASan/UBSan，并补充真实 NIC 长时间流量测试，确认 command、timer 与延迟回收不存在 UAF、double-free 或 waiter 遗失。
 - [ ] **把连接上限和缓冲预算配置化**：根据目标并发调整 `NSOCK_FD_MAX` / `NSOCK_ID_MAX`，并为 TCP 发送/接收缓冲设定每连接与全局内存预算；发生器的 1k～1 万并发验收不得依赖固定的默认上限。
 
@@ -215,15 +219,15 @@ flowchart LR
 - [ ] **完善 command 生命周期与取消**：当前 command 位于调用线程栈上，调用者必须等待 completion；加入超时、线程取消、异步 API 或 coroutine 前，应改为 slab/heap command，并设计引用计数、取消状态和 late completion。
 - [ ] **改进 command ring 背压**：当前 ring 满时 app lcore 通过 `rte_pause()` 忙等；评估 per-app ring、控制命令保留容量、eventfd/futex 或高低水位，同时保证 CLOSE 等生命周期命令绝不丢失。
 - [ ] **删除 owner 内遗留锁与条件变量**：审计 `sk->mutex` / `sk->cond` 的全部调用点，在确认 SEND、ACK、timer、TX 都只由 owner 执行后移除冗余同步。
-- [ ] **收紧跨 lcore 数据结构约束**：修正仍描述 app 直接消费 `recv_buf`、共同生产 `send_buf` 的旧注释，并在确认唯一 producer/consumer 后收紧 DPDK ring flags。
+- [ ] ~~**收紧跨 lcore 数据结构约束**：修正仍描述 app 直接消费~~ `recv_buf`~~、共同生产~~ `send_buf` ~~的旧注释，并在确认唯一 producer/consumer 后收紧 DPDK ring flags。~~
 
 
 
 ##### P2 — 性能与多 worker 扩展
 
 - [x] **用 dirty socket queue 替代全量 TX 遍历**：socket 从无发送工作变为有发送工作时入队，worker 只 flush 活跃 socket；ARP 未解析时进入按邻居分桶的等待队列。
-- [ ] **扩展为 per-worker socket owner**：将当前单例 `g_owner` 改为按 worker/lcore 分片的 context；结合硬件 RSS 保证同一四元组固定归属同一 worker，并同步分片 slot、协议 hash、timer 与 dirty queue。
-- [ ] **分片 socket registry**：单 owner 下将 endpoint hash 转为 owner-local；多 worker 时按 RSS/owner 分片 fd 之外的协议注册表，避免全局 `registry_lock` 回到数据路径。
+- [x] **扩展为 per-worker socket owner**：将当前单例 `g_owner` 改为按 worker/lcore 分片的 context；结合硬件 RSS 保证同一四元组固定归属同一 worker，并同步分片 slot、协议 hash、timer 与 dirty queue。
+- [x] **分片 socket registry**：单 owner 下将 endpoint hash 转为 owner-local；多 worker 时按 RSS/owner 分片 fd 之外的协议注册表，避免全局 `registry_lock` 回到数据路径。
 
 
 
@@ -237,17 +241,17 @@ flowchart LR
 #### P1 — 完备 TCP（选项、拥塞、校验、API）
 
 
-| 功能              | 位置                                                                           | 说明 / 目标设计                                                                              |
-| --------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| TCP 选项          | [tcp.c](pro-stack/tcp.c) ~2104                                               | 解析/协商 MSS、窗口缩放、SACK、时间戳                                                                |
-| 拥塞控制            | —                                                                            | 无 cwnd/ssthresh。目标：至少 Reno（慢启动 / 拥塞避免 / 快重传快恢复）                                        |
-| 协商 MSS / 选项驱动分段 | [tcp.c](pro-stack/tcp.c) 选项 TODO                                             | 发送已按 `TCP_DEFAULT_MSS` 切段；目标：握手协商 MSS 后按协商值切                                           |
-| RTT → RTO       | —                                                                            | 数据路径固定 RTO + 退避，无 SRTT/RTTVAR                                                          |
-| 重复 ACK / 快重传    | —                                                                            | 依赖 ACK 处理与 SACK（可选）                                                                    |
+| 功能              | 位置                                                                                             | 说明 / 目标设计                                                                              |
+| --------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| TCP 选项          | [tcp.c](pro-stack/tcp.c) ~2104                                                                 | 解析/协商 MSS、窗口缩放、SACK、时间戳                                                                |
+| 拥塞控制            | —                                                                                              | 无 cwnd/ssthresh。目标：至少 Reno（慢启动 / 拥塞避免 / 快重传快恢复）                                        |
+| 协商 MSS / 选项驱动分段 | [tcp.c](pro-stack/tcp.c) 选项 TODO                                                               | 发送已按 `TCP_DEFAULT_MSS` 切段；目标：握手协商 MSS 后按协商值切                                           |
+| RTT → RTO       | —                                                                                              | 数据路径固定 RTO + 退避，无 SRTT/RTTVAR                                                          |
+| 重复 ACK / 快重传    | —                                                                                              | 依赖 ACK 处理与 SACK（可选）                                                                    |
 | RX 校验和          | [stack_runtime.c](pro-stack/stack_runtime.c)、[tcp.c](pro-stack/tcp.c)、[udp.c](pro-stack/udp.c) | IPv4、TCP 与 UDP RX 已软件校验；IPv4 UDP 的零校验和按 RFC 768 接受                                     |
-| socket 选项       | —                                                                            | `SO_REUSEADDR`、非阻塞、`TCP_NODELAY` 等                                                     |
-| 多连接应用调度         | [apps/tcp-echo/](apps/tcp-echo/)                                             | 示例 echo server 在一个连接的阻塞 `nrecv` 循环中不会再 `accept`。目标：非阻塞 recv + poll/ready queue，或连接任务调度 |
-| 接收交付抽象          | 见上文                                                                          | ESTABLISHED 已用 `tcp_rx_blob`；目标：统一 stream buffer，FIN_* 等状态同样走重组交付                      |
+| socket 选项       | —                                                                                              | `SO_REUSEADDR`、非阻塞、`TCP_NODELAY` 等                                                     |
+| 多连接应用调度         | [apps/tcp-echo/](apps/tcp-echo/)                                                               | 示例 echo server 在一个连接的阻塞 `nrecv` 循环中不会再 `accept`。目标：非阻塞 recv + poll/ready queue，或连接任务调度 |
+| 接收交付抽象          | 见上文                                                                                            | ESTABLISHED 已用 `tcp_rx_blob`；目标：统一 stream buffer，FIN_* 等状态同样走重组交付                      |
 
 
 
@@ -255,15 +259,15 @@ flowchart LR
 #### P2 — ARP / ICMP / 网络层
 
 
-| 功能            | 位置                               | 说明 / 目标设计                                               |
-| ------------- | -------------------------------- | ------------------------------------------------------- |
-| 无故 ARP / 冲突检测 | —                                | 无                                                       |
-| ICMP echo 负载  | [icmp.c](pro-stack/icmp.c) ~80   | reply 应回显请求负载                                           |
-| 非 echo ICMP   | [icmp.c](pro-stack/icmp.c) ~94   | destination unreachable / time exceeded 等，并向 UDP/TCP 上报 |
+| 功能            | 位置                                           | 说明 / 目标设计                                               |
+| ------------- | -------------------------------------------- | ------------------------------------------------------- |
+| 无故 ARP / 冲突检测 | —                                            | 无                                                       |
+| ICMP echo 负载  | [icmp.c](pro-stack/icmp.c) ~80               | reply 应回显请求负载                                           |
+| 非 echo ICMP   | [icmp.c](pro-stack/icmp.c) ~94               | destination unreachable / time exceeded 等，并向 UDP/TCP 上报 |
 | IP 分片重组       | [stack_runtime.c](pro-stack/stack_runtime.c) | 分片直送 L4。目标：IP 层重组后再交 L4                                 |
-| UDP 发送分片      | [udp.c](pro-stack/udp.c) ~204    | RX 校验和已实现；超 MTU 不分片                                     |
+| UDP 发送分片      | [udp.c](pro-stack/udp.c) ~204                | RX 校验和已实现；超 MTU 不分片                                     |
 | IPv6          | [stack_runtime.c](pro-stack/stack_runtime.c) | 仅 ARP + IPv4                                            |
-| 路由 / 多接口      | —                                | 单接口、无路由表                                                |
+| 路由 / 多接口      | —                                            | 单接口、无路由表                                                |
 
 
 
@@ -329,11 +333,11 @@ flowchart LR
 
 | 现状（低效）                                                                                    | 目标（高效）                                                                                                   |
 | ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| fd、UDP bind、TCP listener/4-tuple 与 ARP 已使用 `rte_hash`；`g_sock_list` 保留作生命周期索引  | TX 使用 owner-local dirty socket 队列                                                                           |
-| worker 每轮遍历全部 socket 调 `tx_flush`                                                         | 仅冲洗有待发数据的 socket；ARP 等待由邻居学习事件唤醒                                                  |
+| fd、UDP bind、TCP listener/4-tuple 与 ARP 已使用 `rte_hash`；`g_sock_list` 保留作生命周期索引             | TX 使用 owner-local dirty socket 队列                                                                        |
+| worker 每轮遍历全部 socket 调 `tx_flush`                                                         | 仅冲洗有待发数据的 socket；ARP 等待由邻居学习事件唤醒                                                                         |
 | TCP OFO 使用 RB-tree（按 seq）+ 双向链表，插入定位 O(log n)、从 `recv_ack` drain O(1)，并限制节点、每 TCB 字节与全局字节 | 增加可观测性指标；依据压力和乱序距离自适应调节上限                                                                                |
-| `tcp_send` → owner-local ACK-retained chunk 链（仅未确认数据占用内存）                      | （可选）零拷贝 / mbuf 引用计数                                                                                      |
-| ARP 解析：按需 probe、缓存老化、容量淘汰与退避已实现                                                      | 全网扫描仅保留为可选、批量限速的调试手段                                                                                  |
+| `tcp_send` → owner-local ACK-retained chunk 链（仅未确认数据占用内存）                                 | （可选）零拷贝 / mbuf 引用计数                                                                                      |
+| ARP 解析：按需 probe、缓存老化、容量淘汰与退避已实现                                                           | 全网扫描仅保留为可选、批量限速的调试手段                                                                                     |
 | 单 RX/TX queue、单 packet worker                                                             | 多 queue + 硬件 RSS：同一四元组固定归属一个 worker；ARP/ICMP、计时器、TX 和 socket 生命周期按 worker 分片。单 RX queue 或自定义亲和时再使用软件 RSS |
 
 
@@ -451,14 +455,14 @@ make
 常用开关见 [config.h](pro-stack/config.h)：
 
 
-| 宏                                                 | 默认  | 作用                          |
-| ------------------------------------------------- | --- | --------------------------- |
-| `ENABLE_TCP_APP`                                  | 1   | 编译 TCP echo 示例启动路径       |
-| `ENABLE_TCP_CLIENT`                               | 0   | app lcore 跑 `apps/tcp-echo` client |
-| `ENABLE_TCP_SERVER`                               | 1   | app lcore 跑 `apps/tcp-echo` server |
-| `ENABLE_UDP_APP`                                  | 0   | app lcore 跑 `apps/udp-echo`   |
-| `ENABLE_ARP` / `ENABLE_ICMP`                      | 1   | L2/L3 辅助路径                  |
-| `ENABLE_ARP_SWEEP`                                | 0   | packet worker 的受控诊断 sweep；正常解析始终按需进行 |
+| 宏                            | 默认  | 作用                                   |
+| ---------------------------- | --- | ------------------------------------ |
+| `ENABLE_TCP_APP`             | 1   | 编译 TCP echo 示例启动路径                   |
+| `ENABLE_TCP_CLIENT`          | 0   | app lcore 跑 `apps/tcp-echo` client   |
+| `ENABLE_TCP_SERVER`          | 1   | app lcore 跑 `apps/tcp-echo` server   |
+| `ENABLE_UDP_APP`             | 0   | app lcore 跑 `apps/udp-echo`          |
+| `ENABLE_ARP` / `ENABLE_ICMP` | 1   | L2/L3 辅助路径                           |
+| `ENABLE_ARP_SWEEP`           | 0   | packet worker 的受控诊断 sweep；正常解析始终按需进行 |
 
 
 `TCP_APP_PORT`、`TCP_CLIENT_PEER_IP` 等演示参数同样在 `config.h`。

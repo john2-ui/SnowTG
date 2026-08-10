@@ -31,8 +31,10 @@ typedef int (*tg_scheduler_start_fn)(void *ctx,
  * @brief Mutable scheduling state owned exclusively by one worker lcore.
  *
  * @p token_numerator represents tokens with @p cycles_per_second as its
- * denominator.  @p active is incremented only for successfully admitted
- * flows and must be decremented exactly once by the completion observer.
+ * denominator.  @p selection_cursor starts at the plan's shard-specific
+ * weighted-round-robin phase.  @p active is incremented only for successfully
+ * admitted flows and must be decremented exactly once by the completion
+ * observer.
  */
 struct tg_scheduler {
         const struct tg_plan *plan;

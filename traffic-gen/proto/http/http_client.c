@@ -42,6 +42,27 @@ static struct tg_http_parser *tg_http_context(llhttp_t *parser) {
         return parser == NULL ? NULL : parser->data;
 }
 
+/** @brief Clones owning HTTP class configuration for a scheduling shard. */
+static int tg_http_config_clone(const void *source, void **destination) {
+        const struct tg_http_config *source_config = source;
+        struct tg_http_config *copy;
+
+        if (source_config == NULL || destination == NULL) {
+                errno = EINVAL;
+                return -1;
+        }
+
+        copy = malloc(sizeof(*copy));
+        if (copy == NULL)
+                return -1;
+        *copy = *source_config;
+        *destination = copy;
+        return 0;
+}
+
+/** @brief Releases one heap-owned HTTP class configuration. */
+static void tg_http_config_free(void *config) { free(config); }
+
 /**
  * @brief Serializes one connection-close HTTP/1.0 request into caller storage.
  */
@@ -58,9 +79,9 @@ static int tg_http_build_request(const void *class_config, uint8_t *buffer,
                 return -1;
         }
 
-        method =
-            config != NULL && config->method != NULL ? config->method : "GET";
-        path = config != NULL && config->path != NULL ? config->path : "/";
+        method = config != NULL && config->method[0] != '\0' ? config->method
+                                                             : "GET";
+        path = config != NULL && config->path[0] != '\0' ? config->path : "/";
         connection =
             config == NULL || config->connection_close ? "close" : "keep-alive";
 
@@ -220,6 +241,8 @@ static void tg_http_reset(struct tg_txn *txn) {
 /** @brief HTTP implementation of the generic @ref tg_proto_ops contract. */
 const struct tg_proto_ops tg_http_proto_ops = {
     .name = "http",
+    .config_clone = tg_http_config_clone,
+    .config_free = tg_http_config_free,
     .init = tg_http_init,
     .build_request = tg_http_build_request,
     .on_tx_accepted = tg_http_on_tx_accepted,

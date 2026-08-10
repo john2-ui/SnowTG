@@ -20,6 +20,24 @@ static int tg_test_txn_init(struct tg_txn *txn) {
         return 0;
 }
 
+static int test_owned_http_config(void) {
+        struct tg_http_config config = {
+            .method = "POST",
+            .path = "/owned",
+            .connection_close = false,
+        };
+        uint8_t request[128];
+        size_t request_len = 0;
+
+        ASSERT_TRUE(tg_http_proto_ops.build_request(
+                        &config, request, sizeof(request), &request_len) == 0);
+        ASSERT_TRUE(memcmp(request,
+                           "POST /owned HTTP/1.0\r\n"
+                           "Connection: keep-alive\r\n\r\n",
+                           request_len) == 0);
+        return 0;
+}
+
 static int test_fragmented_content_length(void) {
         static const char *const fragments[] = {
             "HTTP/1.1 2", "00 OK\r\nContent-L", "ength: 5\r\n", "\r\nhe", "llo",
@@ -121,6 +139,7 @@ static int test_reject_truncated_content_length(void) {
 }
 
 int main(void) {
+        ASSERT_TRUE(test_owned_http_config() == 0);
         ASSERT_TRUE(test_fragmented_content_length() == 0);
         ASSERT_TRUE(test_chunked_response() == 0);
         ASSERT_TRUE(test_reject_non_2xx() == 0);

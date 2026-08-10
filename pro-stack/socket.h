@@ -25,6 +25,7 @@
 #include "sock_ops.h"
 #include "socket_owner.h"
 #include "tcp.h"
+#include "udp.h"
 
 #include <pthread.h>
 #include <rte_ether.h>
@@ -48,8 +49,11 @@ enum nsock_registry_flags {
 /**
  * Queue implementation selected when a socket is allocated.
  *
- * Owner-local sockets never cross an lcore boundary, so their TCP queues can
- * be embedded FIFO lists rather than individually allocated DPDK rings.
+ * Owner-local sockets never cross an lcore boundary, so their transport
+ * queues can use owner-local state rather than individually allocated DPDK
+ * rings. TCP keeps payload/control queues in its stream; traffic-generator
+ * UDP keeps only a lazy bounded RX queue and sends directly to the worker
+ * output ring.
  */
 enum nsock_io_mode {
         NSOCK_IO_RINGS = 0,
@@ -59,10 +63,10 @@ enum nsock_io_mode {
 /**
  * @brief One userspace socket, shared by every transport.
  *
- * The worker lcore delivers packets through @c recv_buf; the application lcore
- * consumes @c recv_buf and produces packets through @c send_buf. @c send_buf is
- * opaque to common code: each transport's @ref sock_ops interprets its contents
- * (UDP stores mbufs, TCP stores @ref tcp_fragment).
+ * Ring-backed sockets use @c recv_buf and @c send_buf for transport objects.
+ * Owner-local sockets leave those fields NULL; each transport's @ref sock_ops
+ * uses its embedded state instead. In particular, local UDP does not retain a
+ * send queue and sends directly to the owner worker's output ring.
  */
 struct nsock {
         /**
@@ -122,6 +126,7 @@ struct nsock {
 
         /** Transport-private state. */
         union {
+                struct udp_stream udp; /**< UDP local receive state. */
                 struct tcp_stream tcp; /**< TCP connection state. */
         } u;
 
@@ -200,6 +205,11 @@ void nsock_tx_metrics_take(struct nsock_tx_metrics *out);
  * @return 0 on success, or a negative errno-style error code.
  */
 int nsock_bind_local(struct nsock *sk, uint32_t ip, uint16_t port);
+/**
+ * @brief Allocate and bind an unused UDP ephemeral local port.
+ * @return 0 on success, or a negative errno-style error code.
+ */
+int nsock_udp_bind_ephemeral(struct nsock *sk, uint32_t ip);
 /** @brief Publish a bound TCP socket as a listener endpoint. */
 int nsock_tcp_listener_register(struct nsock *sk);
 /** @brief Remove a TCP listener endpoint from the listener index. */
@@ -216,7 +226,7 @@ int nsock_tcp_local_taken(uint32_t ip, uint16_t port);
  * @{
  */
 /**
- * @brief Allocate and register a @ref nsock with fresh, uniquely-named rings.
+ * @brief Allocate and register a @ref nsock with the selected queue mode.
  *
  * @param fd       Optional diagnostic label; pass -1 for owner-created
  *                 sockets.  It does not participate in object lookup.

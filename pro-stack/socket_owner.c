@@ -44,25 +44,25 @@ static struct socket_owner *socket_owner_current(void) {
 }
 
 static struct socket_owner *socket_owner_default(void) {
-        unsigned int start =
-            atomic_fetch_add_explicit(&g_create_owner_next, 1,
-                                      memory_order_relaxed);
+        unsigned int start = atomic_fetch_add_explicit(&g_create_owner_next, 1,
+                                                       memory_order_relaxed);
 
         for (unsigned int offset = 0; offset < RTE_MAX_LCORE; offset++) {
                 unsigned int lcore_id = (start + offset) % RTE_MAX_LCORE;
-                struct socket_owner *owner =
-                    socket_owner_for_lcore(lcore_id);
+                struct socket_owner *owner = socket_owner_for_lcore(lcore_id);
                 if (owner != NULL)
                         return owner;
         }
         return NULL;
 }
 
-/** Release partially created owner resources after an initialization failure. */
+/** Release partially created owner resources after an initialization failure.
+ */
 static void socket_owner_init_cleanup(struct socket_owner *owner) {
         if (owner == NULL)
                 return;
         tcp_owner_memory_fini(&owner->tcp_memory);
+        udp_owner_memory_fini(&owner->udp_memory);
         if (owner->ready_event_pool != NULL)
                 rte_mempool_free(owner->ready_event_pool);
         if (owner->ready_ring != NULL)
@@ -205,18 +205,17 @@ int socket_owner_init(unsigned int lcore_id) {
         }
 
         owner->ready_ring =
-            rte_ring_create(ready_name, NSOCK_READY_EVENT_CAP,
-                            rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
+            rte_ring_create(ready_name, NSOCK_READY_EVENT_CAP, rte_socket_id(),
+                            RING_F_SP_ENQ | RING_F_SC_DEQ);
         if (owner->ready_ring == NULL) {
                 LOG_OWNER_ERROR("owner ready ring initialization failed");
                 socket_owner_init_cleanup(owner);
                 return -1;
         }
 
-        owner->ready_event_pool =
-            rte_mempool_create(pool_name, NSOCK_READY_EVENT_CAP,
-                               sizeof(struct socket_ready_event), 0, 0, NULL,
-                               NULL, NULL, NULL, rte_socket_id(), 0);
+        owner->ready_event_pool = rte_mempool_create(
+            pool_name, NSOCK_READY_EVENT_CAP, sizeof(struct socket_ready_event),
+            0, 0, NULL, NULL, NULL, NULL, rte_socket_id(), 0);
         if (owner->ready_event_pool == NULL) {
                 LOG_OWNER_ERROR("owner ready-event pool initialization failed");
                 socket_owner_init_cleanup(owner);
@@ -224,6 +223,11 @@ int socket_owner_init(unsigned int lcore_id) {
         }
         if (tcp_owner_memory_init(&owner->tcp_memory, lcore_id) != 0) {
                 LOG_OWNER_ERROR("owner TCP memory initialization failed");
+                socket_owner_init_cleanup(owner);
+                return -1;
+        }
+        if (udp_owner_memory_init(&owner->udp_memory, lcore_id) != 0) {
+                LOG_OWNER_ERROR("owner UDP memory initialization failed");
                 socket_owner_init_cleanup(owner);
                 return -1;
         }
@@ -251,6 +255,15 @@ struct tcp_owner_memory *socket_owner_tcp_memory(void) {
         if (owner == NULL)
                 return NULL;
         return &owner->tcp_memory;
+}
+
+/** @copydoc socket_owner_udp_memory */
+struct udp_owner_memory *socket_owner_udp_memory(void) {
+        struct socket_owner *owner = socket_owner_current();
+
+        if (owner == NULL)
+                return NULL;
+        return &owner->udp_memory;
 }
 
 /** @copydoc socket_owner_tcp_memory_snapshot */

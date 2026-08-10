@@ -3,7 +3,7 @@
 
 /**
  * @file flow.h
- * @brief Owner-local TCP flow state, socket mapping, and lifecycle API.
+ * @brief Owner-local TCP/UDP flow state, socket mapping, and lifecycle API.
  *
  * A flow is the transport owner for exactly one transaction.  It is mapped by
  * generation-qualified socket handle while active, then reports completion
@@ -14,6 +14,7 @@
 
 #include "../../pro-stack/owner_io.h"
 
+#include <netinet/in.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -21,6 +22,8 @@
 
 /** @brief Number of response bytes retained solely for diagnostics. */
 #define TG_FLOW_RESPONSE_CAP 4096U
+/** @brief Default upper bound for an owner-local UDP response wait. */
+#define TG_FLOW_RESPONSE_TIMEOUT_MS 5000U
 
 /** @brief Transport lifecycle states for a short-lived TCP flow. */
 enum tg_flow_state {
@@ -80,7 +83,7 @@ struct tg_flow_map {
 };
 
 /**
- * @brief Reusable state for one nonblocking TCP request/response exchange.
+ * @brief Reusable state for one nonblocking request/response exchange.
  *
  * Completion observers run before mapping removal, socket close, and pool
  * reset.  They must not retain @p flow because it may be reused immediately
@@ -90,6 +93,7 @@ struct tg_flow {
         struct nsock_handle handle;
         enum tg_flow_state state;
         struct tg_txn txn;
+        struct sockaddr_in peer;
 
         bool mapped;
         bool in_use;
@@ -100,6 +104,8 @@ struct tg_flow {
         uint64_t start_cycles;     /**< Flow object accepted for connection. */
         uint64_t connected_cycles; /**< TCP CONNECTED notification observed. */
         uint64_t first_rx_cycles;  /**< First application response byte read. */
+        uint64_t
+            deadline_cycles; /**< UDP response deadline, or zero for TCP. */
 
         /**
          * Retained diagnostics prefix.  Protocol parsing receives every
@@ -164,6 +170,26 @@ int tg_flow_start_tcp(struct tg_flow_map *map, struct tg_flow_pool *pool,
                       void *socket_lifecycle_ctx);
 
 /**
+ * @brief Acquires, initializes, maps, and starts one nonblocking UDP flow.
+ *
+ * UDP uses one complete datagram for the request and one or more complete
+ * datagrams for the response. Traffic-generator UDP is owner-local: transmit
+ * mbufs go directly to the worker output ring, while received datagrams use a
+ * bounded lazy queue instead of per-socket packet rings.
+ *
+ * @return 0 on admission; -1 with @c errno set if no flow or socket is usable.
+ */
+int tg_flow_start_udp(struct tg_flow_map *map, struct tg_flow_pool *pool,
+                      const struct sockaddr *peer, socklen_t peer_len,
+                      const struct tg_proto_ops *proto,
+                      const void *class_config, const uint8_t *request,
+                      size_t request_len, tg_flow_finish_fn on_finish,
+                      void *on_finish_ctx,
+                      tg_flow_socket_created_fn on_socket_created,
+                      owner_io_release_fn on_socket_released,
+                      void *socket_lifecycle_ctx);
+
+/**
  * @brief Advances a flow from a coalesced owner-I/O readiness mask.
  *
  * The function drains writable and readable sockets to @c EAGAIN or terminal
@@ -172,5 +198,9 @@ int tg_flow_start_tcp(struct tg_flow_map *map, struct tg_flow_pool *pool,
  */
 void tg_flow_on_event(struct tg_flow_map *map, struct tg_flow_pool *pool,
                       struct tg_flow *flow, uint32_t events);
+
+/** Reclaims owner-local UDP flows whose response deadline has expired. */
+void tg_flow_expire(struct tg_flow_map *map, struct tg_flow_pool *pool,
+                    uint64_t now_cycles);
 
 #endif /* TRAFFIC_GEN_FLOW_H */

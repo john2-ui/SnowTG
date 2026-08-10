@@ -13,6 +13,7 @@
 struct nsock;
 struct owner_io_event;
 struct tcp_owner_memory;
+struct udp_owner_memory;
 
 /** Resolve a generation-checked handle on its owner lcore, or set errno. */
 struct nsock *socket_owner_resolve_local(struct nsock_handle handle);
@@ -24,6 +25,8 @@ unsigned int socket_owner_ready_burst(struct owner_io_event *events,
                                       unsigned int max_events);
 /** Return the current lcore's TCP memory domain, or NULL outside its owner. */
 struct tcp_owner_memory *socket_owner_tcp_memory(void);
+/** Return the current lcore's UDP memory domain, or NULL outside its owner. */
+struct udp_owner_memory *socket_owner_udp_memory(void);
 /** Snapshot the owner-local TCP resource budget for a co-located reactor. */
 int socket_owner_tcp_memory_snapshot(struct tcp_memory_snapshot *snapshot);
 /** Non-zero when this owner must pause new connection admission. */

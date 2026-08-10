@@ -46,7 +46,7 @@ static int remote_owner_entry(void *arg) {
                 result->status = EAGAIN;
                 return 0;
         }
-        if (owner_io_socket_create_local(IPPROTO_UDP, &result->handle) != 0)
+        if (owner_io_socket_create(IPPROTO_UDP, &result->handle) != 0)
                 return -1;
         result->status = owner_io_close(result->handle);
         return result->status;
@@ -61,6 +61,39 @@ int main(int argc, char **argv) {
         struct nsock_handle handle;
         assert(owner_io_socket_create(IPPROTO_UDP, &handle) == 0);
         struct nsock *sk = socket_owner_resolve_local(handle);
+        assert(sk != NULL);
+
+        struct nsock_handle unbound_udp;
+        assert(owner_io_socket_create(IPPROTO_UDP, &unbound_udp) == 0);
+        uint32_t local_ip = rte_cpu_to_be_32(0xc0a81502);
+        assert(owner_io_bind_ephemeral(unbound_udp, local_ip) == 0);
+        sk = socket_owner_resolve_local(unbound_udp);
+        assert(sk != NULL);
+        assert(sk->local_ip == local_ip);
+        assert(sk->local_port != 0);
+        uint16_t local_port = sk->local_port;
+        assert(nsock_from_ip_port(local_ip, local_port, IPPROTO_UDP) == sk);
+        assert(owner_io_bind_ephemeral(unbound_udp, local_ip) == 0);
+        assert(socket_owner_resolve_local(unbound_udp)->local_port ==
+               local_port);
+        assert(owner_io_close(unbound_udp) == 0);
+        assert(nsock_from_ip_port(local_ip, local_port, IPPROTO_UDP) == NULL);
+        sk = socket_owner_resolve_local(handle);
+        assert(sk != NULL);
+
+        unsigned int udp_release_count = 0;
+        struct nsock_handle local_udp;
+        assert(owner_io_socket_create_local(IPPROTO_UDP, &local_udp) == 0);
+        sk = socket_owner_resolve_local(local_udp);
+        assert(sk != NULL);
+        assert(sk->io_mode == NSOCK_IO_OWNER_LOCAL);
+        assert(sk->recv_buf == NULL);
+        assert(sk->send_buf == NULL);
+        assert(owner_io_set_release_observer(local_udp, count_release,
+                                             &udp_release_count) == 0);
+        assert(owner_io_close(local_udp) == 0);
+        assert(udp_release_count == 1);
+        sk = socket_owner_resolve_local(handle);
         assert(sk != NULL);
 
         char buf[8];

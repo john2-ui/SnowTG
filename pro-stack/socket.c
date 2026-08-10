@@ -24,6 +24,7 @@
 #include <rte_jhash.h>
 #include <rte_lcore.h>
 #include <rte_malloc.h>
+#include <rte_random.h>
 #include <rte_ring.h>
 #include <rte_timer.h>
 #include <stdatomic.h>
@@ -199,7 +200,9 @@ static int hash_add_unique(struct rte_hash *hash, const void *key,
         }
 
         rc = rte_hash_add_key_data(hash, key, sk);
-        return rc < 0 ? -1 : 0;
+        if (rc >= 0)
+                return 0;
+        return rc == -ENOSPC ? -ENOSPC : -EIO;
 }
 
 static void hash_del(struct rte_hash *hash, const void *key) {
@@ -253,6 +256,46 @@ int nsock_bind_local(struct nsock *sk, uint32_t ip, uint16_t port) {
         sk->registry_flags |= flag;
 
         return 0;
+}
+
+int nsock_udp_bind_ephemeral(struct nsock *sk, uint32_t ip) {
+        static uint16_t next[RTE_MAX_LCORE];
+        unsigned int lcore_id = rte_lcore_id();
+        const uint32_t port_count =
+            UDP_EPHEMERAL_PORT_MAX - UDP_EPHEMERAL_PORT_MIN + 1U;
+
+        if (sk == NULL || sk->protocol != IPPROTO_UDP)
+                return -EINVAL;
+        if (ip == INADDR_ANY)
+                return -EADDRNOTAVAIL;
+        if (sk->registry_flags & NSOCK_REG_UDP_BIND)
+                return sk->local_ip == ip ? 0 : -EINVAL;
+        if (sk->local_ip != 0 || sk->local_port != 0)
+                return -EINVAL;
+        if (lcore_id >= RTE_MAX_LCORE)
+                return -EINVAL;
+
+        if (next[lcore_id] < UDP_EPHEMERAL_PORT_MIN ||
+            next[lcore_id] > UDP_EPHEMERAL_PORT_MAX)
+                next[lcore_id] =
+                    UDP_EPHEMERAL_PORT_MIN + (uint16_t)rte_rand_max(port_count);
+
+        for (uint32_t attempt = 0; attempt < port_count; attempt++) {
+                uint16_t host_port = next[lcore_id];
+                uint16_t port = htons(host_port);
+                int rc;
+
+                next[lcore_id] = host_port == UDP_EPHEMERAL_PORT_MAX
+                                     ? UDP_EPHEMERAL_PORT_MIN
+                                     : (uint16_t)(host_port + 1U);
+                rc = nsock_bind_local(sk, ip, port);
+                if (rc == 0)
+                        return 0;
+                if (rc == -EADDRINUSE || rc == -EEXIST)
+                        continue;
+                return rc;
+        }
+        return -EADDRNOTAVAIL;
 }
 
 int nsock_tcp_local_taken(uint32_t ip, uint16_t port) {
@@ -745,7 +788,6 @@ struct nsock *nsock_alloc_mode(int fd, uint8_t protocol,
                 LOG_ERROR("nsock_alloc: unknown protocol %u", protocol);
                 return NULL;
         }
-
         struct nsock *sk = rte_malloc("nsock", sizeof(struct nsock), 0);
         if (sk == NULL) {
                 LOG_ERROR("rte_malloc(nsock) failed");

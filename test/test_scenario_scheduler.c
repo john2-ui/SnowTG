@@ -1,6 +1,7 @@
 #include "../traffic-gen/core/scenario.h"
 #include "../traffic-gen/core/scheduler.h"
 #include "../traffic-gen/core/stats.h"
+#include "../traffic-gen/proto/http/http_client.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -44,6 +45,7 @@ static void make_scheduler_plan(struct tg_plan *plan) {
 
 static int test_plan_load_and_validation(void) {
         struct tg_plan plan;
+        const struct tg_http_config *http_config;
 
         ASSERT_TRUE(
             tg_plan_load_file(
@@ -52,8 +54,10 @@ static int test_plan_load_and_validation(void) {
         ASSERT_TRUE(plan.class_count == 1);
         ASSERT_TRUE(plan.total_weight == 1);
         ASSERT_TRUE(plan.classes[0].proto == &tg_http_proto_ops);
-        ASSERT_TRUE(strcmp(plan.classes[0].http_config.method, "GET") == 0);
-        ASSERT_TRUE(strcmp(plan.classes[0].http_config.path, "/") == 0);
+        http_config = plan.classes[0].proto_config;
+        ASSERT_TRUE(http_config != NULL);
+        ASSERT_TRUE(strcmp(http_config->method, "GET") == 0);
+        ASSERT_TRUE(strcmp(http_config->path, "/") == 0);
         ASSERT_TRUE(plan.classes[0].request_template_len != 0);
         ASSERT_TRUE(memcmp(plan.classes[0].request_template,
                            "GET / HTTP/1.0\r\nConnection: close\r\n\r\n",
@@ -69,29 +73,93 @@ static int test_plan_load_and_validation(void) {
 
 static int test_plan_partition(void) {
         struct tg_plan source;
-        struct tg_plan shards[3];
+        struct tg_plan shards[3] = {0};
+        const struct tg_http_config *source_config;
         uint32_t total_cps = 0;
         uint32_t total_concurrency = 0;
 
-        make_scheduler_plan(&source);
+        ASSERT_TRUE(
+            tg_plan_load_file(
+                &source, "../traffic-gen/scenarios/bootstrap_http.json") == 0);
+        source.target_cps = 10;
+        source.max_concurrency = 3;
+        source_config = source.classes[0].proto_config;
+        ASSERT_TRUE(source_config != NULL);
         for (unsigned int index = 0; index < 3; index++) {
+                const struct tg_http_config *shard_config;
+
                 ASSERT_TRUE(
                     tg_plan_partition(&shards[index], &source, index, 3) == 0);
                 total_cps += shards[index].target_cps;
                 total_concurrency += shards[index].max_concurrency;
-                ASSERT_TRUE(shards[index].classes[0].http_config.method ==
-                            shards[index].classes[0].http_method);
-                ASSERT_TRUE(shards[index].classes[0].http_config.path ==
-                            shards[index].classes[0].http_path);
+                shard_config = shards[index].classes[0].proto_config;
+                ASSERT_TRUE(shard_config != NULL);
+                ASSERT_TRUE(shard_config != source_config);
+                ASSERT_TRUE(strcmp(shard_config->method, "GET") == 0);
+                ASSERT_TRUE(strcmp(shard_config->path, "/") == 0);
+                ASSERT_TRUE(shards[index].classes[0].proto_config ==
+                            (void *)shard_config);
         }
         ASSERT_TRUE(shards[0].target_cps == 4);
         ASSERT_TRUE(shards[1].target_cps == 3);
         ASSERT_TRUE(shards[2].target_cps == 3);
         ASSERT_TRUE(total_cps == source.target_cps);
         ASSERT_TRUE(total_concurrency == source.max_concurrency);
+        ASSERT_TRUE(shards[0].selection_phase == 0);
+        ASSERT_TRUE(shards[1].selection_phase == 0);
+        ASSERT_TRUE(shards[2].selection_phase == 0);
         errno = 0;
         ASSERT_TRUE(tg_plan_partition(&shards[0], &source, 3, 3) == -1);
         ASSERT_TRUE(errno == EINVAL);
+        for (unsigned int index = 0; index < 3; index++)
+                tg_plan_fini(&shards[index]);
+        tg_plan_fini(&source);
+        return 0;
+}
+
+static int test_active_shards_and_weight_phase(void) {
+        struct tg_plan source;
+        struct tg_plan shards[2] = {0};
+        struct tg_scheduler schedulers[2];
+        struct start_recorder recorders[2] = {0};
+
+        memset(&source, 0, sizeof(source));
+        source.duration_sec = 2;
+        source.target_cps = 4;
+        source.max_concurrency = 4;
+        source.total_weight = 2;
+        source.class_count = 2;
+        source.classes[0].weight = 1;
+        source.classes[1].weight = 1;
+        strcpy(source.classes[0].name, "A");
+        strcpy(source.classes[1].name, "B");
+
+        ASSERT_TRUE(tg_plan_active_shards(&source, 0) == 0);
+        ASSERT_TRUE(tg_plan_active_shards(&source, 1) == 1);
+        ASSERT_TRUE(tg_plan_active_shards(&source, 8) == 4);
+        errno = 0;
+        ASSERT_TRUE(tg_plan_partition(&shards[0], &source, 0, 5) == -1);
+        ASSERT_TRUE(errno == EINVAL);
+        ASSERT_TRUE(tg_plan_partition(&shards[0], &source, 0, 2) == 0);
+        ASSERT_TRUE(tg_plan_partition(&shards[1], &source, 1, 2) == 0);
+        ASSERT_TRUE(shards[0].selection_phase == 0);
+        ASSERT_TRUE(shards[1].selection_phase == 1);
+        ASSERT_TRUE(tg_scheduler_init(&schedulers[0], &shards[0], 10) == 0);
+        ASSERT_TRUE(tg_scheduler_init(&schedulers[1], &shards[1], 10) == 0);
+
+        ASSERT_TRUE(tg_scheduler_tick(&schedulers[0], 0, 2, record_start,
+                                      &recorders[0]) == 0);
+        ASSERT_TRUE(tg_scheduler_tick(&schedulers[1], 0, 2, record_start,
+                                      &recorders[1]) == 0);
+        ASSERT_TRUE(tg_scheduler_tick(&schedulers[0], 10, 2, record_start,
+                                      &recorders[0]) == 2);
+        ASSERT_TRUE(tg_scheduler_tick(&schedulers[1], 10, 2, record_start,
+                                      &recorders[1]) == 2);
+        ASSERT_TRUE(memcmp(recorders[0].selected, "AB", 2) == 0);
+        ASSERT_TRUE(memcmp(recorders[1].selected, "BA", 2) == 0);
+
+        tg_plan_fini(&shards[0]);
+        tg_plan_fini(&shards[1]);
         return 0;
 }
 
@@ -175,6 +243,7 @@ static int test_stats(void) {
 int main(void) {
         ASSERT_TRUE(test_plan_load_and_validation() == 0);
         ASSERT_TRUE(test_plan_partition() == 0);
+        ASSERT_TRUE(test_active_shards_and_weight_phase() == 0);
         ASSERT_TRUE(test_weight_token_and_concurrency_bounds() == 0);
         ASSERT_TRUE(test_failed_start_and_duration_stop() == 0);
         ASSERT_TRUE(test_stats() == 0);

@@ -3,14 +3,16 @@
  * @brief UDP packet construction, ingress delivery, egress, and the udp_ops
  *        vector consumed by the unified socket layer.
  *
- * Inbound:  udp_ingress -> find socket by (ip,port,proto) -> recv_buf
- * Outbound: udp_tx_flush -> arp resolve -> out ring -> NIC
- * App:      udp_sendto builds a datagram into send_buf; udp_recvfrom pulls one
- *           from recv_buf.
+ * Inbound:  udp_ingress -> find socket by (ip,port,proto) -> ring or local RX
+ * Outbound: ring-backed UDP queues mbufs for udp_tx_flush; owner-local UDP
+ *           resolves ARP and sends directly to the owner output ring.
+ * App:      udp_sendto builds one datagram; udp_recvfrom pulls one datagram
+ *           from the selected receive queue.
  */
 #include "udp.h"
 
 #include "arp.h"
+#include "config.h"
 #include "log.h"
 #include "net_context.h"
 #include "owner_io.h"
@@ -18,6 +20,7 @@
 #include "ring.h"
 #include "socket.h"
 #include "socket_owner_internal.h"
+#include "udp_memory.h"
 
 #include <errno.h>
 #include <netinet/in.h>
@@ -41,6 +44,119 @@ static struct rte_udp_hdr *udp_header(struct rte_ipv4_hdr *ip) {
         return (struct rte_udp_hdr *)(ip + 1);
 }
 
+static struct udp_owner_memory *udp_memory_current(void) {
+        return socket_owner_udp_memory();
+}
+
+static void udp_local_rx_record_drop(void) {
+        udp_memory_record_queue_drop(udp_memory_current());
+}
+
+/**
+ * @brief Enqueue one mbuf in an owner-local UDP receive FIFO.
+ *
+ * Only the packet worker calls this function, so the queue needs no lock or
+ * DPDK ring.  The node is acquired only while a datagram is actually retained.
+ */
+static int udp_local_rx_enqueue(struct nsock *sk, struct rte_mbuf *mbuf) {
+        struct udp_owner_memory *memory = udp_memory_current();
+        struct udp_rx_node *node;
+
+        if (sk->u.udp.rx_queue_count >= UDP_RX_QUEUE_LIMIT) {
+                errno = ENOBUFS;
+                return -1;
+        }
+        node = udp_memory_rx_node_alloc(memory);
+        if (node == NULL)
+                return -1;
+
+        node->mbuf = mbuf;
+        if (sk->u.udp.rx_queue_tail != NULL)
+                sk->u.udp.rx_queue_tail->next = node;
+        else
+                sk->u.udp.rx_queue_head = node;
+        sk->u.udp.rx_queue_tail = node;
+        sk->u.udp.rx_queue_count++;
+        return 0;
+}
+
+/** Dequeue one mbuf and immediately release its now-unused queue node. */
+static struct rte_mbuf *udp_local_rx_dequeue(struct nsock *sk) {
+        struct udp_owner_memory *memory = udp_memory_current();
+        struct udp_rx_node *node = sk->u.udp.rx_queue_head;
+        struct rte_mbuf *mbuf;
+
+        if (node == NULL)
+                return NULL;
+        sk->u.udp.rx_queue_head = node->next;
+        if (sk->u.udp.rx_queue_head == NULL)
+                sk->u.udp.rx_queue_tail = NULL;
+        if (sk->u.udp.rx_queue_count > 0)
+                sk->u.udp.rx_queue_count--;
+
+        mbuf = node->mbuf;
+        node->mbuf = NULL;
+        node->next = NULL;
+        udp_memory_rx_node_free(memory, node);
+        return mbuf;
+}
+
+/** Release every queued local UDP datagram and its metadata. */
+static void udp_local_rx_drain(struct nsock *sk) {
+        struct rte_mbuf *mbuf;
+
+        while ((mbuf = udp_local_rx_dequeue(sk)) != NULL)
+                rte_pktmbuf_free(mbuf);
+}
+
+/**
+ * @brief Build and submit a local UDP datagram without retaining a TX mbuf.
+ *
+ * The worker output ring is the existing bounded handoff to the main lcore,
+ * which owns the NIC TX burst.  It is deliberately not a socket send buffer.
+ */
+static ssize_t udp_sendto_local(struct nsock *sk, const void *buf, size_t len,
+                                const struct sockaddr_in *daddr) {
+        struct inout_ring *ring = ring_instance();
+        const uint8_t *dst_mac;
+        struct rte_mbuf *mbuf;
+
+        if (ring == NULL || ring->out == NULL) {
+                errno = ENETDOWN;
+                return -1;
+        }
+        if (len > UINT16_MAX - sizeof(struct rte_udp_hdr)) {
+                errno = EMSGSIZE;
+                return -1;
+        }
+
+        /*
+         * A cache miss only parks the socket for an application retry.  The
+         * datagram itself is not built or retained until a MAC is available.
+         */
+        dst_mac = arp_resolve(g_net.mp, ring->out, daddr->sin_addr.s_addr,
+                              rte_get_timer_cycles());
+        if (dst_mac == NULL) {
+                nsock_tx_arp_wait(sk, daddr->sin_addr.s_addr);
+                errno = EAGAIN;
+                return -1;
+        }
+
+        mbuf = udp_build_pkt(g_net.mp, dst_mac, sk->local_ip,
+                             daddr->sin_addr.s_addr, sk->local_port,
+                             daddr->sin_port, buf, (uint16_t)len);
+        if (mbuf == NULL) {
+                errno = ENOBUFS;
+                return -1;
+        }
+        if (rte_ring_sp_enqueue(ring->out, mbuf) != 0) {
+                rte_pktmbuf_free(mbuf);
+                errno = ENOBUFS;
+                return -1;
+        }
+        return (ssize_t)len;
+}
+
 static int mac_is_broadcast(const uint8_t *mac) {
         return memcmp(mac, g_broadcast_mac, RTE_ETHER_ADDR_LEN) == 0;
 }
@@ -49,6 +165,15 @@ struct rte_mbuf *udp_build_pkt(struct rte_mempool *mp, const uint8_t *dst_mac,
                                uint32_t src_ip, uint32_t dst_ip,
                                uint16_t src_port, uint16_t dst_port,
                                const uint8_t *data, uint16_t data_len) {
+        const size_t total_len = sizeof(struct rte_ether_hdr) +
+                                 sizeof(struct rte_ipv4_hdr) +
+                                 sizeof(struct rte_udp_hdr) + data_len;
+
+        if (mp == NULL || dst_mac == NULL ||
+            total_len > rte_pktmbuf_data_room_size(mp))
+                return NULL;
+        if (data_len > UINT16_MAX - sizeof(struct rte_udp_hdr))
+                return NULL;
         const size_t l4_len = sizeof(struct rte_udp_hdr) + data_len;
         void *l4 = NULL;
         struct rte_mbuf *mbuf = eth_ipv4_build(mp, dst_mac, src_ip, dst_ip,
@@ -125,7 +250,16 @@ int udp_ingress(struct rte_mbuf *mbuf) {
 
         arp_table_confirm(ip->src_addr, eth->src_addr.addr_bytes);
 
-        if (rte_ring_mp_enqueue(sk->recv_buf, mbuf) != 0) {
+        if (sk->io_mode == NSOCK_IO_OWNER_LOCAL) {
+                if (udp_local_rx_enqueue(sk, mbuf) != 0) {
+                        LOG_DEBUG("local UDP RX full for " UDP_SK_FMT
+                                  ", dropping packet",
+                                  UDP_SK_ARG(sk));
+                        udp_local_rx_record_drop();
+                        rte_pktmbuf_free(mbuf);
+                        return -1;
+                }
+        } else if (rte_ring_mp_enqueue(sk->recv_buf, mbuf) != 0) {
                 LOG_ERROR("recv_buf full for " UDP_SK_FMT ", dropping packet",
                           UDP_SK_ARG(sk));
                 rte_pktmbuf_free(mbuf);
@@ -143,6 +277,17 @@ int udp_ingress(struct rte_mbuf *mbuf) {
 
 int udp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
         struct rte_mbuf *mbuf;
+
+        if (sk->io_mode == NSOCK_IO_OWNER_LOCAL) {
+                /*
+                 * Local UDP has no retained TX mbuf.  This callback is only
+                 * reached after an ARP waiter is woken; let the reactor retry
+                 * its request template.
+                 */
+                socket_owner_ready_post(sk, OWNER_IO_EV_WRITE);
+                return SOCK_TX_FLUSH_IDLE;
+        }
+
         if (rte_ring_sc_dequeue(sk->send_buf, (void **)&mbuf) < 0)
                 return SOCK_TX_FLUSH_IDLE;
 
@@ -182,6 +327,7 @@ int udp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
                 return SOCK_TX_FLUSH_RETRY;
         }
 
+#if ENABLE_UDP_DEBUG
         struct rte_udp_hdr *udp = udp_header(ip);
         uint16_t payload_len = rte_be_to_cpu_16(udp->dgram_len) -
                                (uint16_t)sizeof(struct rte_udp_hdr);
@@ -190,6 +336,7 @@ int udp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
                  IP_ARG(ip->src_addr), rte_be_to_cpu_16(udp->src_port),
                  IP_ARG(ip->dst_addr), rte_be_to_cpu_16(udp->dst_port),
                  payload_len, payload_len, payload);
+#endif
         return rte_ring_count(sk->send_buf) == 0 ? SOCK_TX_FLUSH_IDLE
                                                  : SOCK_TX_FLUSH_RETRY;
 }
@@ -208,7 +355,29 @@ ssize_t udp_sendto(struct nsock *sk, const void *buf, size_t len,
                 return -1;
         }
 
+        if (sk->local_port == 0) {
+                uint32_t local_ip =
+                    sk->local_ip == 0 ? g_net.local_ip : sk->local_ip;
+                int rc = nsock_udp_bind_ephemeral(sk, local_ip);
+
+                if (rc != 0) {
+                        errno = rc < 0 ? -rc : EIO;
+                        LOG_ERROR("udp_sendto: " UDP_SK_FMT
+                                  " ephemeral bind failed errno=%d",
+                                  UDP_SK_ARG(sk), errno);
+                        return -1;
+                }
+        }
+
+        if (len > UINT16_MAX - sizeof(struct rte_udp_hdr)) {
+                errno = EMSGSIZE;
+                return -1;
+        }
+
         const struct sockaddr_in *daddr = (const struct sockaddr_in *)dest_addr;
+        if (sk->io_mode == NSOCK_IO_OWNER_LOCAL)
+                return udp_sendto_local(sk, buf, len, daddr);
+
         /*
          * Resolution happens in udp_tx_flush on the packet worker.  Building
          * with a broadcast destination marks this mbuf as unresolved without
@@ -234,6 +403,7 @@ ssize_t udp_sendto(struct nsock *sk, const void *buf, size_t len,
                 return -1;
         }
         nsock_tx_mark_dirty(sk);
+#if ENABLE_UDP_DEBUG
         LOG_INFO("udp_sendto " UDP_SK_FMT " " IP_FMT ":%u -> " IP_FMT
                  ":%u len=%zu data=%.*s",
                  UDP_SK_ARG(sk), IP_ARG(sk->local_ip),
@@ -241,6 +411,7 @@ ssize_t udp_sendto(struct nsock *sk, const void *buf, size_t len,
                  IP_ARG(daddr->sin_addr.s_addr),
                  rte_be_to_cpu_16(daddr->sin_port), len, (int)len,
                  (const char *)buf);
+#endif
         return (ssize_t)len;
 }
 
@@ -248,8 +419,15 @@ ssize_t udp_recvfrom(struct nsock *sk, void *buf, size_t len,
                      __attribute__((unused)) int flags,
                      struct sockaddr *src_addr,
                      __attribute__((unused)) socklen_t *addrlen) {
-        struct rte_mbuf *mbuf = NULL;
-        if (rte_ring_sc_dequeue(sk->recv_buf, (void **)&mbuf) != 0) {
+        struct rte_mbuf *mbuf = sk->u.udp.rx_current;
+
+        if (mbuf == NULL) {
+                if (sk->io_mode == NSOCK_IO_OWNER_LOCAL)
+                        mbuf = udp_local_rx_dequeue(sk);
+                else if (rte_ring_sc_dequeue(sk->recv_buf, (void **)&mbuf) != 0)
+                        mbuf = NULL;
+        }
+        if (mbuf == NULL) {
                 /*
                  * Transport callbacks are owner-side probes and must never
                  * block the packet worker.  socket_owner.c parks a blocking
@@ -258,6 +436,7 @@ ssize_t udp_recvfrom(struct nsock *sk, void *buf, size_t len,
                 errno = EAGAIN;
                 return -1;
         }
+        sk->u.udp.rx_current = mbuf;
 
         struct rte_ether_hdr *eth =
             rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
@@ -280,14 +459,11 @@ ssize_t udp_recvfrom(struct nsock *sk, void *buf, size_t len,
                 memmove(data, (uint8_t *)data + len, payload_len - len);
                 udp->dgram_len = rte_cpu_to_be_16(sizeof(struct rte_udp_hdr) +
                                                   payload_len - len);
-                if (rte_ring_mp_enqueue(sk->recv_buf, mbuf) != 0) {
-                        LOG_ERROR("recv_buf full while truncating, dropping");
-                        rte_pktmbuf_free(mbuf);
-                }
                 return (ssize_t)len;
         }
         rte_memcpy(buf, data, payload_len);
         rte_pktmbuf_free(mbuf);
+        sk->u.udp.rx_current = NULL;
         return (ssize_t)payload_len;
 }
 
@@ -303,9 +479,19 @@ int udp_close(struct nsock *sk) {
          * owner after fd detachment, queued datagrams can be drained and the
          * object retired immediately without racing ingress or recvfrom.
          */
+#if ENABLE_UDP_DEBUG
         LOG_INFO("udp_close socket=%u", sk->id);
-        udp_drain_ring(sk->recv_buf);
-        udp_drain_ring(sk->send_buf);
+#endif
+        if (sk->u.udp.rx_current != NULL) {
+                rte_pktmbuf_free(sk->u.udp.rx_current);
+                sk->u.udp.rx_current = NULL;
+        }
+        if (sk->io_mode == NSOCK_IO_OWNER_LOCAL) {
+                udp_local_rx_drain(sk);
+        } else {
+                udp_drain_ring(sk->recv_buf);
+                udp_drain_ring(sk->send_buf);
+        }
         nsock_free(sk);
         return 0;
 }

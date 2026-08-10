@@ -22,6 +22,7 @@
 #define NETARCH_SOCKET_OWNER_H
 
 #include "tcp_memory.h"
+#include "udp_memory.h"
 
 #include <pthread.h>
 #include <stdbool.h>
@@ -131,6 +132,8 @@ struct socket_owner {
         struct rte_mempool *ready_event_pool;
         /** Owner-local TCP hot-path pools; copied with each future shard. */
         struct tcp_owner_memory tcp_memory;
+        /** Owner-local UDP receive-queue metadata pool. */
+        struct udp_owner_memory udp_memory;
 
         struct nsock *slots[NSOCK_ID_MAX];
         uint32_t generations[NSOCK_ID_MAX];

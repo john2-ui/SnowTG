@@ -85,6 +85,29 @@ int owner_io_bind(struct nsock_handle handle, const struct sockaddr *addr,
         return 0;
 }
 
+int owner_io_bind_ephemeral(struct nsock_handle handle, uint32_t local_ip) {
+        struct nsock *sk = owner_io_resolve(handle);
+        int rc;
+
+        if (sk == NULL)
+                return -1;
+        if (sk->protocol != IPPROTO_UDP) {
+                errno = EOPNOTSUPP;
+                return -1;
+        }
+        if (local_ip == INADDR_ANY) {
+                errno = EADDRNOTAVAIL;
+                return -1;
+        }
+
+        rc = nsock_udp_bind_ephemeral(sk, local_ip);
+        if (rc != 0) {
+                errno = rc < 0 ? -rc : EIO;
+                return -1;
+        }
+        return 0;
+}
+
 int owner_io_connect(struct nsock_handle handle, const struct sockaddr *addr,
                      socklen_t addrlen) {
         struct nsock *sk = owner_io_resolve(handle);

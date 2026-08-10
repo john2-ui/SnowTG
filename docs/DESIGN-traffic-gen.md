@@ -255,6 +255,11 @@ traffic-gen/
 - TCP class 必须能 `connect`；UDP class 走 `sendto`/`recvfrom`。  
 - 对端地址与本地 `g_net` 同网或路由策略在文档中写明（第一期可要求二层直达 + ARP）。
 
+worker 数表示物理 owner/RX worker 数，不按 class 或协议静态切分。实际参与发车的
+scheduler shard 数为 `min(workers, target_cps, max_concurrency)`；每个 active shard
+保留完整 class 集合，CPS 与并发按商和余数分片，未参与发车的 worker 仍可处理被动
+收包。class `weight` 控制跨 shard 的尝试选择比例，不等价于成功请求比例。
+
 ### 4.2 混合调度器
 
 职责：
@@ -269,6 +274,10 @@ traffic-gen/
 - **发车**：每 tick（如 1ms）根据令牌桶尝试 `min(可用并发, 令牌数)` 次 `start_transaction`。  
 - **选类**：前缀和 + 随机数，或确定性 WRR（便于复现实验）。  
 - **结束**：达到 `duration_sec` 后停止发车，等待 in-flight 排空或超时强杀并计入失败。
+
+每个分片使用由 plan 计算出的 WRR 初始 phase，避免低 CPS 场景下所有 worker 从同一个
+class 前缀同时开始。该 phase 只消除启动同步偏斜；失败率、响应时延和并发占用仍会
+影响各 class 的实际成功数量。
 
 ### 4.3 连接 / 事务状态机（TCP 类）
 
@@ -307,6 +316,10 @@ keep-alive 后可扩展为一个 flow 串行承载多个 txn。
 struct tg_proto_ops {
     const char *name;
 
+    /* 复制/释放 immutable class 配置，供 plan 分片和清理使用。 */
+    int (*config_clone)(const void *source, void **destination);
+    void (*config_free)(void *config);
+
     /* 初始化插件私有 transaction state。 */
     int (*init)(struct tg_txn *txn);
 
@@ -328,6 +341,10 @@ struct tg_proto_ops {
 继续接收、事务完成和协议失败。HTTP 插件使用 vendored llhttp 9.4.3（MIT）解析
 字节流；`proto_ctx` 持有每事务独立的 parser state，llhttp callback 负责 HTTP
 framing，插件在 headers complete 阶段要求 HTTP/1.0 或 HTTP/1.1 的 2xx status。
+
+class 的协议配置由具体插件拥有并通过 `proto_config` 传递；`tg_class_plan` 不保存
+HTTP method/path 等协议专用字段。分片时调用 `config_clone`，计划结束时调用
+`config_free`，因此配置不能借用 JSON 输入缓冲区或另一个 shard 的地址。
 
 当前支持 `Content-Length`、chunked 与 EOF-delimited response body，并在完整 message
 后完成短连接事务。保持严格解析，不启用 llhttp 的 lenient flags。暂不支持

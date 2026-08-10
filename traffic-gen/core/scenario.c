@@ -10,6 +10,7 @@
 #include "scenario.h"
 
 #include "../../third_party/jsmn/jsmn.h"
+#include "../proto/http/http_client.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
@@ -118,6 +119,16 @@ static int tg_parse_bool(const char *json, const jsmntok_t *token,
         return -1;
 }
 
+/** @brief Releases one protocol-owned class configuration. */
+static void tg_class_plan_fini(struct tg_class_plan *class_plan) {
+        if (class_plan == NULL)
+                return;
+        if (class_plan->proto_config != NULL && class_plan->proto != NULL &&
+            class_plan->proto->config_free != NULL)
+                class_plan->proto->config_free(class_plan->proto_config);
+        memset(class_plan, 0, sizeof(*class_plan));
+}
+
 /** @brief Returns the token index of a direct object member's value. */
 static int tg_object_value(const jsmntok_t *tokens, int token_count,
                            int object_index, const char *json,
@@ -161,18 +172,26 @@ static bool tg_object_has_only(const jsmntok_t *tokens, int token_count,
         return true;
 }
 
-/**
- * @brief Compiles one HTTP object and binds its stable class-owned strings.
- */
+/** @brief Compiles one HTTP object into an owning protocol configuration. */
 static int tg_parse_http(const char *json, const jsmntok_t *tokens,
                          int token_count, int object_index,
                          struct tg_class_plan *class_plan) {
         static const char *const allowed[] = {"method", "path", "keepalive"};
+        struct tg_http_config *config;
         int method_index;
         int path_index;
         int keepalive_index;
         bool keepalive = false;
 
+        if (class_plan == NULL) {
+                errno = EINVAL;
+                return -1;
+        }
+        config = calloc(1, sizeof(*config));
+        if (config == NULL)
+                return -1;
+        class_plan->proto = &tg_http_proto_ops;
+        class_plan->proto_config = config;
         if (tokens[object_index].type != JSMN_OBJECT ||
             !tg_object_has_only(tokens, token_count, object_index, json,
                                 allowed,
@@ -187,12 +206,11 @@ static int tg_parse_http(const char *json, const jsmntok_t *tokens,
         keepalive_index = tg_object_value(tokens, token_count, object_index,
                                           json, "keepalive");
         if (method_index < 0 || path_index < 0 ||
-            tg_copy_string(class_plan->http_method,
-                           sizeof(class_plan->http_method), json,
+            tg_copy_string(config->method, sizeof(config->method), json,
                            &tokens[method_index]) != 0 ||
-            tg_copy_string(class_plan->http_path, sizeof(class_plan->http_path),
-                           json, &tokens[path_index]) != 0 ||
-            class_plan->http_path[0] != '/') {
+            tg_copy_string(config->path, sizeof(config->path), json,
+                           &tokens[path_index]) != 0 ||
+            config->path[0] != '/') {
                 errno = EINVAL;
                 return -1;
         }
@@ -200,12 +218,9 @@ static int tg_parse_http(const char *json, const jsmntok_t *tokens,
             tg_parse_bool(json, &tokens[keepalive_index], &keepalive) != 0)
                 return -1;
 
-        class_plan->http_config.method = class_plan->http_method;
-        class_plan->http_config.path = class_plan->http_path;
-        class_plan->http_config.connection_close = !keepalive;
-        class_plan->proto = &tg_http_proto_ops;
+        config->connection_close = !keepalive;
         if (class_plan->proto->build_request(
-                &class_plan->http_config, class_plan->request_template,
+                config, class_plan->request_template,
                 sizeof(class_plan->request_template),
                 &class_plan->request_template_len) != 0 ||
             class_plan->request_template_len == 0) {
@@ -319,15 +334,22 @@ static int tg_parse_classes(const char *json, const jsmntok_t *tokens,
                 return -1;
         }
         for (int i = array_index + 1; i < token_count; i++) {
+                struct tg_class_plan *class_plan;
+
                 if (tokens[i].parent != array_index)
                         continue;
-                if (plan->class_count >= TG_PLAN_MAX_CLASSES ||
-                    tg_parse_class(json, tokens, token_count, i,
-                                   &plan->classes[plan->class_count]) != 0)
+                if (plan->class_count >= TG_PLAN_MAX_CLASSES)
                         return -1;
+                class_plan = &plan->classes[plan->class_count];
+                if (tg_parse_class(json, tokens, token_count, i, class_plan) !=
+                    0) {
+                        tg_class_plan_fini(class_plan);
+                        return -1;
+                }
                 total_weight += plan->classes[plan->class_count].weight;
                 if (total_weight > UINT32_MAX) {
                         errno = ERANGE;
+                        tg_class_plan_fini(class_plan);
                         return -1;
                 }
                 plan->class_count++;
@@ -451,39 +473,90 @@ out:
         return result;
 }
 
+unsigned int tg_plan_active_shards(const struct tg_plan *plan,
+                                   unsigned int worker_count) {
+        unsigned int active_shards;
+
+        if (plan == NULL || worker_count == 0 || plan->target_cps == 0 ||
+            plan->max_concurrency == 0)
+                return 0;
+
+        active_shards = worker_count;
+        if (active_shards > plan->target_cps)
+                active_shards = plan->target_cps;
+        if (active_shards > plan->max_concurrency)
+                active_shards = plan->max_concurrency;
+        return active_shards;
+}
+
 int tg_plan_partition(struct tg_plan *destination, const struct tg_plan *source,
                       unsigned int shard_index, unsigned int shard_count) {
+        struct tg_plan partitioned;
         uint32_t cps_base;
         uint32_t cps_remainder;
         uint32_t concurrency_base;
         uint32_t concurrency_remainder;
 
         if (destination == NULL || source == NULL || shard_count == 0 ||
-            shard_index >= shard_count) {
+            shard_index >= shard_count || destination == source ||
+            source->target_cps == 0 || source->max_concurrency == 0 ||
+            source->class_count == 0 || source->total_weight == 0 ||
+            shard_count > source->target_cps ||
+            shard_count > source->max_concurrency) {
                 errno = EINVAL;
                 return -1;
         }
-        memcpy(destination, source, sizeof(*destination));
+
+        memset(&partitioned, 0, sizeof(partitioned));
+        memcpy(&partitioned, source, sizeof(partitioned));
+        for (uint32_t class_index = 0; class_index < partitioned.class_count;
+             class_index++)
+                partitioned.classes[class_index].proto_config = NULL;
+
         cps_base = source->target_cps / shard_count;
         cps_remainder = source->target_cps % shard_count;
         concurrency_base = source->max_concurrency / shard_count;
         concurrency_remainder = source->max_concurrency % shard_count;
-        destination->target_cps =
+        partitioned.target_cps =
             cps_base + (shard_index < cps_remainder ? 1U : 0U);
-        destination->max_concurrency =
+        partitioned.max_concurrency =
             concurrency_base + (shard_index < concurrency_remainder ? 1U : 0U);
-        for (uint32_t class_index = 0; class_index < destination->class_count;
+        partitioned.selection_phase =
+            (uint32_t)(((uint64_t)shard_index * source->total_weight) /
+                       shard_count);
+        for (uint32_t class_index = 0; class_index < partitioned.class_count;
              class_index++) {
-                destination->classes[class_index].http_config.method =
-                    destination->classes[class_index].http_method;
-                destination->classes[class_index].http_config.path =
-                    destination->classes[class_index].http_path;
+                const struct tg_class_plan *source_class =
+                    &source->classes[class_index];
+                struct tg_class_plan *destination_class =
+                    &partitioned.classes[class_index];
+
+                if (source_class->proto_config == NULL)
+                        continue;
+                if (source_class->proto == NULL ||
+                    source_class->proto->config_clone == NULL ||
+                    source_class->proto->config_free == NULL ||
+                    source_class->proto->config_clone(
+                        source_class->proto_config,
+                        &destination_class->proto_config) != 0) {
+                        if (errno == 0)
+                                errno = EINVAL;
+                        tg_plan_fini(&partitioned);
+                        return -1;
+                }
         }
+
+        *destination = partitioned;
         return 0;
 }
 
 /** @copydoc tg_plan_fini */
 void tg_plan_fini(struct tg_plan *plan) {
-        if (plan != NULL)
-                memset(plan, 0, sizeof(*plan));
+        if (plan == NULL)
+                return;
+        for (uint32_t class_index = 0; class_index < plan->class_count &&
+                                       class_index < TG_PLAN_MAX_CLASSES;
+             class_index++)
+                tg_class_plan_fini(&plan->classes[class_index]);
+        memset(plan, 0, sizeof(*plan));
 }

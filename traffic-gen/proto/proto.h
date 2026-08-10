@@ -36,10 +36,24 @@ enum tg_proto_result {
 struct tg_proto_ops {
         const char *name;
 
+        /**
+         * Clone and release one immutable class configuration.
+         *
+         * Both callbacks are optional for protocols without class
+         * configuration.  A non-NULL class configuration must provide both
+         * callbacks so a plan can be partitioned and finalized safely.
+         */
+        int (*config_clone)(const void *source, void **destination);
+        void (*config_free)(void *config);
+
         int (*init)(struct tg_txn *txn);
         int (*build_request)(const void *class_config, uint8_t *buffer,
                              size_t buffer_cap, size_t *request_len_out);
         void (*on_tx_accepted)(struct tg_txn *txn, size_t bytes);
+        /*
+         * Stream transports may deliver arbitrary chunks. Datagram
+         * transports deliver one complete datagram per callback.
+         */
         enum tg_proto_result (*on_rx)(struct tg_txn *txn, const uint8_t *data,
                                       size_t len);
         enum tg_proto_result (*on_eof)(struct tg_txn *txn);

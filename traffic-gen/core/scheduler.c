@@ -69,6 +69,7 @@ int tg_scheduler_init(struct tg_scheduler *scheduler,
         memset(scheduler, 0, sizeof(*scheduler));
         scheduler->plan = plan;
         scheduler->cycles_per_second = cycles_per_second;
+        scheduler->selection_cursor = plan->selection_phase;
         return 0;
 }
 

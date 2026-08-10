@@ -572,7 +572,8 @@ HTTP transaction complete
    - RX 队列保存 `tcp_rx_blob`；
    - TX 控制队列保存 `tcp_fragment`；
    - owner-local 模式使用嵌入 `tcp_stream` 的 FIFO，不调用 `rte_ring_create()`；
-   - app-visible socket 保持原有 DPDK ring，避免改变 BSD API、UDP 和 echo app 语义。
+   - app-visible socket 保持原有 DPDK ring，避免改变 BSD API、UDP 和 echo app
+     语义；traffic-gen UDP 的 owner-local 模式在 ARC-006 中单独定义。
 3. `nsock_free()` 提供最终释放 observer；scheduler 分别记录活跃 transaction 与 `live_sockets`，后者仅在 TCP 完整释放后减少。
 4. scheduler 停止、活跃 flow 与 `live_sockets` 均为零后，runtime 自动停止并等待 worker 退出。
 
@@ -603,6 +604,24 @@ HTTP transaction complete
 
 以上是 ARC-003 实施时的安全边界。后续已完成 per-lcore 资源分片、RSS 队列绑定、
 owner 发布和软件接收分流，解除过程与当前不变量见 ARC-005。
+
+---
+
+## ARC-006：traffic-gen UDP 直发与按需接收队列
+
+- **状态**：已实施；BSD/app-visible UDP 仍保留 ring-backed 兼容路径。
+- **范围**：`udp.c`、`udp_memory.*`、`socket_owner`、`owner_io` 和 UDP flow。
+- **触发**：UDP traffic-gen 不需要 TCP 式 ACK 保留和重传发送缓存；每个
+  socket 创建 `recv_buf/send_buf` 会让短生命周期流在高并发下持续占用 DPDK
+  ring 元数据。
+- **架构决策**：owner-local UDP 不创建 socket DPDK ring。发送路径在 ARP
+  可用时直接把新建 mbuf 交给 worker 的 `ring->out`，输出队列满即释放并
+  返回资源失败；ARP 未解析时只等待 socket 级 WRITE 事件，不保存 datagram。
+  接收路径只按需从 owner UDP metadata pool 取得小节点，挂入有界 FIFO；队列
+  满或节点耗尽时释放新到 mbuf 并计 drop。
+- **顺序约束**：UDP 短读保留当前 mbuf，不把剩余 datagram 放回队尾；关闭
+  先排空当前 mbuf 和 local RX FIFO，再执行 `nsock_free`。BSD/app-visible
+  UDP 与 UDP echo 仍通过 `NSOCK_IO_RINGS` 使用原有语义。
 
 ---
 

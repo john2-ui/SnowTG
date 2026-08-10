@@ -81,6 +81,16 @@
 #define RING_SIZE 1024
 /** Rx/Tx descriptor ring size for the NIC queues. */
 #define NB_DESC 1024
+/**
+ * Maximum number of datagrams retained by one owner-local UDP socket.
+ *
+ * This is a logical queue limit only.  Local UDP does not allocate a
+ * per-socket DPDK ring; queue nodes are acquired lazily from the owner's
+ * UDP memory domain.
+ */
+#define UDP_RX_QUEUE_LIMIT 64U
+/** Per-owner capacity of lazy owner-local UDP RX queue nodes. */
+#define UDP_MEMORY_RX_NODES 4095U
 
 /**
  * How often timer-owning lcores call rte_timer_manage(), in milliseconds.
@@ -131,9 +141,15 @@
 /** Aliases for handshake control-segment RTO (SYN / SYN+ACK share SYN_*). */
 #define TCP_CTRL_RTO_MS TCP_SYN_RTO_MS
 #define TCP_CTRL_MAX_RETRIES TCP_SYN_MAX_RETRIES
-/** Inclusive ephemeral local-port range for implicit bind in tcp_connect. */
-#define TCP_EPHEMERAL_PORT_MIN 49152
-#define TCP_EPHEMERAL_PORT_MAX 65535
+/** Inclusive ephemeral local-port range shared by TCP and UDP. */
+#define EPHEMERAL_PORT_MIN 49152
+#define EPHEMERAL_PORT_MAX 65535
+/** Compatibility aliases for implicit bind in tcp_connect. */
+#define TCP_EPHEMERAL_PORT_MIN EPHEMERAL_PORT_MIN
+#define TCP_EPHEMERAL_PORT_MAX EPHEMERAL_PORT_MAX
+/** UDP's implicit-bind range used by owner-local datagram flows. */
+#define UDP_EPHEMERAL_PORT_MIN EPHEMERAL_PORT_MIN
+#define UDP_EPHEMERAL_PORT_MAX EPHEMERAL_PORT_MAX
 /** Max out-of-order segments buffered per TCB (DLL today; see ofo rb-tree
  * TODO). */
 #define TCP_OFO_MAX_SEGS 32
