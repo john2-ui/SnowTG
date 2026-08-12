@@ -1,0 +1,834 @@
+snow@snow:~/dpdk-l/traffic-gen$ sudo ./build/traffic-gen -- --workers 8 ./scenarios/test/http-sweep-8kcps-250con.json
+EAL: Detected CPU lcores: 16
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/rte/mp_socket
+EAL: Selected IOVA mode 'PA'
+EAL: No free 1048576 kB hugepages reported on node 0
+[CORE][INFO ][main_tg.c:732] traffic-gen scenario=http-sweep-8k-250 classes=1 workers=8 active_shards=8 cps=8000 concurrency=250 socket_id_capacity=4096
+[CORE][INFO ][port.c:307] port 0 hardware RSS fallback: RSS RETA is unavailable
+[CORE][INFO ][port.c:315] port 0 started (driver=net_vmxnet3 rx_mode=software-dispatch rxq=1 txq=8 workers=8 rss_hf=0x30)
+[CORE][INFO ][net_context.c:16] local identity: port=0 ip=192.168.21.2 mac=00:0c:29:f1:e6:6a
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=1 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=1 size=1024
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=2 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=2 size=1024
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=3 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=3 size=1024
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=4 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=4 size=1024
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=5 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=5 size=1024
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=6 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=6 size=1024
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=7 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=7 size=1024
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=8 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=8 size=1024
+[CORE][INFO ][stack_runtime.c:179] packet worker started lcore=1 q[CORE][INFO ][stack_runtime.c:179] packet worker[CORE][INFO ][stack_runtime.c:179] pa ckst[CORE][INFO ][stack_runtime.c:179] packet weor[CORE][INFO ][stack_runtime.c:179] paaueue=0
+t worker started lcore=4 queue=3
+[CORE][INFO ][stack_runtime.c:179] cke[CORE][INFO ][stack_runtime.c:179] trtepackd lcorekper started lcore=5 queue=et= worker started lcore=8 queue=7
+4
+2 queue=1
+ worker started lcore=7 queue=6
+[CORE][INFO ][stack_runtime.c:179] packet worker started lcore=3 queue=2
+acket worker started lcore=6 queue=5
+[CORE][INFO ][main_tg.c:458] traffic-gen stats active=31 [CORE][INFO ][main_tg.c:458] traffi[CORE][INFO ][main_tg.c:458] trac-gen lfivf[CORE][INFO ][main_tg.c:458] stre_socaffic-gen sktats[CORE][INFO ][main_tg.c:458] itat actiets active=ts=265 [CORE][INFO ][main_tg.c:458] traffic-gen stats active=31 liraffic-gen stats active=31 live_sockets=341 sta29 live[CORE][INFO ][main_tg.c:458] rted=4658 done=4627 s_socskets=603 tuccessve=32 live_sockets=326 started=5231 done=5199 success=5199 fail=0 tx=192363 rx=717462
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0vre=_tso[CORE][INFO ][main_tg.c:458] traffic-gen stats active=31 live_sockets=5534627 fastarted=9415  done=9386 sc tx_avail-gen stats active=32 live_sockets=585 started=9208 done=9startuccaffic-gen stail=0 tx=171199 rx=638526
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 1arted=4683 dted=8797 dtx_ones a76 success=9176 fail=0 tx=339512 rx=1266288
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tckets=283 started=4ss=9386 fail=0 tx=347282 rx=1295268
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=81a76 tx_peak=25 payload_avail=8176 payload_peak=26 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=91172 rx=46943 scans=30843v flusone=8766 suc760 done=4729 succehss=cail=ctive=ess=8766 fai8l=0=4308x43_avail= e318180 t x_pe71 livd8t=iae_srty4_6252 9enq=30845 foskai=uc cessx=324dirty_5l 2txded9 p=c0 t342 rx=1_209kets=4xa==4pueap65=2 fak=310 payl48 started=6936 done=6905 success=69057=4973 rx=652602
+[CORE][INFO ][main_tg.c:466] otrafficyload_avail=8180 payload_peak=29 tx_-8185 tx_peak=26 p708
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8179 tx_peak=27 payload_avail=8179 payload_peak=27 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker tu3a d_avaail=8185 payload_peak=30 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=105478 rx=2fail=0 t3x=a2g5en i4r5y252 scans=mlemory paused=0 pauses=0 =txl_al48o5 rxloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=89161 rx=45941 scans=30081 flush=30081 dirty_enq=30085 dirty_dedup=34244 dirty_requeue=0 arp_wait=1 arp_wake=1 dirty_depth=4 dirty_hwm=17 budge0 tv1=952890
+[CORE][INFO ][main_tg.c:466] trad_avaix=172124 affal=8185 payload_peak=26 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=1rx=64197iil=5550 flush=15550 dirtyt=0 turn_6
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8185 tx_peak=27 payload_avail=8185 payload_peak=28 tx02598 rx=26094 scans=c17269 _-alloc_fail=0
+g81889_enfelush=1726 tx_n memory pqa=155a50 di9used=0 peak=26 payload_avail=8188 payload_peak=26 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-n[CORE][INFO ][main_tg.c:476] s=88v989 g22 dirty_requeue=0rty_dedup=16972 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depten worker turns=103871 rx=23739 scans=15717 flush=15717 dirty_enq=15717 dirty_dedup=17496 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=19 budget=0 turn_avg_us=8g_us=105 rx_us=1978011 maint_us=1142058 reactor_us=2162849 flush_us=1313029
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=89162 events=29412 event_bupauses=0 tx_h=0 dirty_hwm=13 rst_hwm=12 starts=9208 tokenavail=98184 tx_peak=26 payltrbx  oadudget =0arx_us=14s=6_avail=8184 payload_peak=26 tx_alloc_fai l=0
+=r[CORE][INFO ][main_tg.c:476]  rturn_d43898 scans=28733 flush=28733 dirty_enq=28733 dirty_dedup=32732 dirty_rptraffic-gen worker turns=91212 rx=3irty_enq=17269 dirty_dedup=19237 dirty_requeue=0 arp_wait=0 a4rp_wake=0 d_ireas6v16ty_depth=0g_affiwcaitu s=88-gen worker turns=105030 rx=23362 scans=15483 flush=15483 dirty_enq=15483 dirty_dedup=17197 dirty_requeue=0 arp_wait=1 arp_wake=1 di2rty_depth=0 dirscocket_releases=8623 ring_hwm_in=22 ring_h dirty_hwm=14 budget=0 turn_av7q134 mainwt_usg=uaens=ty_hwm=16 budget=0 turn_avg_us=88 rx_us=1416218 maint_us=1373729 reactor_us=2041438 flush_us=1065018
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=105031 events=15146 event_burst_hwm=11 starts=4683 tokens=31 socket_releases=44=2270m_out=45 u70_us=90 rx_us=1487702 maint_us=1339142 reactor_us=2059623 flush_us=1099590
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=102599 events=16901 event_burst_hwm=12 starts rx_us=1409892 maint_us=137 672137018 ring_867 reactor_us=2045964 flush_us=1076610
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=103 flush=227e=0 arp_wait=5231 tokens8a7h02rx5 reactor_us=2032614 flush_us=1067105
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=105479 events=15229 event_burst_hwm=13 starts=4658 tokens=31 socket_releases=4317 ring_hwm_in=17 ring_hwm_out=27 rx_ring_drops=0 tx_nic_drops=0 rx_owne7 dirty_enq=2r2707= wm_i_ring_drop=0 arp_wake=0 di events=154r_hits=23252 rx_software_hashes=0 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=10744 conns=0 tx_nic_drops=0 rx_owner_hits=45931 rx_software_hashes=6 rx_08 event_burst_hwm=12 sn=18 ring_hwm_out=44 rx_ring_drops=0 tx_nic_drops=0 rx_owner_htit32 socket_releases=4905 rp_wake=0 dirty_depth=2 dirty_hwm=20 budgearts=4760 tokens=31 socket_releases=4477 ring_hwm_in=22 ring_hwm_out=51 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=23737 rx_software_hashes=0 rx_parsect_max_us=35038 first_rx_avg_us=24752 first_rx_max_us=66694 complete_avg_us=24762 complete_max_us=66710
+t=0 turn_avg_us=10erty_depth=0 dirty_hwm=18 budget=0 turn_avg_us=105 rx_us=1953dirty_dedup=25741 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=16 budget=0 turn_avg_us=102 rx_us=1755888 maint_us=1237756 reactor_us=2097156 flush_us=1208766
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=91213 events=2213_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connec t_avg_us=11786 connect_max_us=39267rx_us=1969006 m7 event_burst_hwm=14 starts=6936 tokens=28 socket_releases=6488 ring_hwm_in=22 ring_hwm_out=59 rx_ring_drops=0 tx_nic_drops=0 rx_owparse_fallbacks=2
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=10111 c first_rx_avg_us=26922 first_rx_max_us=67825 completes=02o33inern_nnect_max_us_hitg_hwm_in=22 ring_hwm_out=48 rx_ring_drops=0 tx_nic=38230 first_rx_avg_us=23376 first_rx_max_us=68794 complete_avg_us=23386 complete_max_us=68811
+578 maint_us=1153524 reactor_us=2141503 fluash_us=1292580_drops=0 rx_owner_hits=26088 rx_software_hashes
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=88990 events=28122 event_burst_hwm=12 starts=8797 tokens=30 socket_releases=8244 ring_hwm_in=19 ring_hwm_out=47 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=43892 rx_software_hashes=4 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traff60 rx_sofstw=34608 rxvg_us=26934 complete_max_us=67840
+_software_hashes=6 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=10573 connect_max_us=37772 first_rx_avg_us=24424 first_are_hashes=0 rx=4 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency c_ic-gen latency coaonint_us=1156203 reactor_us=2rx_max_us=67446 complete_avg_us=24434 complete_max_us=67451
+parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=11980 connect_max_us=38884 first_rx_avg_us=27260 first_rx_max_us=68166 complete_avg_us=27271 complete_max_us=68182
+nnect_avg_us=1018nect_avg_us=11537 connect_max_us=38416 f1 connect_max_us=39743 first_rx_avg_us=23554 first_rx_max_us=67226 complete_avg_us=23564 complete_max_us=67233
+irst_rx_avg_us=26387 first_rx_max_us=67840 complete_avg_us=26397 complete_max_us157576 =flush_us=1302330
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=91173 events=30225 event_burst_hwm=15 starts=9415 tokens=0 socket_releases=8812 ring_hwm_in=30 ring_hwm_out=49 rx_ring_drops=0 tx67847
+_nic_drops=0 rx_owner_hits=46943 rx_software_hashes=0 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=10333 connect_max_us=38968 first_rx_avg_us=23666 first_rx_max_us=68056 complete_avg_us=23676 co[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=2493110604
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=2198301615
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=2685831768
+mplete[CORE][INFO ][tcp.c:2499] tcp CLOSE__max_us=68062
+WAIT re-ACK peer FIN 192.168.21.106:8888 ack=149525450
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=101364417
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=1453623925
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=394048496
+[CORE][INFO ][main_tg.c:458] traffic-gen stats active=31 live_socke[CORE][INFO ][main_tg.c:458] t[CORE][INFO ][main_tg.c:458] traff[CORE][INFO ][main_tg.c:458] tric-gen stats acaffic-gen stats active=32 live_sockets=354 started=1[CORE][INFO ][main_tg.c:458] traf[CORE][INFO ][main_tg.c:458] fic-ge[CORE][INFO ][main_tg.c:458] ntiv5987 done=15955 success=159traffic-gen stats active=31 live_socketss=387 started=11276 done=11245 success=11245 fail=0 tx=416065 rx=1551810
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_ave=31 live_sockets=370 started=8596 done=8565 success=8565 fail=0  stats active=31 live_sockets=358 started=11152 done=11121 success=11121 failtraffic-gen stats act[CORE][INFO ][main_tg.c:458] a5t5 ftraiilfve=31=r3affiail=0 tx=590335 rx=2201790
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8177 tx_peak=29 payload_avail=8177 payload_peak=29 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-ge=0 tx=411477 rx=1534698
+[CORE][INFO ][main_tg.c:466] traffic-gen memorn worker tu=8179 tx_peak=27 payload_fic-gen stats active=32 live_sockets=avail=8179r  live_sockets=39363c-gen stats active y paused=0 pauses=0 tx_tpayload_peak=28 tx_alloc_fa6il=0
+nastarted=14774 done=14743 successx=14743 fail=0 tx=545491 rx=2034534
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8180 tx_peak=27 payload_avail=8180 payload_peak=27 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=89152 rx=2=31 live_sockets=342 started=17964 done=17933 success=17939893 scans=19800 flush=vail3=81[CORE][INFO ][main_tg.c:476] traffic-gen worke  fail=0 tx=663521 rxs=89174 rx=33897 scans=22249 =316905 rx=1181970
+19800 dirty_enq=19805 dirty_dedup=22053 dirtyr turns=8854 st=24_[CORE][INFO ][main_tg.c:466] s37823 arrtte tx_peak=26 payload_avail=8183 pad=12229 done=12197 equesuccess=12197 u74754
+[CORE][INFO ][main_tg.c:466] trafffrfae=0 arp_wait=0 arp_wake=0 dirtyyload_peak=26 _darted=11672 done=11641 success=11641 fail=0 tx=430717 rx=1606458
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 x=32963 scans=21789 flush=21789 dirtx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=89491 rx=31954 scans=21122 flush=21122 dirty_enq=21124 dirty_dedup=23659 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=2 dirty_hwm=36 budget=0 turn_avg_us=104 rx_us=1663889 maint_us=1243922 ty_enq=21789 dirty_dedup=24406 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=14 budget=0 turn_avg_us=106 rx_us=1i692756 maint_us=1222447 reactor_us=2269489 fltraffic-gen memory paused=0 pauses=0 tx_avail=818e1 tc-lreactush_us=il=0 x_peak=30 payload_avail=8181 payload_peak=30 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen wtx_avail=8180 tx_peak=27 payload_avail=8180 payload_peak=28 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worgen memory paused=0 pauses=0 tx_avail=8180 tx_peak=30 payload_avail=8180 payload_peak=30 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker ker turns=89293 rx=23685 scansturns=83105 rx=412737 sca=15635 flush=15635 dirty_enq=15635 dirty_dedup=17546 dirty_re1732npsoo=2quteuh=4 dretu=ish=223249 dx=451289 rx=1683186
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8180 tx_peak=27 payload_avail=8180 payload_peak=28 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=864kert0
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=87823 events=21471 event_burst_hwm=15 starts=6593 tokens=31 socket_releases=67irty_enq=22245 dirty_dedup=25222 dirt471 ring_hwm_9r_us=22252070 flush_us=1163832
+[CORE][INFO ][main_tg.c:497] traffici-gen reacto15 rx=35003 scans=23063 flush=23063 dirty_enq=23063 dirty_dedup=2 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=19 budget=0 turn_avg_us=104 rx_us=1502824 r turns=99242 rx=19666 scans=13113 flush=13113 dirty_enq=13113 dirty_dedup=14481 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=1y6 6budget=0 turn_avg_us=9r3 y 5r97m6 dirtyx_ua6int_us=1311641 reactor_us=22__rs=turns=89491 even nrequeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=20 budget=0 turn_avg_us=105 r_hwm=17 budget=0 turn_avg_us=105 rx_us=1620789 maint_us=1249306 reactor_us=2266223 flush_us=1141029
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=89152 events=19552 event_burst_hwm=17 starts=5977 tokens=29 socket_releases=6137 ring_hwm_in=51 ring_hwm_out=20 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=29886 rx_software_hashes=11 rx_parse_f103907f flushex_us=t_s=2078a8=21 ring_hwm_o even337u054 maint_us=t_burust_hwm=13quellb s1t3ar80021uts=63ta1715961 9e=s0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=38 budget=0 turn_avg_us=108 rx_us=1786215 maint_us=1191687 reactor_us=2284211 flush_us=1184552
+[CORE][INFO ][main_tg.c:497] traffic-gen react=1087311
+[CORE][INFO ][main_tg.c:497] traffic-gen rea2ctor turns=89293 events=15387 event_burs otokcemnsr  ks=0turnas=86415 eventts=22697 evernt_beulius_
+=ah=27966 dir[CORE][INFO ][main_tg.c:512] hwm==n27traffic-gtt socket_releas22 rx_ering_dro1ps=0 tx_nrctorstn y_enq=27964 dirtels=6317 ring_hwm_in=26 ring_hwm_out=20 _us=2136526 flush_us=1027810
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=99242 events=12933 event_burst_hwm=9 starts=3938 tokens=26 socket_releases=3909 ring_hwm_in=24 ring_hwm_out=31 rx_ring_drops=0 tx_nic_droprx_ring_drops=0 tx_5 starts=4736 tokens=31 socket_releases=4818 ring_hwm_in=35 ring_hwm_out=27 rx_ring_drops=0 tx_nics=0 rx_owner_hits_u_dropsn=0 rx_owner_hits=23676 rx_software_hashes=9 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_av=g_uss=1222147 reactor_us=2234919 flush_us=11892ic_drops=0 rx_owner_hits=32960 rx_software_hashes=3 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=36707 connect_max_us=16067952 first_rx_avg_us=54699 first_rx_max_us=16108884 complete_ava_1hy_dedup=31874 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=27 budget=0 turn9wm=12 starts=6998 tokens=31 socket_releases=6970 ring_hwm_in=29 ring_hwm_out=25 rx_ring_drops=0 tx_ni664 rx_softwg_us=54710 _avg_us=113 rx_us=1900435 maint_us=1132336 reactor_us=2358782 flush_us=1257225
+[CORE][INFO ][main_tg.c:497] traffcomplete_max_us=16108892
+=i36312 connecta_max_cus=1_dcr_dropsic-re_haste=0 rx_owner_hits=34999 rx_softwops=0 rx_owner_hits=31950 rx_software_hashes=4 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=37669 connect_max_us=16097783 first_rx_avg_us=5h16
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=89174 events=21952 event_bursat_hwm=14 starts=6779 tokens=31 so5cket_r486 first_rx_max_us=16134724 complete_avg_us=55497 ncy connect_avg_us=25477 connect_max_us=16051643 first_rx_avg_us=41755 first_rx_max_us=16080577 complete_avg_us=41766 ceomplete_max_us=16080585
+re_hashes=4 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gens=0 rx_parse_fallbacks=0
+gen reactor 6046941 first_rx_avg_us=53049 first_rx_max_us=16069146 complete_avg_us=53060 complete_max_us=16069153
+eleases=7010 turns=83105 events=27489 event_burscomplete_[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=54731 connect_max_us=16050577 first_rx_avg_us=72140 first_rx_max_us=16070361 complete_avg_us=72151 complete_max_us=16070368
+t_hwm=17 starts=8549 tokens=28 socket_releases=8810 ring_hwm_ring_hwm_in= latency connec5t_avg_us=34405 connect_max_us=16219971 first_rx_avg_us=0 ring_himawn52256 first=84 rm_out=31 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=33891 rx_software_hashes=4 rx_parse_fallbacks=2
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=20368 connect_max_us=16036680 first_rx_avg_us=36469 first_rx_max_us=1605in9221 co_rx_max_us=16270484 complete_avg_us=52266 complete_max_us=16270503
+x_us=g_hwm_o16134732
+ut=2mplete_avg_us=36479 complete_max_us=16059228
+6 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=42733 rx_software_hashes=2 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=12764 connect_max_us=279755 first_rx_avg_us=29316 first_rx[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=1669319287
+[CORE][INFO ][tcp.c:2499] tcp C_max_uLO888s8SE_WAIT re-ACK p ack=13971=46eer FIN 1930250967
+2.168.21.106:8888 ack=2273355886
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN4 complete_avg_us=29326 complete_max_us=302522
+ 192.168.21.106:8888 ack=3544569606
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=1764174941
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=2076228092
+[CORE][INFO ][main_tg.c:534] traffic-gen plan duration elapsed;[CORE][INFO ][main_tg.c:458] traff draining 32 flows
+[CORE][INFO ][main_tg.c:199] traffic-gen dur[CORE][INFO ][main_tg.c:534] tra[CORE][INFO ][main_tg.c:534] [CORE][INFO ][main_tg.c:534] [CORE][INFO ][main_tg.c:458] traffic-g[CORE][INFO ][main_tg.c:534] traffica-g[CORE][INFO ][main_tg.c:534] traffict-geitetraffic-gen plan duration elapsed; draining 31 flows
+[CORE][INFO ][main_tg.c:199] traffic-gen duration summary active=31 c-gen stats active=31 live_sockets=373 started=16489 done=16458 sn plan duration elapseed; drain rufccess=16458 fail=0 tx=608946 rx=2271204
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8173 tx_peak=30 payload_avail=8173 payload_peak=30 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=73363 rx=26095 scans=17229 flush=17229 dirty_enq=1722niostats active=31 live_sockets=383 started=23029 done=22998 su plan durccess=22998 fail=0 tx=850926 rx=3173724
+[CORE][INFO ][main_tg.c:466] traffic-gen mening 30 flows
+[CORE][INFO ][main_tg.c:199] traffic-gen duration summory paused=0 pauses=0 tx_avail=8173 tx_peak=30 payload_avail=8173 payload_peak=30 tx_alloc_nfail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=74022 rx=25376 scans=16796 flush=16799m dair aatiolive_ty_dedupry a=19282 dirtsummary active=32 live_sockets=347 started=20890 done=20858 successfic-gen plan duration elapsed; draining 30 flows
+[CORE][INFO ][main_tg.c:199] traffi=2ctive=30 live_sockets=336 started=16813 done=16783 success=16783 fail=0 success_rate=100.00% fail_connect=0 fail_io=0 fail_proto=0 fail_resource=0 deferred_resource=0 tx=620971 rx=2316054
+c0858 fail=0 6- gen duration summary active=30 live_sockets=393 started=19956 socke[CORE][INFO ][main_tg.c:458] traffic-gen stats active=23 live_sockets=323 started=16813 done=16790 sy_reqfueue=uccess_rate=100.00% fail_connect=0 fail_io=0 fail_proto=0 fail_resource=0 deferred_resource=0 tx=771746 rx=2878404
+success=16790 fail=0 tx=621230 rfx=2317020
+[CORE][INFO ][main_tg.c:466] traffic-gen dirty_enq=16796 dirty_dedup=18700 dirty_req[CORE][INFO ][main_tg.c:458] mtrafdone=19tiueuc0 arp_wait=0926 success=19926 fail=0 success_rate=100.00% fail_connect=0 fail_io=0 fail_peroto=0 fail_resource=0 deferred_resource=0 tx=737262 rx=2749788
+s=349 started=16213 done=16182 success=16182 fail=0 success_ratee=1fi[CORE][INFO ][main_tg.c:458] traffic-gen stats active=21 live_sockcets=38 2arp_w -mnor=y paused=0 pau0se s=0 tx_avail=8180ealapss00.00% fail_connect=0 fail_io=0 fail_proto=0 fail_redt;   -arp_wait=g0 arptx_peak=27 payload_avail=8180 payload_peak=28 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen woresource=0 deferred_resource=0 tx=598734 rx=2233116
+arted=19956 done=19935 success=19935 fail=0 ke=0 dirty_depth=0 dirty_hwm=21 budgete=0n_twakxe  [CORE][INFO ][main_tg.c:458] sttatsra kgdern plaffic-=a=turn_avg_us=127 0 dirty_depth=0 dirty_hwm=19 budget=0 turn_avg_us=126 rx_us=1600274 maint_us=1241377 er turns=67229 rx=25752 scans=16874 flush=16874 dirty_enq=16886 dirty_dedup=19147 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=12 dirty_hwm=20 budget=0 turn_avg_us=140 rx_us=1717115 maint_us=1204059 reactor_us=2327571 flush_us=11g7e3745
+rn7 reactor_us=2321608 dflush375c[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=67229 events=16624 event_burst_hwm=19 starts=5141 tokens=30 socket_releases=5184 ring_hwm_in=76 ring_hwm_out=22 rx_ring_drops=0 tx_nic_dron pxs=0urt9ive=25 live_a5tion el rx_own_us=112a5845
+[CORE][INFO ][main_tg.c:497] soapcser_hits=25787 rxsed; draining 32 flows
+[CORE][INFO ][main_tg.c:199] traffic-gen duration summary active=32 live_sockets=356 started=17447 traffic-gen reactor turns=74022 events=16616 event__tats active=23 live_sockets=328d_softkware_one=17415 success=17415 fail=0 burst_hwm=15 starts=5065 tokens=31 socket_releases=5024 ring_hwm_in=88 ring_hwm_out=20 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=25372 rx_software_hashes=4 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=16166 connect_max_us=319948 fir hashes=9 rx_parse_fallbacks=0success_rate=100.00% fail_connect=0 fail_io=0 fail_proto=0 fail_resource=0 deferred_resource=0 tx=644355 rx=2403270
+ining 31 flows
+[CORE][INFO ][main_tg.c:199] tra rx=2751030
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pause
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=33678 connect_max_us=16046941 first_rx_avg_us=55241 first_rx_max_us=16069146 compleute_avg_s=0 tx_avail=8181 tx_peak=27 payloasstarsted=16213 done=16190 succetus=d5525_3av compl=ete__marx_avg_us=36294 first_rx_max_us=353588 complete_avg_us=36305 complete_max_us=35ffic-g[CORE][INFO ][main_tg.c:458] traffic-gen stats active=24 live_sockets=332 started=17447 done=17423 success=17423 fail=0 tx=644651 rx=2404374
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8175 tx_peak=29 payload_avail=8175 payload_peak=30 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=70144 rx=26157 scans=17217 flush=17217 dirty_enq=17230 xs_eue1n s=16dts=d334 started=208s=16069153
+190 fail=0 tx=599030 rx=2234220
+a[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_a3597
+[CORE][INFO ][main_tg.c:534] traffic-gen plairty_dedup=19367 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=13 dirty_hwm=21 budget=0 turn_avg_n90 done=20865v duration elapsed; draining 31 falows
+[CORE][INFO ][main_tg.c:199] traffic-gen dura success=20865 fail=0 tx=772005 rx=2879370
+[CORE][INFO ][main_tg.c:466] traffic-gen us=135 rx_us=1678989 maint_us=1219096 reactor_us=2433319 flush_us=1154368
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=70144 events=17009 event_burst_hwm=19 starts=5218 tokens=31 socket_uration summary active=31 live_sockets=345 started=13716 done=13685 success=13685 fail=0 success_rate=100.00% fail_connect=0 fail_io=0 fail_proto=0 fail_mresource=0 deferr6treleases=52emory paused=0 pauses=0 tx_avail=81740 ring_hwm_in=89 ring_hwmil=8181 payload_peak=27 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=70914 rxil=8177 tx_peak=27 payload_avail=8177 payload_peak=28 tx_alloc_ion summary actifail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=70052 rx=25376 scans=16657 flush=16657 dirty_e=nq=16667 dirty_dedup=18831 dir527 tx_peak=29 payload_avail=8177 payload_peak=5972 scans=17147 flush=17147 dirty_enq=17154 dirty_dedup=19182 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=11 dirty_hwm=24 budget=0 turn_avg_us=133 rx_us=1672538 maint_us=1232750 reactor_us=2338094 flush_us=1164835
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=70ed_resource=0 tx=506345 rx=1888530
+5023 maint_us=1245686 reactor_us=2230836 flush_us=1152730
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=73363 events=16999 event_burst_hwm=19 starts=5213 tokens=31 socket_releases=5227 ring_hwm_in=74 ring_hwm_out=19 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=26089 rx_software_hashes=6 rx_parse_fallbacks=0
+ty_requeue=0 arp_wait914 events=16903 event_burst_hwm=19 starts=5182 tokens=31 socket_releases=5193 ring_hwm_in=75 ring_hwm_out=22 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=26007 rx_software_hashes=8 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=25975 connect_max_us=16051643 first_rx_avg_us=46398 first_rx_max_us=16080577 complete_avg_us=46409 complete_max_us=16080585
+ve=31 live_sockets=383 started=23029 done=22998 success=[CORE][INFO ][main_tg.c:458] 2t[CORE][INFO ][main_tg.c:512] tr2raf[CORE][INFO ][tcp.c:2499] f29itcp CLa_c-geOn st =9f98 fail=0 success_rate=100S.0t0% fail_connect=0 fail_io=0 fx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turnsfic-gen E_WAIT re-ACK peer FIN 19ail_paroto=0 lfao2ut=26 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=26.168.21.106:8888 ack=40tats=i7l_resou arp_wake=0 dirty_depth=12 d657 84e2nc0932r4y conirty_hwm=n0ect_avg_us=33657 connect_max_us=16067952 first_rx_avg_us=56049 rx_software_hashes=4 cae=0  first_rx_max_us=16108884 complete_avg_us=56060 complete_max_us=16108892
+[CORE][INFO ][main_tg.c:534] traffic-gen plan duration elapsed; draining 31 flows
+1[CORE][INFO ][main_tg.c:199] traffideferredr_re81 bu
+67 rx=24593 scans=161dget=0 turn_avg_us=135 rx_us=1658028 maint_us=1222156 reactor_us=2391755 flush_us=1151372
+cx-7g[CORE][INFO ][main_tg.c:497] _trafcstouerci6[CORE][INFO ][tcp.c:2499] ficn -gten reactore turnp fardse_fve=24 live_sockets=317 started=13716 done=13692 success=13692 fail=0 tx=506604 rx=1889496
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8175 tx_peak=30 payload_avail=8175 payload_peak=30 tx_alloc_fa=0 allbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen tx=850926 rx=3173uration summil7=0
+[CORE][INFO ][main_tg.c:476] cp CLOSlatency connect_avg_us=32503 connect_max_us=16219971 first_rx_avg_us=54989 firast_rx_maltushE_WAIT rrrey =s=700-52 aectivea=3ffic-gen worker turns=v241
+71917 rx=25652 scans=16861 flush=16861 dirty_enq=16874 dirty_dedup=19022 dirty_requeue=0  live_sockets=373 started=16489 done=16458 success=16458 fail=0 success_raents=16459 event_burst_te=100.00% fail_connect=0 fail_io=0 fail_proto=0 fail_resource=0 deferred_resource=0 tx=608946 rx=2271204
+x_us=16270484 complete_avg_us=55001 complete_max_us=16270503
+ACK hwm=19 starts=5061 tokens=31 socket_releases=5091 rip16176 dirty_enq=16189 dirty_dedup=18194 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=13 dirty_hwm=21 budget=0 turn_avg_us=134 rx_us=1636399 maint_us=1235026 reactor_us=2387842 flush_us=1135244
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=70167 events=1eer FIN[CORE][INFO ][tcp.c:2499]  192.1n686.2a0t1g.1_[CORE][INFO ][tcp.c:2499] 3 evhenrw1pct_06:88_wait=m8p8 ack=3813228629
+ CLOSE_WAIT re-ACK peer FIbN 192.168.21.106:8888 ack=1153308453
+[CORE][INFO ][tcp.c:2499] tcp CLO_in=77 ring_hwm_out=21 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=25416 rx_software_hashes=urst_hwm=19 starts=4903 tokens=32 socket_releases=4923 ring_hwm_in=88 ring_hwm_out=19 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=24615 tcp CLOSE_rx_software_hashes=18 rx_parse_fallbacks=2
+[CORE][INFO ][main_tg.c:512] tra0 arp_wake=0 dirty_depth=13 dirty_hwm=19 budgetffic-gen WAIT re-ACK peer FIN 192.168.21.106:8888 ack=1304796750
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=1703812785
+latency connect_avg_us=22161 connect_max_us=160[CORE][INFO ][tcp.c:2499] tcp CLOSE_WA36680 first_rx_avg_us=42283 first_rx_max_us=16059221 complete_avg_us=42294 complete_IT re-ACK pSE_7 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=34784 connect_max_us=16097783 first_rx_avg_us=57276 first_rx_max_us=16134724 complete_avg_us=57288 com=0 turn_avg_us=133 rx_us=1655500 maint_us=1224927 reactor_us=plmete_max_WaexA_us=16059228
+2490890 user=16134732
+flush_us=1147399
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=71917 events=16657 event_burst_hwm=17 starts=5120 tokens=31 socket_releases=51 FIN 192.168.21.106:7[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT [CORE][INFO ][tcp.c:2499] t8888 ack=17recp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=803473642
+-ACK peer FIN 192.16IT re-ACK peer FIN 192.168.21.106:8.21.106:8888 ack=2432320770
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=3577445797
+8888 ack=400061720158030
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.1683 ring_hwm_.2744
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=795959701
+in=78 ring_hwm_out=21.106:8888 ack=3242723700
+7 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=25696 rx_software_hashes=2 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=44699 connect_max_us=16050577 first_rx_avg_us=67841 first_rx_max_us=16070361 complete_avg_us=67853 complete_max_us=16070368
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=294324517
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=1231712183
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=3320608435
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=3741823809
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=462856410
+[TCP][WARN ][tcp.c:1448] sock=283 gen=2 state=SYN_SENT local=192.168.21.2:54931 peer=192.168.21.106:8888 event=rto-give-up kind=syn
+[TCP][WARN ][tcp.c:1448] sock=277 gen=2 state=SYN_SENT local=192.168.21.2:54954 peer=192.168.21.106:8888 event=rto-give-up kind=syn
+[CORE][INFO ][main_tg.c:608] traffic-gen aggregate workers=8 started=144553 done=144553 success=144551 fail=2 tx=5348387 rx=19948038
+
+
+
+
+
+
+snow@snow:~/dpdk-l/traffic-gen$ sudo ./build/traffic-gen -- --workers 8 ./scenarios/test/http-sweep-8kcps-500con.json
+EAL: Detected CPU lcores: 16
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/rte/mp_socket
+EAL: Selected IOVA mode 'PA'
+EAL: No free 1048576 kB hugepages reported on node 0
+[CORE][INFO ][main_tg.c:732] traffic-gen scenario=http-sweep-8k-500 classes=1 workers=8 active_shards=8 cps=8000 concurrency=500 socket_id_capacity=4096
+[CORE][INFO ][port.c:307] port 0 hardware RSS fallback: RSS RETA is unavailable
+[CORE][INFO ][port.c:315] port 0 started (driver=net_vmxnet3 rx_mode=software-dispatch rxq=1 txq=8 workers=8 rss_hf=0x30)
+[CORE][INFO ][net_context.c:16] local identity: port=0 ip=192.168.21.2 mac=00:0c:29:f1:e6:6a
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=1 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=1 size=1024
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=2 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=2 size=1024
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=3 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=3 size=1024
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=4 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=4 size=1024
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=5 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=5 size=1024
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=6 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=6 size=1024
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=7 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=7 size=1024
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=8 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=8 size=1024
+[CORE][INFO ][stack_runtime.c:179] packet worker started lcore=1 queue=0
+[CORE][INFO ][stack_runtime.c:179] packet worker started lcore=2 queue=1
+[CORE][INFO ][stack_runtime.c:179] packet worker started lcore=3 queue=2
+[CORE][INFO ][stack_runtime.c:179] packet worker started lcore=4 queue=3
+[CORE][INFO ][stack_runtime.c:179] packet worker started lcore=5 queue=4
+[CORE][INFO ][stack_runtime.c:179] packet worker started lcore=6 queue=5
+[CORE][INFO ][stack_runtime.c:179] packet worker started lcore=7 [CORE][INFO ][stack_runtime.c:179] packet worker started lcore=8 queue=7
+queue=6
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=511 gen=2 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=142 gen=11 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][INFO ][main_tg.c:458] tr[CORE][INFO ][main_tg.c:458] traffic-gen stats ac[CORE][INFO ][main_tg.c:458] traffic-gen stats active=63 live_sockets=482 start[CORE][INFO ][main_tg.c:458] affic-gen stats active=63 live_sockets=515 st[CORE][INFO ][main_tg.c:458] traffic-gen stats active=62 live_sockets=469 startive=63 live_sock[CORE][INFO ][main_tg.c:458] tt[CORE][INFO ][main_tg.c:458] traed=6744 done=6682 success=6682 fail=0 tx=247234 rx=922116
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avaeil=8167ettas=d=raffic-gen stats ac5638f6rafficr-ge0t3 started=6987 done=6924 success=6923 fail=1 tx=256188 rx=955374
+[CORE][INFO ][main_tg.c:466] [CORE][INFO ][main_tg.c:458] tte done=6323ntraffic-gen memory pausde  suc sivd=0 pauses=0 tx_e=62 live_soctx_peak=45 payload_avail=8167payload_peak=45 tx_atats active=63 live_kets=449 stavail=8162 tx_peak=47 payload_ava=6854 done=6791 success=6791 fail=0 tx=2512fil=8162 pasockets=67 ic-gen stats activce=624r86 stress=6l3a23 fa airted=6298 done=6236 succex=937158
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8169 tx_peak=49 paylloc_fail=0
+[CORE][INFO ][main_tg.c:476] sartyload_opeak=47 tx_alive_sockets=507 stfarted=63s=6236 lloca_tfa6rfail=0 tx=230732 il=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=93552 rx=34751 scans=23278daffic-gen worf0 donleekic-gern stats active=62 d=6716 done=6653 success=6652 fail=1tx=246161 rx=917976
+[CORE][INFO ][main_tg.c:466] traffic-gen memor y paused=l=ive_er turns=95233 rx=33545 scans=22461 flush=22461 dirty_enq=22463 dirty_dedup=24809 dirty_requeue=0 arp_wait=6 arp_wake=6 dirty_depth=2 dirty_hwm=16 budget=0 turn_avg_us=98 rx_us=1698814 maint_us=1260152 reactor_us=2103837 flush_us=1188354
+x[CORE][INFO ][main_tg.c:497] _avail=8169 payload_peak=49 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=94864 rx=34120 scans=22805 flush=22805 dirty_enq=22805 dirty_dedup=25224 dirty_requeue=0 arp_wait=8 arp_wake=8dirty_depth=0 dirty_hwm=19 budget=0 turn_avg_us=98 rx_us=170traffic-gen reactor turns=95234 events=21687 flush=23278 dirty_enq=23279 dirty_dedup=25678 dirty_requeue=0 arp_wait=7 arp_wak0 pasocket0 tx=233951 rx=872574
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=81s65use=s=8=46 tx_peak=39 payload_avail=8165 payl1 started=0 860568oad_p6event_burst_hwm=12 starts=6744 tokens=57 socket_releases=6275 ring_hwm_in=22 ring_e=7 dirthwm2_o529 maint_us=1255688 reactor_us=2095535 flush_us=1298 succut=31 rx_r=6454 done=6392 success=6392 fail=0 ing_drops=0 tx_nic_drops=00 ry
+tx_avail=8171 tx_peak=42 payload_avail=8171 payload_peak=42 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turn[CORE][INFO ][main_tg.c:466] traffic-gens=93999 rx=33448 scans=22355 flush=22355 dirty_enq=22367 1050
+[CORE][INFO ][main_tg.c:497] tx_owner_heak=4tx=236504 rx=882096
+its=33540 rx_ ess=6298 fail=0 tx=23d3026 rx=869124
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8171 tx_peak=39 payload_avail=8171 payload_peak=39 tx_alloc_fail=0
+irty_dedup=24730 dirty_requeue=0 arp_wait=7raffic-gen reactor tursoftware_hashes_depth=1 dimrty_hwm=18 budget=0 turn_avg[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=95186 rx=31643 scans=21296 flush=21296 dirty_enq=21_u tx_alloc_fna=s s=100 rx_us=1736106 maint_us=1246396 reactor_us=2108783 flush_us=1198372
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=93553 events=22579 event_buremory ipaused=0[CORE][INFO ][main_tg.c:466] sl==948att_hwm=14  starts=6987 tokens=62 socket_releases=6484 ring_hwm_in=261296 rp_wpauses=0 tx_avail=8165 tx_peak0=41 payload_avail=8165 payload_peak=42 tx_alloc_fail=0
+3 ring_hwm_out=22 1 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency 
+[CORE][INFO ][main_tg.c:476] traffic-di5r[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=89030 rx=31350 scans=20944 flrx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=34744 rx_software_hashes=1 rx_parse_fallbacks=0
+ush=20944 dirty_enq=20948 dirgake=7 dirty_det[CORE][INFO ][main_tg.c:512] y_dedup=23328 dirty_requeue=0  arp_wait=0 aconnect_avg_us=47555 connect_max_raffitraffic-gen laptentcyh c=teucy_dedup=23263 dir-n worker turns=94973 rx=317tonnect_agen memy_requevents=22086 event_burst_hwm=14 starts=6854 tokens=63 sockory paused=0 pauses=0 12 dirty_7hwet_releases=6339 ring_hwm_in=47 4 scans=21364 flush=21364 dirty_enq=21364 dirty_dedup=23465 dirty_requeue=0 arp_wait=8 arp_wake=8 dirty_depth=0 dirty_hwm=15 budget=0 turn_avg_us=98 rx_us=1668857 maint_us=1279706 res=2040485 first_rx_avg_us=89154 firsrt_rx_max_uareue=0 arp_wait=6 mc=tvtg_us=465ixng_hwm_out=23 rx_ring_drops=0 tx_nic_drops=0 rx_owner_haitsor_us=20p16 brudget=0 turn_avg_us=99 rx_us=1704660 maint_us=1256726 reactor_us=2099810 flush_us=1197581
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=94000 events=21639 event_burst_hwm=11 starts=6716 token62 connect_max_us=1057390 f=irsps_wake=6 d9itrty_s=6988 flush_us=1171337
+34099 rx_sof_wake=0 dirty_depth=0 dirty_hwm=18 budget=0 turn_avg_us=98 rx_us=1656793 maint_us=1281084 reactor_us=2095309 flush_us=1172638
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=95187 events=20518 event_burst_hwm=14 starts=6360 tokens=57 =2076445 complete_avg_us=89164 complete_max_us=2076452
+depth=4 dirty_hwm=21 budget=0 turn_avg_us=105 rx_us=1699222 maint_us=1276247 reactor_us=2097871 flush_us=1170609
+[CORE][INFO ][main_tg.c:497] tsocket_releases=5853[CORE][INFO ][main_tg.c:497]  ring_hwm_in=18 ring_hwm_out=23 rx_ring_dropstraffic-gen rea_57 tsoc=keraffi_rx_avg_us=86688actor turns=94974 events=20545 event_burst_hwm=12 starts=6386 tokens=61 socket_releases=5904 ring_hwm_in=18 ring_hwm_out=25 rx_ware_hashes=ring_dt_releacsesv=r61-0a t2g30 ring_hwm_in=22 ring_hwm_out=30 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=33452 rx_software_hashes=8 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=47957 connect_max_us=2037592 first_rx_avg_us=91480 first_rx_max_us=2083360 complete_avg_u first_rx_max_us=206969x4 complete_avis=91784 complete_max_us=2083379
+ops=0 tx3_nilc_en  rx_parse_fallbacks=2
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=47219 connect_max_us=1056030 first_rx_avg_us=g_us=86982 complete_max_us=2069702
+reactor turns=89031 events=20168 e_nv=edrops=081 rx_owner_h76 itsn=31767 rxi_software_hashes=1 rx_parse_fallbacks=0
+89630t f[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=53304 connect_mc_drops=0 rx_owner_hitsax_us=i_burst_hwm=16 starts=2042842 first_rx_avg_us=95170 first_rx_6298 tokens=55 s=31622 rrxst_rxt_x_soo_max_us=1101627 ccket_remax_us=3064844 complete_avg_us=95181 complete_max_us=3064850
+peak=41 payload_avail=8176 paylftware_hashes=15 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] trafofic-gen latelandecasesy connect_avg_us=53578 connect_max_us=2030584 first_rx_avg_us=95603 first_rx_max_us=2086901 complete_avg_us=95614 complete_max_us=2086917
+_peak=41 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=97290 rx=32102 scans=21570 flush=21570 domplete_avg_us=89640 c=omp5849 ring_hwm_in=27 lete_max_usirty_en=1ring_hwm1q=21572 di_out=23 rx_ring_drops=0 t0rtx_nic_dropsy_dedup=236641=0 dirty_requ rx_eue=0 ar6p_owner_hi3wait=0 arp_wa3ke=0 dirty
+ts=31341 rx_software_hashes=4 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=53183 connect_max_us=2041641 first_rx_avg_us=97097 first_rx_max_us=2077318 complete_avg_us=97108 complete_max_us=2077334
+_depth=2 dirty_hwm=23 budget=0 turn_avg_us=96 rx_us=1643956 maint_us=1282309 reactor_us=2087834 flush_us=1167482
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=97291 events=20811 event_burst_hwm=14 starts=6454 tokens=60 socket_releases=5993 ring_hwm_in=29 ring_hwm_out=25 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=32097 rx_software_hashes=1 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=49228 connect_max_us=1056063 first_rx_avg_us=92463 first_rx_max_us=3078088 complete_avg_us=92473 complete_max_us=3078095
+[CORE][INFO ][tcp.c:3203] tcp FIN re-queue after data GBN sock=241 gen=22 seq=3413516514
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=241 gen=22 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][INFO ][main_tg.c:458] [CORE][INFO ][main_tg.c:458] traffic-gen stats act[CORE][INFO ][main_tg.c:458] traffic-gen sttraffic-gen stats active=63 live_ats active=63 live_sockets=398 started=11936 done=11873 success=11873 fail=0 tx=439301 rx=1638474
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8164 tx_peak=43 payload_avail=8164 payload_peak=43[CORE][INFO ][main_tg.c:458] traffic-gen stats act[CORE][INFO ][main_tg.c:458] traffic-gen stats ac[CORE][INFO ][main_tg.c:458] tive=63 ive=62 live_sockets=373 started=11993 done=11931 success=11931 fail=0 tx=441447 rx=1646478
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8173 tx_peak=45 payload_avail=8173 payload_peak=45 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=81160 rx=27827 scans=18661 flush=18661 dirty_enq=18659 dirty_dedup=20538 dirty_requeue=0 arp_wait=0 arp_wake=0dirty_depth=0 dirty_hwm=41 budget=0 turn_avg_us=115 rx_us=1612925 maint_live_sockets=399 started=12886 donus=1252853 reactor_us=227 9tis[CORE][INFO ][main_tg.c:458]vet[CORE][INFO ][main_tg.c:458] traffic-gen stats active=62 live_sockets=384 startee=12823 sx_allroc_trafd=12416 done=12354 success=12353 fail=1 tx=457098 rx=1704714
+ockets=368 started=125u70 done=12507 succe[CORE][INFO ][main_tg.c:466] traffic=-gen memorfaffic-gen statya6il=0sfic-gen stats active=63 live_sockets=416 started=12616 done=12553 succcess=12552 f4cess=12822 fail=1 tx=474451 rx=1769436
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=81 s ac7tive=62 live_socail=1 tsx=4646
+pau2 live_sockets=331 started=11533 done=11471 success=11471 fail=0 tx=424427 rx=1582998
+[CORE][INFO ][main_tg.c:466] traffic-gen memory p=12507 fail=0 tx=462759 rx=1725966
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pau[CORE][INFO ][main_tg.c:476] saused=0 pauses=0 tratsed=461 x_rav09 pes=1k x0 tx_avail=8168 tx_peak=49 payload_avail=8168 payload_peak=49 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=77361 rx=28673 scans=19042 flush=19042 dirty_enq=19043 dirty_dedup=21336 dirty_requeue=0 arp_wait=0 arp_wake==1732176
+[CORE][INFO ][main_tg.c:466] traffic-gen memory ffic-gen workeauses=0 tx_avr tflush_us=11 tx_peak=47 31419
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=81160 events=17986 event_burst_hwm=20 starts=5539 tokens=61 socail=8162 tx_peak=payload_avail=8169 payload_peak=47 tx_alloc_fail=0
+paused=0 pauses=0 tx_avail=8165 tx_peak=48 payload_avail=8165 payload_peak=48 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=81493 rx=29590 scans=19792 flush=19792ail=8166 tx_peak=45 pa4[CORE][INFO ][main_tg.c:476] traffi0 c-gen wou6rns p=rker7y8ets=ayload_avail=8162 payload_peak=48 tx_allo7c_fail=  turl82 rx=27887 scans=108634 flush=18634 dirty_enq=18634 dirty_dedup=20655 dirty_dirty_enq=19784 dirty_deduoaket_releasdns=77
+1163 rxdrequeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=38 budgetirty_depth=1 dirty_hwm=38 budge=p=21896 d=irty_requ29601 sca[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=73983 rx=26321 scans=17ns=097 started=12033 done=11971 success=11971 fail=0 tx=4412927 rx=1651998
+[CORE][INFO ][main_tg.c:466] traffic-gen memory pa979t=0 turn_avesg u_avail=8166 payload_peak=45 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen 1 flush=19791 di=5627 ring_hwm_in=80 ring_hwm_out=32 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=27824 rx_software_hashes=1 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=55068 connect_max_us=2074211 first_rx_avg_us=100156 first_rx_max_us=3078088 complete_avg_us=100167 complete_max_us=3078095
+turn_avg_us=119 rx_us=1656237 maint_us=1247796 reactor_us=2250107 flush_us=1152030
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=78782 events=17941 event_burst_hwm=19 starts=5550 tokens=63 socket_releases=5634 ring_hwm_in=101 ring_hwm_out=sed=0 pauses=0 _tx_avail=8165 tx_peak=41 payload_avail=8165 payload_peak=41 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen w27 rx_rus=121 rx_us=1685130 maint_us=1223777 reactor_us=2271093 flush_us=1172434
+ty_enq=19790 dirto[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=77361 events=18398 event_burst_hwm=18 starts=5716 tokens=60 socket_releases=5863 ring_hwm_in=90 ring_hwm_out=20 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=28662 rx_software_hrker turns=81897 rx=28475 ring_dropsw=0 txoay_der_scans=519d4upe0ue=0 5a=21919nkd rsp_waiter turhies=9flush=17545 dirty_enq=17544 dirty_dedup=19558 dirty_requeue=0 arp_wait=0 arp_wake=0 di90 flushi crx__drparse_rty_depr==19090 dirty_enq=19088 dirty_dedup=2n1049 dirty_0 arp_wake=0 dirty_depth=4 dirty_hwm=49 bfudget=0 turopsrequen_avg_us=115 rx_us=1658142 maint_us=12524ue=0 arp_waith=3 dirty_hwm=35 budget=0 turn_avg_us=126 rx_ust=0 arp_wake=0 dirty_depth=0 dirty_hwm=41 budgallbacks=2
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_uset=0 turn_avg_us=114 rx_us=1641372 maint_us=1263942 reactor_us=2203777 flush_us=1157580
+[CORE][INFO ][main_tg.c:497] tty_rsequeu=0r=78378 rx=2848 rx_ow=53734 connect_max_us=2051892 first_rx_avg_us=98820 first_rx_maner_hits=27888 9e=0 arx_us=3078816 complete_avg_us=98831 complete_max_us=3078823
+6 reactor_us=2219472 flush_us=1165695
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=81493 events=19147 event_burst_hwm=22 affic-gen reactor turns=81897 events=18397 event_burst_hwm=22 starts=5672 tokens=61 socket_releases=5757 ring_hwm_in=91 ring_hwm_out=22 rx_rinr=x_software_hashes=0 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency cp_wait=0 arp_wake=0 gdi1rty_onnect_avg_us=58054 connect_max_us=2060603 first_rx_avg_us=102626 first_rx_max_us=3064844 complete_avg_us=102638 complete_max_us=3064850
+st6 scans=18955 flush=18955 dirty_enq=18956 dirty__drops=0 tx_nic_dro680628 maidnteppth=0 dirty_hwmarts=5900 tokens=62 socket_re_us=1230756 reactor_us=2284825 flush_us=1149240
+[CORE][INFO ][main_tg.c:497] traffic-gen reactosr =50 budget=0 turn_avg_us=121 rx_us=17=0 rx_owner_hidledup=21147 dirty_reque3ue=0 arp_waitteurns=73983 ea=s2e052s=597ts=28472 rx_software_hashes=1 rx_parse_fallbacks7=0
+ arp_wake=0 dirty_depth=1 dirty_hwm=31 budget=0 turn_avg_us=119 rx_us=1675347 maint_us=1245410 reactor_us=2250114 flush_us=1163776
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=78378 events=18326 event_burst_hwm=22 starts=5673 tokens=62 socket_releases=5783 r0ing_ h[CORE][INFO ][main_tg.c:512] maint_us=t122ravents=3 fwm_in=93 ring_hwm_out1314 reactor_us=2237551 flush_us=1189942
+[CORE][INFO ][main_tg.c:497] traring_hwm_in=98 ring_hwm_out=18 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=29571 rx_software_hashes=1 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=52335 connect_max_us=2043787 fific-gen la6805 event_burst_hwm=18 starts=523tency cffic-gen reactor turns=77116 erst_rx_avg_us=98077 first_rx_max_us=2083360 connect_avg_us=53940 connect_max_u=20 rx5 tokens=57 socket_releases=5353 ring_hwm_in=v116 ring_hwm_out=31 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=26316 rx_software_hashesents=19049 event_burst_hwm=19 starts=5899 tokens=63 socket_relea_rion=4 rx_parses=m20_g_drops=0 tx_nic_drops=0 rx_owner_hits=28481 rx_software_hashes=5 rx_parse_plete_savg_us=98243 com75051 fifallbackspelef=r0s
+teallback_max_us=2[CORE][INFO ][main_tg.c:512] tra08s3=6st_rx_avg_us=98244 first_rx_max_us=3072614 complete_avg_us=98415 complete_max_us=3072622
+=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=56927 connect_max_us=2045518 first_rx_avg_us=101831 first_rx_max_us=2102851 complete_avg_us=101843 complete_max_us=2102871
+379
+ffic-gen latency connect_avg_us=57725 connect_max_us=20603647 first_rx_avg_us=106721 first_rx_max_us=3085115 complete_avg_us03 r=10673ing_hwm_in=103 ring_hwm_out=28rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=29601 rx_software_hashes=1 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=53027 connect_max_us=2[CORE][WARN ][tcp.c:2891] tcp acc04 [CORE][INFO ][tcp.c:2499] tcp Cepted RST sock=311complete_max_us=3085 1245483 first_rx_avg_us=96441 f2
+irgen=25 state=LAST_ACK peer 192.168.21.106:8888
+LOSE_WAIT re-ACK peer FIN 192.168.21.st_rx_max_us=3073916 complete_avg_us=96604 complete_max_us=3073928
+106:8888 ack=3315331363
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=2410123621
+[CORE][INFO ][main_tg.c:534] t[CORE][INFO ][main_tg.c:534] traffic-gen plan duration elapsed; draining 63 [CORE][INFO ][main_tg.c:534] traffic[CORE][INFO ][main_tg.c:458] flowstr[CORE][INFO ][main_tg.c:534] traffic-gen plan duration elapsed; draining 62 flows
+[CORE][INFO ][main_tg.c:199] traffic-gen duration 
+[CORE][INFO ][main_tg.c:199] traffic-g-gen plan duration elapsed; drsummary acraf[CORE][INFO ][main_tg.c:534] traffic-gefn ptive=62 live_sockets=363 started=16304 doaic-gen[CORE][INFO ][main_tg.c:534] traffic-gen plane=16242 successaffic-geln s=1n duration elapsed; draining 62entats active=63 live_sockets=a407 started=17925 done=17862 success=17861 fail=1 tx=660894 rx=2464818
+[CORE][INFO ][main_tg.c:466] traffi6c-gen mem flows
+ining 63 flows
+[CORE][INFO ][main_tg.c:199] traffic-gen duration summary active=63 live_sockets=393 started=17569 done=17506 success=17505 fail=1 success_rate=99.99% fail_connect=0 fail_io=0 fail_pro[CORE][INFO ][main_tg.c:199] traffic-ge noryn duration elapsed; draining 6 duration summary active=63 l[CORE][INFO ][main_tg.c:534] traffic-gen plan dura ti2 flows
+[CORE][INFO ][main_tg.c:199] traffic-gen duration summary active=62 live_sockets=382 started=17009 done=16947 success=16947 failt2o=1 fail_resourpce=04 ive durationsu2mmaro=0d esucc n elapsed; draining 62 flows
+fail=0 success_rate=100.00% fail_connect=0 fail_io=0 fail_proto=0 fail_resource=0 deferred_resource=0 tx_socketferred_resource=0p[CORE][INFO ][main_tg.c:199] traffic-gen duration summary active=62 live_socketas=391 started=1733=600954 rx=2241396
+lan duration elapsed; dess_rate=100.070 % fail_connect=0 fail_io=0 fail_proto=0 fail_resource=0 def[CORE][INFO ][main_tg.c:458] traffic-gen statraining 63 flows
+[CORE][INFO ][main_tg.c:199] traffic-gen duration summarey active=63 live_sockets=389 started=17675 done=176y done=17275 success=17273 fail=2 success_rate=99.98% fail_connect=0 fail_io=0 fail_prsoato=2 1faiul_ses2 rsud=0 pauses=0 tx_avail=8171 tx_peak=47 payload_avail=8171 payload_peak=47 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=68751 rx=25342 =3 tx=647722 rx=esource=0 deferred_resource=0 tx=639175 rx=2383674
+ active=56 live_sockets=350 started=16304 done=16248 success=16248 fail=0 tx=601176 rx=2242224
+s2rred_re[CORE][INFO ][main_tg.c:458] traffic-gen stats actctivcccess=1isoeu4rc7e=60 tx=6612 fail=0ans=16922 success_rave=56 live_sock2=70t5 started=17000 done=16937 success=16937 fail=0 suce=100.00% fail_connect=0  612 live[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8161 tx_peak=46 payload_avail=8161 payload_peak=48 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=64357 rx=24070 scans=16052 flush=16052 dirty_enq=16061 dirty_dedup=17843 dirty_rfequeue=0 arp_wait=0_lsus3ets=377 started=17337 done=17281 succefss=17279 fail=2 tca5ho=19 rx=2338686
+c69 22x idiae=r639397 rx=238k4502
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pets=415 stss_rate=100.00% fa690
+ausesp=0 tx_avail=8160 tx_peak=45 payload_avail=8160 payload_peak=45 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffartled=1[CORE][INFO ][main_tg.c:458] [CORE][INFO ][main_tg.c:458] itrrti7yt_cwak_l_coe303 done=17241 success=17241 fail=0 success_raenq=16922 dirty_d=0 dirty_depth=12 dirty_hwmte=10r0.0n0% -fail__i=o=affic-gen stats active=59 live_sog0en worker turns=71268 rx=248n06 sacfe cfaiaens=16583 flush=16583 dirty_enq=16596 dionnect=0 fail_io=0 fail_proto=0 fail_resource=0 deferred_resource=0 tx=637917 rx=2379258
+ckets=373 started=17569 done=17510 success=17509 fail=1 tx=647870 rx=24162cdt=0 fail_i242
+u[CORE][INFO ][main_tg.c:466] traffi6 budget=0 turn_avg_us=146 rx_us=1650393 maint_us=1223680 reactor[CORE][INFO ][main_tg.c:458] traffic-gen stats active=59 live_sockets=392 started=17303 done=17244 success=17244 fail=0 tx=638028 rx=2379672
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 rty_dedupofic-gl_us=2405469 flush_us=1168425
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=64357 events=15355 event_burst_hwm=20 starts=4771 tokens=61 socket_releases=4752 ring_hwm_in=140 ring_hen stats active=56 live_sockets=367 started=17009 done=16953 success=16953 fail=0 tx=627261 rx=2339514
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8163 tx_peak=45 payload_avail=8163 payload_peak=45 tx_alloc_fail=18_3wpcpr-got==e0t0m=1o4
+ 18748 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=36 budget=0 turn_avg_us=136 rx_us=1661339 maint_us=1219995 rea[CORE][INFO ][main_tg.c:476] tradirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=13 dirty_hwm=32 budget=0 turn_avg_us=132 rx_us=1642758 maint_us=1241894 reactor_us=2390679 flush_us=113x_avail=8160 tx_pneak=46 pcf=0 fail_resource=0 defetor_fus=2 366022 _out=32 rfail_proto=0 fail_resource=0 deferred_resource=0 tx=626669 rx=2337306
+flush_us=1156176
+r[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=68751 events=16339 event_amiemory  ed[CORE][INFO ][main_tg.c:458] traffic-gen stats active=57 live_sockets=342 started=17000 done=16943 success=16943 fail=0 tx=626891 rx=2338134
+[CORE][INFO ][main_tg.c:466] traffic-gen memoryy pau1736
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=71268 burst_hwm=19 starts=5039 tokens=63 socket_re_paused=0 pauses=0 tx_avail=8160 tx_peak=48 payloresourcevents=16029 ee=0 tx=6rx_ring_drops=0 lleases=5031 ri5ngc-gen workevrot1644 rx=2430456
+ turns=68162 rx=25075 scans=16754 ad_avail=8160 payload_peak=4_8[CORE][INFO ][main_tg.c:458] traffic-geen tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=69321 rx=24961 scans=1676x_nic_drops=0 rx_owner_hits=24150 rx_software_hashes=2 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-sed=0 pauses=0 tx_avail=8 158 tgx_pent_burst_hwm=21 startsehwm=4921 tokens=62 socket_releases=4928 ring_hwm_in=129 ring_hwm_out=36 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=24879 rx_software_hashes=0 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=57674 connect_max_us=2211492 first_rx_avg_us=106064 first_rx_max_us=3094308 complete_avg_us=106313 complete_max_us=3094316
+ad_avail=8160 ak=446 flflush=16754 dirty_enq=16765 dirty_dedup=18522 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=12 dirty_hwm=42 budget=0 turn_avg_us=139 rx_us=1717542 maint_us=1225894 reactor_us=239274p_in=107 ring_hwm_out=40 rx_rn  payload_avail=8158 payload_peak=45 tx_alloc_fail=0
+stats active=58 live_sockets=359 started=17675 done=17617 success=17617 fail=0 tx=651829 rx=2431146
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pausesi[CORE][INFO ][main_tg.c:476] nlg_draoylaotad_ppst=eeak=46 trx_aln=cy connect_avg_us=61911 connect_max_us=2063647 first_rx_avg_us=113489 first_rx_max_us=3085115 complete_avg_us=113502 complet0 tx_nic_drops=0 rx_owner_hits=25340 rx_software_hashes=ush=16766 dirty_enq=16776 dirty_dedup=18403 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=14 dirty_hwm=42 budget=0affic-gen worker turns5 flush_us=1147752
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=68162 events=16151 event_burst_hwm=18 starts=4976 tokens=62 s0 tx_avail=8158 tx_peak=49 payload_avail=8158 payload_peak=49 tx_alloc_fail=0
+1 rx_parse_fallbacloc_fke_max =70035 rail=0
+[CORE][INFO ][main_tg.c:476] _us=3085122
+ocket_releasex=25469 scans=17079 flush=17079 dirty_enq=17093 dirty_dedup=18809 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=14 dirty_hwm=42 budget=0 turn_avg_us=136 rx_us=1673020 maint_us=1241793 [CORE][INFO ][main_tg.c:476] trafreactstrtor_us=24173s=0
+01 flush_us=1156763
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=70035 events=16484 event_burst_hwm=15 starts=5064[CORE][INFO ][main_tg.c:512] urn_avg_us=1fic-gen worker turns=71619 rx=26711 scans=17786 flush=17786 dirty_enq=17801 dirty_dedup=19769 dirty_requeue=0 arp_wait=0 arp_wa= 5006 rinaffic-gen wor37tke=graffic-k teor kturns0=705e_nhw m_idi75 rrty_nsrx_us=1666108 maint_us=12d22=63 x=25723 scans=17241 flush=17241 dirty_ge=133 ring_hwm_out=20 rx_ring_ds3nen latencro80 reactor_us=2432076 fluysops=0 tx_nic_drops=0 rx_owner_hits=25152 rx_q=172h_software_hashes=5 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=60088 connect_max_us=40epth=1 connect_avg_us=56607 connect_max_us=2045544 first_759 dirty_dedup=18975 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=19 dirty_hwm=4c0 budget2896 first_rx_avg_us=108534 first_rx_max_us=4119775 complete_avg_us=108546 complete_max_us=4119782
+rx_avg_us=104185 first_rx_max_us=5u dirty_hwm=26 budget=0 turn_avg_us=132 rx_us=1706480 maint_uss==0 turn_avg_us=135 rx_k3et_releases=073916 co=115us=16811238995 reactor_us=2298298 flush_us=1179845
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=71mp272 maint_us=1238788 reactor_us=2424966 flush_us=1155715
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=70575 events=16573 event_burst_hwm=23 starts=5105 t619 events512okens=5l1e0t =63 e_avgsoc7516_rus3=104305 complete_max_us=3073928
+[CORE][INFO ][main_tg.c:534] traffic-gen plan duraket_releases= event_burst_hwm=21 startstion elapsed; draining 65114 ring_hw44
+=531ing_hwm_in=117 ring_hwm_out=38 rx_ring_drops=0 tx_nic_dro0ps=0 rx_ow[CORE][INFO ][main_tg.c:497] traffic-gen reactor  tokens=62 socket_releases=5291 rin3 flows
+[CORE][INFO ][main_tg.c:199] traffic-gm_in=119 ring_hwm_out=24 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=25774 rx_software_hashes=12 rx_parse_fallbacks=en durtag2
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=unrntio_hwmn _in=e158125 connect_max_us=2120056 first_rx_avg_us=105754 first_rx_max_us=3096810 complete_avg_us=105766 complete_max_us=3096821
+summary ac03 ring_hrtive=63 live_sockets=407s=69321 ewm_out=25 rx_ring_drops=0 tx_nic started=1_dr_op7vents=1h6118 event_burst_hwm=s=0 rx_18 starts=4953 tokens=63 socket_releases=4996 ring_hwm_in=114 ring_hwm_out=21 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=25021 rx_software_hashits=25552 rx_software_hashes=1 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen laowner_hits=26781 rx_sofes=2 rx_parse_fallbacks=0
+tware_hashes=1 rx_parse_fallba[CORE][INFO ][main_tg.c:512] cks=0
+925 done=17862 traffic-gen latency connect_avg_us=58561 connect_max_us=20[CORE][INFO ][main_tg.c:512] stru57978 first_affic-gen latency connect_avg_us=6ccess=17861 fail=1 successr1149 connect_max_us=2060603 first_rx_avg_us=108829 first_rx_max_us=3107898 complete_avg_us=1088_41 xrate=99.99% fail_connect=0 fail_io=0 fail_proto=1 fatenc_ocy connectmp_aalete_max_us=3107920
+vg_us=57294il_vg_us=resource=0 deferred_resource=0 tx=660894 rx=2464818
+ connect_max_us=2074211 first_rx_avg_us=104832 first_rx_max_us=3108519 comple106625 first_rx_m[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8ta8e_avg_u88 ack=3561789897
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888s=104844 complete_max_us=3108540
+x_us=2108610 complete_avg_us=106748 complete_ma[CORE][INFO ][tcp.c:2499]  ack=7238t48182
+x_us=2108[CORE][INFO ][tcp.c:2499] tcp CLOSE_620
+cp CLOSE_WAIT re-ACK peeWAIT re-ACK peer FIN 192.168.21.106:8888 ack=1047649966
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.r FIN 192.168.21.106:8888 ack=1560758397
+168.21.106:8888 ack=1391595380
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=2412976467
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=1883151196
+[TCP][WARN ][tcp.c:1448] sock=325 gen=3 state=SYN_SENT local=192.168.21.2:55724 peer=192.168.21.106:8888 event=rto-give-up kind=syn
+[TCP][WARN ][tcp.c:1448] sock=346 gen=2 state=SYN_SENT local=192.168.21.2:56299 peer=192.168.21.106:8888 event=rto-give-up kind=syn
+[CORE][INFO ][main_tg.c:458] traffic-gen stats active=0 live_sockets=0 started=17925 done=17925 success=17924 fail=1 tx=663225 rx=2473512
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8191 tx_peak=47 payload_avail=8191 payload_peak=47 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=103276 rx=353 scans=182 flush=182 dirty_enq=183 dirty_dedup=223 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=46 budget=0 turn_avg_us=89 rx_us=811262 maint_us=1546238 reactor_us=2214614 flush_us=775959
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=103276 events=170 event_burst_hwm=20 starts=0 tokens=63 socket_releases=407 ring_hwm_in=97 ring_hwm_out=10 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=352 rx_software_hashes=1 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=58476 connect_max_us=2045544 first_rx_avg_us=106724 first_rx_max_us=3073916 complete_avg_us=106845 complete_max_us=3073928
+[CORE][INFO ][main_tg.c:458] traffic-gen stats active=0 live_sockets=0 started=16304 done=16304 success=16304 fail=0 tx=603248 rx=2249952
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8191 tx_peak=46 payload_avail=8191 payload_peak=48 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=101623 rx=278 scans=132 flush=132 dirty_enq=120 dirty_dedup=180 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=17 budget=0 turn_avg_us=90 rx_us=806507 maint_us=1594107 reactor_us=2013015 flush_us=809375
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=101623 events=130 event_burst_hwm=19 starts=0 tokens=61 socket_releases=350 ring_hwm_in=83 ring_hwm_out=13 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=191 rx_software_hashes=5 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen la[CORE][INFO ][main_tg.c:458] traffic-gen stats active=0 live_sockets=0 started=17337 done=17337 success=17335 fail=2 tx=641469 rx=2392230
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8191 tx_peak=45 payload_avail=8191 payload_peak=45 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=116430 rx=277 scans=141 flush=141 dirty_[CORE][INFO ][main_tg.c:458] traffic-gen stats active=0 live_sockets=0started=17009 done=17009 success=17009 fail[CORE][INFO ][main_tg.c:458] traffic-gen stats active=0 live_sockets=0 started=17569 done=17569 success=17568 fail=1 tx=650053 rx=2424384
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8191 tx_peak=48 payload_avail=8191 payload_peak=48 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen e=0[CORE][INFO ][main_tg.c:458] ttnq=128 dirty_dedup=181 tworker rturns=110119 rx=316 scans=176 flush=176 dirty_enq=165 dirty_dedup=191 dirty_requeue=0 arp_wait=0 arp_waency connect_avg_us=62722 connect_max_us=2063647 affic-gen stats active=1 live_sockets=1 started=17303 don dirty_requekue=fe=17302 success=17301 fail=1 tx=640137 rx=2387538
+[CORE][INFO ][main_tg.c:466] traffx=629333 rx=2347242
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 0pauses=0 tx_avail=8191 tx_peak=45 pa arpiric-gen memory paused=0 pauses=0 tx_avail=8191 tx_peak=46 payload_avail=8191 payload_peak=46 tx_alloc_fail=0
+e=0 dirty_depth=0 dirty_hwm=30 budget=0 turn_avg_us=83 rx[CORE][INFO ][main_tg.c:476] _us=792488 myload_avail=8191 payload_peak=45 tx_alloc_fail=0
+_aint_us=1568061 react[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=103447 rx=307 scans=158 flush=158 dirty_enq=146 dirty_dedup=187 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=29 budget=0 turn_avg_us=88 rx_us=800561 maint_us=1585136 reactor_us=tor_us=2147581 flush_us=788529
+[CORE][INFO ][main_tg.c:497] traffic-st_rx_avg_us=1148raffic-gen worker tu[CORE][INFO ][main_tg.c:458] traffic-2genwgait=ren react6o0rn t 50 first_rx_max_us=3085115complete_avg_us=114879 complete_max_us=3085122
+s=104142 rx=299 scans=150 flush=150 dirty_enq=135 dirty_daedup=1933 surp_5ta0wak48ts active=0 live_sockets=0 ste=0 dirty_depth=0 dirty_hwm=arted=17000 done=17000 success=16999 fail=1 tx=628963 rx=2345862
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8191 tx_peak=44 payload_avail=8191 payload_peak=45 tx_rns=110119 events=144 event_burst_hwm=18 starts=0 tokens=63 socket_releases=373[CORE][INFO ][main_tg.c:458] traffic-gen stats  ring_hwm_in=90 ring_hwm_out=4 rx_ring_drops=0 tac fl dirtyx_nicaustive=0 live_sockets=0 started=17675 done=17675 success=17675 fail=0 tx=653975 rx=2439150
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8191 tx_pe_lh16 budget_drops=0 rx_o_wnlerroac_feail=0
+k[CORE][INFO ][main_tg.c:476] =traffic-geq4_=hi0 utureue=0 ar9u p_snn t=80_avwworag_us=79 rxk_us=8107885 maint_is365
+[CORE][INFO ][main_tg.c:497] trus=1603415 reactor_us=1970412 flush_us=8057e2payload_avail=819r1 payload_peak=49 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=105060 rx=328 scans=162 flush=162 dirty_enq=17
+[CORE][INFO ][main_tg.c:497] traffiac-gen reac45 dirty_dedup=188 dirty_requetor turns=116430 events=128 event_burst_hwm=15 starts=ffic-gen reactor turns=103447 events=139 =0 tokens=62 socket_releases=377 ring_hwm_in=73 ring_hwm_out=9 rx_ring_drops=0  turns=105t3ue=2=515 rt0e0x_nic_drops =0 rxx_ve3 rx_software_hashes=1 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=59937 connect_max_us=2057978 first_rx_avg_us=108832 first_rx_max_us=3195988 complete_avg_us=108954 complete_max_us=3=304 scans=163 flush=163 dirty_enq=149 dirty_dedup=179 dirty_requeue=0 owner_hits=203 rx_software_hashes=1 rx_parse_fallbacks=0
+ arp_nwakearp_wait=0 arp_wakarp_wait=0 arp=0 dirty_depth=0 dirty_h195995
+t_burst_hwm=22 starts=0 t_wake=0 dirty_depth=0 dirty_hwm=23 budget=0 turn_avg_us=87 rx_us=80wm=27 budget=0okens=62 socket_releases=367 ring_hwm_in=101 ring_hwm_out[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=58825 connect_max_us=2211492 first_rx_avg_us=107627 fe=0 dirty_depth=0 dirty_hwm=24 budget=0 turn_avg_us=87 rx_us=798922 ma6206 mainirst_rx_max_us=30=24 rx_ring_idrops=0 tx_nic_drops=0 rx_owner_hitsnt=94308 co mplet_us=1590788 reactor_us=2037883 flush_us=799291
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=105060 events=143 event_burst_hwm=20 starts=0 tokens=63 socket_releases=359 ring_hwm_in=102 ring_hwm_out=26 rx_ring_drops=0 tx_nic_drops=0 rx_owne_avg_tus=1078725 cur1er_hits=251 rx_software_hashes=10 rx_parse_fallbacks=2
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=59084 connect_max_us=2120056 first_rx_avg_us=107896 first_rtx__us=81n_avomplete_maxg5_max_us=_32020397 rx_6us=543 reactor_us=20s8u8318 flush_ s=88 rx_us=804099 moftware_hashes=7 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=61307 connect_max_us=4072896 complete_3094316
+afinausvg_irst_rx_avg_us=110156 first_rx_max_us=4119775 co=793883
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=105315 events=141 event_burst_hwm=19 starts=0t_us=15 tokens=63 sus=107909 complete_max_us=320ocket_releases=342 ring_hwm_in=115 ring_hwm_out=8 rx_ring_drops=0 tx_nic_dro75234 reactor_us=2136410 flush_us=787284
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=104142 emplete_avg_us=110169 complete_max_us=4119782
+2046
+ps=0 rx_owner_hits=218 rx_software_hashes=1 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffvents=128 event_burst_hwm=16 starts=0 tokens=62 socket_releases=391 ring_hwm_in=94 ring_hwm_ic-gen latency connect_avg_us=62308 connect_max_us=2060603 first_rx_avg_us=110770 first_rx_max_us=3107898 complete_avg_us=112660 complete_max_us=32039234
+out=10 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=227 rx_software_hashes=1 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=58455 connect_max_us=2074211 first_rx_avg_us=106698 first_rx_max_us=3108519 complete_avg_us=108555 complete_max_us=32031410
+[CORE][INFO ][main_tg.c:458] traffic-gen stats active=0 live_sockets=0 started=17925 done=17925 success=17924 fail=1 tx=663225 rx=2473512
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8191 tx_peak=47 payload_avail=8191 payload_peak=47 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=107435 rx=10 scans=0 flush=0 dirty_enq=0 dirty_dedup=0 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=0 budget=0 turn_avg_us=85 rx_us=808288 maint_us=1609249 reactor_us=1911848 flush_us=810352
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=107435 events=0 event_burst_hwm=0 starts=0 tokens=63 socket_releases=0 ring_hwm_in=1 ring_hwm_out=0 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=0 rx_software_hashes=10 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=58476 connect_max_us=2045544 first_rx_avg_us=106724 first_rx_max_us=3073916 complete_avg_us=106845 complete_max_us=3073928
+[CORE][INFO ][main_tg.c:458] traffic-gen stats active=0 live_sockets=0 started=16304 done=16304 success=16304 fail=0 tx=603248 rx=2249952
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8191 tx_peak=46 payload_avail=8191 payload_peak=48 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=102600 rx=3 scans=0 flush=0 dirty_enq=0 dirty_dedup=0 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=0 budget=0 turn_avg_us=89 rx_us=798130 maint_us=1608358 reactor_us=1954136 flush_us=806237
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=102600 events=0 event_burst_hwm=0 starts=0 tokens=61 socket_releases=0 ring_hwm_in=1 ring_hwm_out=0 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=0 rx_software_hashes=3 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=62722 connect_max_us=2063647 first_rx_avg_us=114865 first_rx_max_us=3085115 complete_avg_us=114879 complete_max_us=3085122
+[CORE][INFO ][main_tg.c:458] traffic-gen stats active=0 live_sockets=0 started=17337 done=17337 success=17335 fail=2 tx=641469 rx=2392230
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8191 tx_peak=45 payload_avail=8191 payload_peak=45 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=111063 rx=0 scans=0 flush=0 dirty_enq=0 dirty_dedup=0 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=0 budget=0 turn_avg_us=82 rx_us=796207 maint_us=1571919 reactor_us=2068178 flush_us=794945
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=111063 events=0 event_burst_hwm=0 starts=0 tokens=62[CORE][INFO ][main_tg.c:458] traffic-gen stats active=0 live_sockets=0 started=17009 done=17009 success=17009 fail=0 tx=629333[CORE][INFO ][main_tg.c:458] traffic-gen stats active=0 rx= liv socket_releases=0 ring_h2347242
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8191 tx_peak=45 payload_avail=8191 payload_peak=45 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=103795 rx=5 scans=0 flush=0 dirty_enq=0 dirty[CORE][INFO ][main_tg.c:458] traffic-gen stats active=1 live_sockets=1wm_in=0 ring_hwm_oue_sockets=0 started=17569 done=17569 success=17568 fail=1t=0 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=0 rx_software_has started=17303 done=17302 success=17301 fail=1 tx=640137 _dedup=0 dirty_requeue=rx=23h870 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=0 budget=0 turn_avg_us=88 rx_us=795030 maint_us=1580367 reactor_us[CORE][INFO ][main_tg.c:458] =2 07419tx538
+1 flush_us=800766
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=1037t[CORE][INFO ][main_tg.c:458] traffic-gen stats active=0 live_sock[CORE][INFO ][main_tg.c:466] es=09raffic-gen stats active=0 live_sockets=0 started=17000 done=17000=  success=169e5r9trafx_parts=0 started=17675 done=17675 success=fic6-g events=0 event17675 fail=0 tx=653975 rx=2439150
+[CORE][INFO ][main_tg.c:466] traffic-gen memory pausedse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] tr950=0 pauses=0 tx_avai_burst_en memory pausled=0 pahwm=0 staraf=8191 tx_peak=49 payload_avail=8191 payload_peak=49 tx_allofic-gen latfail=1 tx=628963 rx=2345862
+ency con0nets=0 tokens=62 socket_releases=0 ring_hwmc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=105102 rx=14 scans=0 flush=0 dirty_enq=0 dirty__in=1 ring_hwm_out=0 rx_ring_drops=0 tx_nic_drops=0 r[CORE][INFO ][main_tg.c:466] ct_d5edup=0 dirttraffic-gen mx_owner_hits=0 remory paused=0 pauses=0 tx_avail=8191 tx_peak=44 payload_avail=8191 payload_peak=45 ty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=0 budavg_us=58825 connect_max_us=2211x_all3 rx=2424384
+[CORE][INFO ][main_tg.c:466] traffic-gen memo4ry paused=xoc92 fi_rsget=0 turn_avg_us=87 rx_us=796269 maint_us=150 pauses=0 tx_avail=8191 tx_peauses=0 tx_avas_fail=0
+[CORE][INFO ][main_tg.c:476] traffick=48 payload_avail=8191 payload_peak=48 tx_alloc_fail=0
+-gen worker turns=105212 rx=1 scans=0 flut_rx_avg_us=1076sh=0 [CORE][INFO ][main_tg.c:476] traffic-gen worker turns=110532 rx=0 scans=0 flush=0 dirty_enq=0 dirty_dedup=0827 il=8191 9doftware_hashes=5 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=61307 connect_max_us=4072896 first_rx_avg_us=110156 first_rx_max_us=4119775 complete_avg_us=11016 dirty_requeuet7x9 complete_max_us=4119782
+93_=pirty_enq=0 dirty_dedup=0 dirty_requeue0 arp_wait=0 arp_wf=ie0ake=0a dirty_depth arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=0 budget=0 turn_avg_usk=46 pay r=st_rx_max_us=3094308 comple=80 dirty_hwr7 rx_us=797370 maint_us=1584268 reactor_us=2050787 flush_us=797087
+[CORE][INFO ][main_tg.c:497] traffic-gent rleeam=0 budget=0 turn_avg_us=83 rx_uoeacto_avg_us=1078ardctor tu_us=202198_avail=819rns=105212 events=0 ev2 flush_us=799428
+s=802444 maint_us=1602731 reactor_ent_burst_hwm=0 starts=0 tokens=63 s[CORE][INFO ][main_tg.c:497] traffic-geus=1981448 fl17 5 complete_max_us=3094316
+ocket_releases=0 ring_hwm_in=1 ring_hwm_out=0 rx_ring_dush_us=804205
+[CORE][INFO ][main_tg.c:497] traffic-gen reactrorn  turns=110532 events=0 event_burst_hwm=0 starts=0 tokens=63 socketorps=0 tx_nic_drops=0 rx_oeactor turns=105102 events=0 event_burst_hwm=0 starts=0 tokens=6wnerpayload_peak=46 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=105812 rx=4 scans=1 flush=1 dirty_enq=1 d_3_rhit socket_rirteleassy=0 es=0 ringe_dedup=0 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=1 budget=0 turn_avg_us=87 rx_us=78568rx_software_hashes=1 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] trafficleases=0 ring_hwm_in=2 ring_hwm_out=0 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=0 rx_software_hashes=1-2 rx_parse_f_hwm_in=0gen late ring_hwm_out=0 rx_ring_5allbacks=2
+[CORE][INFO ][main_tg.c:512] traffic-gen latencdrops=0 tx_nic_drops=0 rx_owner_hits=0 rx_software_hashes=0 rx_parse_fallbacks=0
+ maint_us=1583469 reactor_us=2086049 flush_us=79y[CORE][INFO ][main_tg.c:512] t3148
+ connect_avg_us=59084 connect_max_us=2120056 ncy connect_avg_us=62308[CORE][INFO ][main_tg.c:497] trfirst_rx_avg_us=107896 first_rx_max_us=3202039 complete_avg_us=107909 complete_max_us=3raffic-gen latency connect_avg_us=59937 connect_max_us=2057978  connect_max_us=2060603 first_rx_avg_us=110770 first_rx_max_us=3107898 complete_avg_us=112660 complete_max_us=32039234
+affic-gen reactorfirst_rx_avg_us turns=105812 events=0 event_b2=urst_hw02046
+108832 first_rx_max_us=3195988 complete_avg_us=108954 complete_max_us=3195995
+m=0 starts=0 tokens=62 socket_releases=0 ring_hwm_in=1 ring_hwm_out=0 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=2 rx_software_hashes=2 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=58455 connect_max_us=2074211 first_rx_avg_us=106698 first_rx_max_us=3108519 complete_avg_us=108555 complete_max_us=32031410
+[TCP][WARN ][tcp.c:1448] sock=194 gen=25 state=SYN_SENT local=192.168.21.2:59653 peer=192.168.21.106:8888 event=rto-give-up kind=syn
+[CORE][INFO ][main_tg.c:608] traffic-gen aggregate workers=8 started=138122 done=138122 success=138115 fail=7 tx=5110403 rx=19059870
+
+
+
+
+
+
+snow@snow:~/dpdk-l/traffic-gen$ sudo ./build/traffic-gen -- --workers 8 ./scenarios/test/http-sweep-8kcps-750con.json
+EAL: Detected CPU lcores: 16
+EAL: Detected NUMA nodes: 1
+EAL: Detected static linkage of DPDK
+EAL: Multi-process socket /var/run/dpdk/rte/mp_socket
+EAL: Selected IOVA mode 'PA'
+EAL: No free 1048576 kB hugepages reported on node 0
+[CORE][INFO ][main_tg.c:732] traffic-gen scenario=http-sweep-8k-750 classes=1 workers=8 active_shards=8 cps=8000 concurrency=750 socket_id_capacity=4096
+[CORE][INFO ][port.c:307] port 0 hardware RSS fallback: RSS RETA is unavailable
+[CORE][INFO ][port.c:315] port 0 started (driver=net_vmxnet3 rx_mode=software-dispatch rxq=1 txq=8 workers=8 rss_hf=0x30)
+[CORE][INFO ][net_context.c:16] local identity: port=0 ip=192.168.21.2 mac=00:0c:29:f1:e6:6a
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=1 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=1 size=1024
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=2 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=2 size=1024
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=3 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=3 size=1024
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=4 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=4 size=1024
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=5 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=5 size=1024
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=6 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=6 size=1024
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=7 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=7 size=1024
+[OWNER][INFO ][socket_owner.c:312] event=init lcore=8 command_capacity=4096 ready_capacity=8192 slot_capacity=4096
+[CORE][INFO ][ring.c:46] rx/tx rings created lcore=8 size=1024
+[CORE][INFO ][stack_runtime.c:179] packet worker started lcore=1 queu[CORE][INFO ][stack_runtime.c:179] pace=[CORE][INFO ][stack_runtime.c:179] 0ke
+[CORE][INFO ][stack_runtime.c:179] packet worker started lcore=4 queue=3
+t worker started lcore=2 queue=1
+[CORE][INFO ][stack_runtime.c:179] packet worker s[CORE][INFO ][stack_runtime.c:179] pacpacket worktekr staret worker started lcore=6 quted lcorea[CORE][INFO ][stack_runtime.c:179] pr=3 queue=2
+ted lcore=5 queue=4
+eue=5
+acket worker started lcore=7 queue=6
+[CORE][INFO ][stack_runtime.c:179] packet worker started lcore=8 queue=7
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=30 gen=2 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=406 gen=4 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=404 gen=2 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][INFO ][tcp.c:3203] tcp FIN re-queue after data GBN sock=49 gen=2 seq=616099012
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=49 gen=2 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=540 gen=5 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=126 gen=3 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][INFO ][tcp.c:3203] tcp FIN re-queue after data GBN sock=263 gen=7 seq=2647133548
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=263 gen=7 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=562 gen=4 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][INFO ][tcp.c:3203] tcp FIN re-queue after data GBN sock=144 gen=13 seq=3541403811
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=144 gen=13 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=421 gen=12 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][INFO ][main_tg.c:458] traffic-gen stats acti[CORE][INFO ][main_tg.c:458] tr[CORE][INFO ][main_tg.c:458] t[CORE][INFO ][main_tg.c:458] trafficve=9-4 lgen stats [CORE][INFO ][main_tg.c:458] traffic-geactiive=94a liven_ra ffisvtate_csos acsockets=548 st-[CORE][INFO ][main_tg.c:458] gettffic-gen stats active=94 live_sockets=475 started=6453 done=6359 success=6358 fail=1 n stats active=94 live_tsartecd=64ikets=525 started=6921 done=6827 succes1s=682o2 done=6318 sux=235283 rx=877404
+[CORE][INFO ][main_tg.c:466] traffic4ccessc[CORE][INFO ][main_tg.c:458] traffic-gen stats ave=94 live_sockets=546 started=6801 done=6707 success=6706 fail=1 tx=248159 kets=488 started=5984 =6316 fail=2 tx=233766 rx=871608
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8156 tx_peak=54 payload_avail=-gen memory paused=0 pauses=0 tx_avail=8152 rtxraffic-gen stats active=94 done=_peak=62 payload x=925428
+[CORE][INFO ][main_tg.c:466] traffic-gen memor_avail5=fail=3 tx=252599 rx=94[CORE][INFO ][main_tg.c:458] traffic-gen stats active=93c 1l8ivte_so1c8y paused=0 l712
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8160 tx_peak=60 payload_avai890 success=58pauive_so56 payload_peak=55 tx_allkets=483 started=6620 done=65l90 faive=93 live_sockets=537 started=6466 done=6373 success=6370 fai152 payload_peal2=8160il=0 tx=217930 rx=812820
+[CORE][INFO ][main_tg.c:466] traffic-gen memory poc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker  payload_peak=61 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=95003 rx=34400 scans=23461 flush=23461 dirty_enq=23463 dickets=563 k=62 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=96950 rx=32093 scans=22058 flush=22058 dirty_enq=22058 d7irty=3 tx=r235801 rx=_dedup=23626 dirty_requeue=0 arp_wait=25 arp_wake=25 dirty_depthty_dedup=25381 dirty_requeue=0 arp_wait=28 arp_wake=28 dirty_depth=2 dirty_hwm=28 budget=0 turn_avg_us=98 rx_us=17turns=95413 rx=31886 scans=21838 flush=218 38 dirtys879060
+started=6456 done=6362 success=636success=6527 fail=0 tx=241499 rx=900726
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8157 tx_peak=53 payload_avail=8157 payload_peak=53 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worke_enq=21840 dirty_dedup=23aused=0 paur turns=94413 rx=32927 scans=22512 flush=22512 dirty[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=ses=0 tx_avail81_een1 fq=0 5191219 maint_us=1258514 reactor_us=2112071 flush_us=1194816
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=95004 events=22172 event_burst_hwm=14=8147 tx_peak=56 payload_avail=8147 payload_peak=56 tx_alloc_f =tx_peak=66 payload_avail=8159 pay5load_peak2=66s da251iirty_hwm=30 budgl =0
+[CORE][INFO ][main_tg.c:476] =0 2starts=6921 tokens=93 socket_releases=6396 ring_ail=1 tx=235394 rx=877818
+4 dirty_dedup=24301 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=2 dirty_hwm=26 budget=0 turn_avg_us=99 rx_us=1684353 maint_us=1265633 reatx_avail=8c157 txeht=0 tor__peakt=56 wpm5[CORE][INFO ][main_tg.c:466] trutaffaic- g_ein ndisrty_rwyorker turnse=queue=0 arp_wait=27 arp_wake=27 dirty_depth=2 dirty_hwm=27 budget=0 turn_avg_us=98 rx_us=1666462 maint_us=1272480 reactor_us=raffic-gen memory paused=0 pauses=0 tx_avail=8160 tx_peak=57 payload_avail=8160 payload_peak=57 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=97320 rx=32081 scans=22070 flush=22070 dirty_enq=22072 dirty_dedup=2358load_avail=8157 payload_peak=56 tx_alloc_urn_avg_us=96 rx_us=1627470 maint_us=2=6 rtx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=94492 rx=32165 scans=22092 flush=22092 dirty_enq=22092 dirty_dedup=23670 dirty_requeue=0 faili=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=90654 rx=33800 scans=23052 flush=23052 d=95755 rx=29769 scans=20605 flush=20605 dirty_enq=20605 dirty_dedup=21866 dirty_requeue=0 arp_wait=23 arp_wake=23 dirty_depth=0 dirty_hwm=31 budget=0 turn_avg_us=97 rx_us=1601953 maint_us=i13022406 reactor_us=r2129a202083240 flus1ht_us=1y16n_g_hwm_out=31 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=34379 rx_software_hashes=12 rx_parse_fallbacks=2
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=77468 connect_max_us=2055566 100666 flush_ dirty_requeue=0 arp_wait=28 arp_wake=2896971rp_wait=10 ar1p_wake=10 dirty_depth=0 dirty_hwm=34 budget=0 turn_avg_us=99 rx_us=1663913 maint_us=1277697 reactor_us=2091158 fluseh_us=1193518
+[CORE][INFO ][main_tg.c:497]  dirty_depth=2 dirty_hwm=33 budget=0 turn_avg_us=96 rx_us=1639585 maint_us=1291914 reactor91us =118723n4489
+flftr reactor_us=2093484 0
+irst_rx_avg_us=131257 flush_us=1163514
+[CORE][INFO ][main_tg.c:497] traff[CORE][INFO ][main_tg.c:497] traffia[CORE][INFO ][main_tg.c:497] ffic-gec-gen reactor turns=94414 events=21201 event_burst_hush_us=1174682
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=95414 events=20539 event_burst_hwm=14 starts=6412 tokens=94 socket_releases=5864 ring_hwm_in=36 ring_hwm_out=34 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=31878 rx_software_hashes=2 rx_pawm=15 starts=6620 qtraffic-gen reactor turns=95756 events=19279 event_burst_hwm=24 starts=5984 tokens=94 socket_releases=5496 ring_hwm_in=26 ring_hwitokens=92 socket_releasec-gen reactor turns=96951 events=20774 event_burst_hwm=18 st_asm=61_fn reactor turns=94493 evrse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency co=23052 dirty_dedup=24972 dirty_requeue=0 arp_wait=22 arp_wake=22 dirty_depth=0 dirty_hwm=25 budget=0 turn_avg_us=103nnect_avg_us=84423 connect_max_us=4057792 first_rx_avg_us=1out=24 rx_ring_drops=0 tx_nic_edr42739  rrnts=20811 evenirst_rx_max_us=3088366 complete_avg_us=13uts=first_rx_max_us=40925102109 complete_max_us=3088384
+ complete_avg_us=143523 complete_max_us=4092515
+x_us=1743806 maint_us=1256777 react_burst_hwm=16 startsops=0 rx_owner_hits=29762 rx_software_237th sring_hwm_i=0a=6453 91288 flush_us=1158089
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=97321 sthn=22 ri6466 tokoes=0 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_uevents=20818 event_burst_hwm=14 estarts=6456 kens=9os=90475 connect_max_us=2056384 first_rx_avg_us=151153 first_rx_max_us=3105771 complete_avg_us=151163 complete_max_us=3105786
+ng_hwm_out=37 rx_ring_drops=0 tx4 socket_releases=5978 ring_hwm_in=33 ring_hwm_out=20 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=32085 rx_software_hashes=1 rx_parse_fallbacks=0
+ntokens=93r_u_[CORE][INFO ][main_tg.c:512] nic_drops =2s1s=0 socrx_own=e9t3 0r_hits=32918 rx_soraffic-gen latency connect_avg_us=81909 connect_makx_us=2055741 first_rx_avg_us=138665 first_rx_max_us=4097904 complete_avg_us=139138 complete_max_us=4097920
+et_releases=5893 ring_hwm_in=23 ring_sockethwm_out=28 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=32074 rx_software_hashes=0 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=84186 connect_max_us=2071023 first_rx_avg_us=14ftware_hashes=2 rx_p6068 flush_us=1194407
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=902arse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=79539 connect_max_us=2065592 first_rx_avg_us=135039 first_rx_max_us=3087582 complete_avg_us=135049 complete_max_us=3087588
+606 first_releases=5929 ring_hwm_in=23 ring_hwm_out_rx_max_us=5096780 complete_avg_us=142915 complete_max_us=5096787
+=3655 events0 rx_ring_d=21708 event_burst_hwm=14 starts=6801 tokens=92 socket_releases=6255 ring_hwm_in=39 ring_hwm_out=27 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=33790 rx_software_hashes=3 rx_parse_fallbacks=0
+rops=0 tx_nic_drops=0 rx_own[CORE][INFO ][main_tg.c:512] traffic-gen later_hency connect_avg_us=77its078 connect_max_us=2058220 first_rx_avg_us=133563 first_rx_max_us=4100247 complete_avg_us=133858 complete_max_us=4100255
+=32151 rx_software_hashes=7 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=84218 connect_max_us=2055286 first_rx_avg_us=138687 first_rx_max_us=4097252 complete_avg_us=139596 complete_max_us=4097259
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=24 gen=14 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=10 gen=15 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][INFO ][tcp.c:3203] tcp FIN re-queue after data GBN sock=34 gen=4 seq=2065788522
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=34 gen=4 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=434 gen=16 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=81 gen=5 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=394 gen=21 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=554 gen=10 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=275 gen=14 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=429 gen=13 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][INFO ][main_tg.c:458] traffic-gen stats active=94 live_s[CORE][INFO ][main_tg.c:458] traffockets=4i41[CORE][INFO ][main_tg.c:458]  [CORE][INFO ][main_tg.c:458] ts[CORE][INFO ][main_tg.c:458] [CORE][INFO ][main_tg.c:458] raffictracftraffic-gen stats active=94 live_sockets=399 started=11736 done=11642 succe-gen stats active=94 live_sockets=409 s-gen stats attarted=12719 done=1f2625ctive sutraffici=arted94c liss=11640 fail=2 tx=430754 rx=1606320
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8145 tx_peac=-gen stats active=94 live_sockets=437 started=12174 done=12080 success=12078 fail=2 txk126v-e_soccess=12622 12 do=57 payload_avail=8145 pkets=472fail=3 tx=4ayload_peak=57 tx_alloc_fai gne=12518 succ6ess=1l=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=80[CORE][INFO ][main_tg.c:458] traffic-gen stats active=93 started=11918 done=11824 success=11822 fail=2 tx=437488 rx=1631436
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8156 tx_peak=58 payload_avail=8156 payload_peak=58 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=83021 rx2=27li7ve_sockets=6439[CORE][INFO ][main_tg.c:458] 5=e36 scan stat5 startns=19040 flush=19040 dirty_enq=19038 dirty_dedup=20200 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=28 budget=0 turn_avg_us=113 rx_us=1609166 maint_us=1252416 reactor_us=2272168 flush_us=1145696
+6[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=830s125 rx=1741836
+1[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8155 tx_peak=60 payload_avail=8155 payload_peak=61 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=80270 rx=446960 rx=1666764
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pause8 rx=2t7 fail=1 tx=463166 rx=1727346
+s=021 events=17854e eve [CORE][INFO ][main_tg.c:466] t2n9t_burst_hwm=22 starts=5462 tokens=94 socket_releases=5553 ring_hwm_in=104 riraffic-gen memory paused=0 pauses=0 tx_avail=8158 tx_0p42t scarns=afdfic-=11948 dx_ang_hwm_out=33 rx_ring_drops=9v31ail=8geak=56 payload_a1e50 tx_nic_drops=0 rx_owvail=n8158n er_hits=27636 5active=94 live_sockets=418 started=12493 done=12399 success=12397 fail=2 tx=458763 rx=1710786
+ stats active=93 live_sockets=443 started=11918 done=11825 success=11823 fail=2 tx=437525 rx=1631574
+one=11855 success=11850 fail=5 tx=438635 rx=1635300
+[CORE][INFO ][main_tg.c:466] 7 tx_peak=62 payload_avail=81[CORE][INFO ][main_tg.c:466] 519896 flush=19896 dirty_enq=19896 dirty_dedup=21371 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=24 budget=0 turn_avg_us=116 rx_us=1671845 map[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8155 tx_peak=59 payload_avail=8155 payload_peak=60 tx_allocint_us=1_traffitraffic2467 cpayafy566 r sload_peak=62 tx_-agen memocans=20081 flush=20081 dirty_enq=20079 dirty_il=0
+ry paused=0 pausel-gen memory paused=0 pauses=0  tx_soa=0 [CORE][INFO ][main_tg.c:476] allaetdxt_avaoil=rerx_software_8ad_peak=56 tx_ad148 tx_peak=57 payload_avail=8148 payload_peak=57 tx_alloc_fail=0
+c[CORE][INFO ][main_tg.c:476] traffic-genlvhashesu worker tuail=8157 tx_peak=66 payload_avail=8157 payload_peak=66 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=79873 rx=27730 scans=19107 flush=19107 dirty_enq=19107 dirty_dedup=20288 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=4rns=84857 rx=26805 scans=18435 flush=184fpfic-gen wo4arker turns=79l_=f21572 dirty_req budget35 dirty_enq=18433 dirty_dedup=19661 dirty_r2o2=0ueue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=30 budget=0 turn_avg_us=117 rx_us=1679008 maint_us= =0 tur0n_avg_us=1117 rx_us=1639167 maint_us=1263779 reactor_us=2286821 flush_us=1145787
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=79873 events=17837 event_bctor_us=224equeue=0 rauc247arp_wait=0 arr_2f ril=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=79910 rx=28904 scanail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=73321 x_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] tr892 reactor_us=2237150 flush_us=1177714
+[CORE][INFO ][main_tg.c:497] traffic-gen rest_hwm=22 starts=548x=626 fl30691 scans=20937 flush=20937 dirty_acts=198482 tokenenaffic-gqu=osr tpurns=80270 eshrx=293n latency co2=_973 socket_releases=5580 ring_hwm_in=110 ring_hwm_out=27 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=27723 rx_software_hashes=7 rx_par2se_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=92445 connect_max_us=2121688 first_rx_avg_us=151547 first_rx_max_us=5082874 complete_avg_us=152360 complete_max_us=50820890
+us=1163141
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=9 flush=19848 dirty_enq=19849 dirty_dedup=21201 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=1 dirty_hwm=38 budget=0 turnn3nect_avg_ev80568 eve5 dirty_dedup=22_wake=0 dirty_d_epth=0 dirty_hwm=27 budget=0 turn_avg_us=110 rx_us=1575039 maint_us=1275182 reactor_us=222us=91177 connect_max_us=2071023 first_rx_avg_us=153763 first_rx_max_us=5096780 complete_avg_us=154095 complete_max_us=5096787
+ents=18756 event_burst_hwm=20 starts=5798 tokens=94 socket_releases=5882 ring_hwm_in=100 ring_hwm_out=23 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=29303 rx_software_hashes=10 rx_parse_fallbacks=2
+[CORE][INFO ][main_tg.c:512] t6raffic-gen latency connect_avg_nts=18658 event_burst_40 dih8u836  wm=20 starts=5752 tokens=94avg_us=117 rx_us=1653869 mainft_us=125191l6rtscans=19946 flush=19946 di rs=8810u3 connect_max_us=2 056120 y_rerqueue=0esfi ocket_rseh_uleas=112s7770
+es[CORE][INFO ][main_tg.c:497] arp_trat=ry_waectnsq=or_us=2244089 51a9t9ff46_rx_avg_us=144363 firstlush_fic-gein reactor tuurns=s=11848_rx_max_t57398
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=79910 events=18627 event_burst_hwm=16 starts=5721 tokens=94 socket_58 dirty_de4dup==21725u dirts7=3092841 complete_av1g 0ring_y_reqr_us=144826 complete_max_us=3092850
+ events=17273 event_burst_hwm=18 starts=5298 tokens=92 socket_releases=5338 ring_hwm_in=107 ring_hwm_out=30 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=26804 rx_software_hashes=1 rx_parsehwm_in=112 ring_hwm_out=26 rx_ring_drops=0 t_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connex_niect_avg_us= c91040 connect_max_ueue=0 arp_wait=0 arp_wake=0 dirty_depthus=4=05lea_drops=0 rx_owner_hits=29044 rx_software_hashes=0 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen ses=arp_wake=0 dirty_depth=0 dirty_hwm=25 budget=0 turn_avg_us=118 rx_us=1716709 m0 dirty_hwm=33 budget=0 turn_avg_us=128 rx_us=1734021 maint_us=1208508 reactor_us=2307248 flush_us=1198083
+[CORE][INFO ][main_tg.c:497] traffic-genlatency connect_av raint_us=1235548 reactor_us=2246322 flush_usg=1190230
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=79220 events=19670 event_burst_hwm=22 starts=6081 tokens=94 socket_releases=6211 ring_hwm_in=130 ring_hwm_out=17 rx_ring_drops8982 e=a5f7509ct or turns=_ ring_hwm_in=96 ring_hwm_out=19 rx_ring_drops=0 tx_nic_drops=0 rx_ous=94475 connect_max_us=2065537 first_rx_avg_us=157201 fiwner_hits=28902 rx_software_hashes=2 rx_parse_fallbacks=0
+r[CORE][INFO ][main_tg.c:512] trafficsti_r7x_max-rge_usnst_3t=rx latency connect_avg_us=91237 connect_m_avg_us=151339 first_rx_max_us=4095341 complete_avg_us=151846 complete_max_us=4096730
+ax_us=2060316 3fir5096320 complete_avg_us=1576x2_nist_rx_avg_us=151725 first_rx_max_us=4097904 comple1 22 complete_max_us=5096337
+c_drote_avg_us=152135 complete_max_us=4097920
+events=18662 event_burst_hwm=16 starts=5811 tokens=92 socket_releases=5948 ring_hwm_in=97 ring_hwm_out=26 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=29369 rx_sops=0 rx_owner_hits=30689 rx_software_hashes=1 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=89406 connect_max_us=4057792 first_rx_avg_us=147ftware_hashes=4 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=87160 connect_max_us=4054675 first_rx_avg_us=145880 first_rx_max_us=4100247 complete_avg_us=146044 complete_max_us=4100255
+238 first_rx_max_us=4092510 complete_avg_us=147642 complete_max_us=4092515
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=382 gen=26 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=62 gen=19 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=521 gen=15 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=515 gen=20 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=110 gen=19 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=457 gen=28 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=135 gen=20 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=332 gen=28 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=161 gen=28 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][INFO ][tcp.c:3203] tcp FIN re-queue after data GBN sock=526 gen=30 seq=864515753
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=526 gen=30 state=LAST_ACK peer 192.168.21.106:8888
+[CORE][INFO ][main_tg.c:534] traffic-gen plan duration elapsed; draining 94 flows
+[CORE][INFO ][main_tg.c:199] traffic-g[CORE][INFO ][main_tg.c:534] traffic-gen plan duration elapsed; dra[CORE][INFO ][main_tg.c:534] tr[CORE][INFO ][main_tg.c:458] traffic-gen stats active=93 live_sockets=438 startining 94 flows
+[CORE][INFO ][main_tg.c:199] traffic-gene duration summary active=94 live_sockets=412 started=16811 don[CORE][INFO ][main_tg.c:534] traffic-gen plan duration elapsed; affic-gen plan duration elapsed; draining 94 [CORE][INFO ][main_tg.c:534] traffic-gen plan duration elapsed; drd=17608 done=17515 success=17511 fail=4 tx=e=16717 success=16712 fail=5 success_rate=99.97[CORE][INFO ][main_tg.c:534] traffdren a[CORE][INFO ][main_tg.c:458] aflows
+648055 rx=2416518
+[CORE][INFO ][main_tg.c:466] traffic-gen memory ipauic-gend plaun radunsint%raration einged=0 pauses=0 tx_avail=8[CORE][INFO ][main_tg.c:199] traffic15 lfail_connect=0 fail_io=0 fapsfetail_prot-gen duration summary active=94 live_sockets=419 started=17030 done=16936 success=16933 fail=3 success_rate=99.98% fail_connect=0 fail_io=0 fail_proto=3 faiing 93 flows
+[CORE][INFO ][main_tg.c:199] traffic-gen duration summary active=93 live_sockets=412 startedion summary active=94 live_sockets=421 star=16743 done=16650 success=16647 fail=3 success_rate=d; draining 94 flows
+[CORE][INFO ][main_tg.c:199] traffic-gen duration summary active=94 live_sockets=472 started=16755 done=16661 success=16658 fail=3 success_rate=99.98% fai 93ted=17995 done=17901 success=18 tx_peak=65 payload_avail=8158 979l.fic-gen stats active=92 live_sockets=42lp_re8so8 st9urce=0 deferred_resource=0 tx=626632 rx=2336754
+o=5 fail_resoarted=16784 done=16692 success=16686 fail=6 u98% fail_connect=0 fail_io=0 fail_proto_ c[CORE][INFO ][main_tg.c:458] tr8 fail=3 success_rate=99.98% fail_connect=0 fail_io=0 fail_proto=3= ffail_onnectr=0 tlfaioayload_peak=65 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] resource=0 deferred_resource=0 tx=662337 rx=2469924
+ce=0 deferredt_r3 wrs
+efail_resource=0 deferred_resource=0 tx=616050 rx=2297286
+l_io=0 fail_proto=3 fail_resource=0 deferred_resource=0 tx=616457 rx=2affic-gen stats active=89 live_sockets=399 started=17030 done=16941 success=16938 fail=3 tx=626817 rx=2337444
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8157 tx_peak=59 payload_avail=8157 payload_peak=60 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=68980 rx=23042 scans=15960 flush=15960 dirty_enq=15974 dirty_dedup=16878 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=14 dirty_hwm=36 budget=0 turn_avg_us=137 rx_us=1602670 maint_us=1248492 reactor_us=2436242 flush_us=1136659
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=68980 events=14787 event_bu298804
+affic-gen worker turns=62325 [CORE][INFO ][main_tg.c:458] xtraffic-gen stats active=88 live_sockets=[CORE][INFO ][main_tg.c:458] traffic-gen stats active=86 live_sockets=399 s=tarted=17995 done=17909 success=17906 fail=3 tx=662633 rx=2471028
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8163 tx_peak=60 payload_avail=8163 prst_hwm=19 starts=4537 tokens=93 socket_releases=4556 ring_hwm_in=156 ring_hwm_out=21 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=23128 rx_software_hashes=0 rayload_peak=61 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] rx=25310 scans=17317 flush=17317 dirty_enq=17319 di64[CORE][INFO ][main_tg.c:199] traffic-17604 rx=2302668
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 paustraffic-gen worker turns=67346 rx=26725 scans=18237 flush=18237 dirty_es=0 tx_avail=8143 started=16755 done=16667 succes5[CORE][INFO ][main_tg.c:458] traffic-gen stats active=89 live_sockets=392 started=16743 rty_9dsedgup=18679 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=2 dirty_hwm=65 budget=1 turnenq=s=16664 fail=3 tx=616679 rx=2299632
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8160 tx_peak=62 payload_avail=8160 payload_peak=62 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=69154 rx=23281 scans=16084 flush=16084 dirty_enq=16101 dirty_dedup=17013 diroty_requeue=0 arp_waix_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen l_avg_atency connect_avg_us=99d2 ut1=0u6s=151 tx_peak=66 pen duration summary active=93 live_sockets=467 started=1681rx_us=17435 connecto_max_us=4057792 first_rx_avg_us=163801 first_rx_max_us=7142915 complete_avg_us=16r9 done=16726 success=16724 fail=2 success_rate=99.98% fail_caonnect=0 0847 maint_us=1192603 reactor_us=2361382 flush_us=1177563
+[CORE][INFO ][main_tg.c:497] traffic-fgen reactor turns=62a32ce=0 42i12 5tx=618529 rx=2306256
+complete_max_us=7142923
+ events=16061[CORE][INFO ][main_tg.c:458] 2y5ne=166 lload_ arp_wake=0 dirty_depth=18 dirty_hwm=51 budget=0 turn_avg_ustraffic-gen stats active=87 live_sockets=389 started=16811 done=16724 success=16719 fail=5 tx=618788 rx=2307222
+event_burst_hwm=16 starts=4996 tokens=94 socket_releases=4967 ring_hwm_in=146 ring_hwm_out=25 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=25308 rx_software_hashes=3 rx_parse_fallbacks=0
+7 dirty_dedu_[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=95175 connio==avail=8159p137[CORE][INFO ][main_tg.c:466] traffic-gen me0 fail_proto=2 fail_resource=0 deferred_resource=0 tx=618862 rx=230795mory paused=0 pau rx_us=1592=19673 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=20 dirty_hwm=39 budget=0 turn_avg_us=141 rx_us=1716649 maint_us=1227843 reactor_us=2377574 flush_us=1172107
+[CORE][INFO ][main_tg.c:497] traffic-gen reactoe1ct_se341 mai payload_peak=66 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] trafficmax_us-2
+4 success=1r turns=67346 evennts=170s29 e=0 tx_6651gea[CORE][INFO ][main_tg.c:458] traffic-gen stats active=9=4054675 fi0 live_sockets=428 started=16819 done=16729 vn worker turns=70461 erxtsuccresss=1672t_nt_burst_hwm=23 starts=5276 tokens=89 socket_releases=5318 ring_hwm_in=124 ring_hwm_out=33 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=26803 rx_software_hashes=12 rx_parse_fallbacks=2
+[CORE][INFO ][main_tg.c:512] rx_a_us=1254679 reactor_us=2427157 flush_us=1126462
+[CORE][INFO ][main_tg.c:497]  fai7 fail=2 tx=618973 rx=2308326
+[CORE][INFO ][main_tg.c:466] tratrl=3 tx=616198 rx=2297838
+[CORE][INFO ][main_tg.c:466] traffic-gen memory fvail=8157 tx_peak=58 payload_avail=8157 payload_peak=58 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=71029 rx=24781 scans=16962 flush=1affic-gen reactor traffic-g=24458 scans=168tfic-gen memory ppaused=0 6vg_us=157610 6962 dirty_enq=16986 dirty_dedup=18271 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=24 dirty_hwm=34 budget=0 turn_avg_us=134 rx_us=1659848 maint_us=1249191 reacurns=69154 eventfirst_rx_max_us=4334913 complete_avg_s=etn latenu1499cy connect_avg_us=94349 connect_max_us=4054009 ausseod=0 pfirst_rx=pauses=0 tx8 event_burst_hwm=22 starts=4581 tokens=93 socket_releases=4575 ring_hwm_in=148 ring_hwm_out=27 rx_rin0 flush=16860 dirty_enq=16862 dirty_dr_avail=8152 tx_peak=57 paeyload_avail=8152 dup=17953 dirty_requeue=0 arp_wait=0 arp_wake=0 dairtuses=0 tx_avay_depth=2 dirty_hwm=36 budget=0 turn_avg_us=133 rx_us=1657271 maint_us=1263756 reactor_us=2215575 flush_us=1154412
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=70461 events=15663 event_burst_hwm=19 starts=4836 tokens=90 socket_re_us=21418994 flus_ail=8147 tx_peak=58 payload_avail=8147 payload_peak=58 tx_alloc_fail=0
+5[CORE][INFO ][main_tg.c:476] traffilc-geg_dropspayl811hvg_us=154635 first_rx_max_us=7116214 complete_avg_us=154964 complete_max_us=7116226
+_us=1154550
+[CORE][INFO ][main_tg.c:497] traffic-gen road_peak=58 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=68749 rx=25734 scans=17679 flush=17679 dirty_enq=17706 dirty_dedup=18871 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=27 dirty_hwm=45 budget=0 turn_avg_us=139 rx_us=1693434 maint_us=1222671= reactor_us=2536850 flush_us=1163171
+[CORE][INFO ][main_tg.c:497] trafeactor turns=e5n fic-gen rew ao0complete_max_us=433492 tx_nic_drops=0 rx_owner_hits=23362 rx_software_hashes=1 rx_parse_fallbacks=0
+1ses=4847 ring_hwm_in=121 ring_hwm_out=3a1 rx_ring_drops=0 tx_nic[CORE][INFO ][main_tg.c:512] traffic71029 events=15834 event_bu-gen latency connect_avg_us=99349 connect_max_us=2069896 first_rx_avg_us=166066 first_rx_max_u_drops=0 rx_owner_hits=24
+[CORE][INFO ][main_tg.c:534] tractor4 turs5r2 rx_software_hashes=6 rx_parse_fallbacks=0
+rst_hwm=21ffic-gen plan duration elapsed; draining 93 flows
+[CORE][INFO ][main_tg.c:199] traffic-gen duration summary active=93 live_sockets=438 started=17608 done=17515 success=17511 fail=4 success_rate=99.97%n s=ker turstarts=4893 tok[CORE][INFO ][main_tg.c:512] n4129475 complete_avg_us=166480 complete_max_us=4129483
+=68749 events=16493 event_burst_hwm=21 starts=5083 tokens=92 socket_releases=5054 ring_hwm_ins=71303 rx=2traffic-gen la4473 fail_connect=0 fail_io=0 fatency con nieens==[CORE][INFO ][tcp.c:2499] s1tccatc9p CLl_avg_us=99184 conns=16787 flush=55 ring_hwm_out=25 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=258OSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=2452795725
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK pee1_proto=4 fail_resource=rnect_max_us=40538 FIN 192.168.21.106:8888 ack=1511681918
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.10671837685 rx_sof7 firsttw_rx0_areav g__ud:ef8888 ack=31 sockeet_releases=4976 ring_hwm_in=130 rred_resource=0 tx=648055 rx=2416518
+ dirty_enq=16813 dirty_dedup=17955 dirty_requeue=0 arp_s=161570 first_rx_max_us=712hwait=0 arp_wake=0 dirty0984 complete_avg_us=1ashes=1 rx_parse_2[CORE][INFO ][tcp.c:2499] rin_tcg_hfallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=100354 connect_max_us=4058569 first_rx_avg_us=165991 fir62262 complet9249770
+[CORE][INFO ][tcp.c:2499] e_max_us=7121004
+[CORE][INFO ][main_tg.c:534] traffic-tcp CLOSE_WAITgen pladepth=26 dirty_hwmn duration elapsed; draining 92 flows
+[CORE][INFO ][main_tg.c:199] traffic-gen durationp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=4147344513
+ summary a re-ACK peer FIN 192.168.21.106:8888 ack=2842210671
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=604087700
+st_rx_max_us=5096320 complecte_avwg_m_uoustiv=e=937 =t=budget=01627 turn r_avg_us=132 live_sockets=428 started=16784 done=16692 success=16686 fail=6 success_rate=9x_ring_26288 compldrops9e.te_max_us=509696% fail_connect=0 fail_io=0 fail_proto=6 fail_res rx_us=1619423 maint_us=12553o83 =0 tu3x_nic_drops=0 rx_owner_hits=24877 rx_software_rce=0 deferred_resource=0 tx=617604 rx=2302668
+hashes=2 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=97555 connecreactort_max_3us=4067846 first_rx_avg_us=164629 first_rx_max_us=5096780 complete_avg_us=165271 complete_max_us=5096787
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK pee7
+r FIN 192.168.21.106:8888 ack=839138983
+[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 19_us=2358751 flush_us=1131396
+2.168.21.106:8888 ack=1771202790
+[CORE][INFO ][main_tg.c:497] tr[CORE][INFO ][tcp.c:2499] tcp CLOSE_WAIT re-ACK peer FIN 192.168.21.106:8888 ack=3121654527
+affic-gen reactor turns=71303 events=15669 event_burst_hwm=22 starts=4825 tokens=93 socket_releases=4876 ring_hwm_in=120 ring_hwm_out=37 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=24554 rx_software_hashes=2 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=97316 connect_max_us=4058982 first_rx_avg_us=161968 first_rx_max_us=7087213 complete_avg_us=162445 complete_max_us=7087221
+[TCP][WARN ][tcp.c:1448] sock=97 gen=6 state=SYN_SENT local=192.168.21.2:59653 peer=192.168.21.106:8888 event=rto-give-up kind=syn
+[CORE][WARN ][tcp.c:2891] tcp accepted RST sock=303 gen=32 state=LAST_ACK peer 192.168.21.106:8888
+[TCP][WARN ][tcp.c:1448] sock=559 gen=4 state=SYN_SENT local=192.168.21.2:56806 peer=192.168.21.106:8888 event=rto-give-up kind=syn
+[CORE][INFO ][main_tg.c:458] traffic-gen stats active=1 live_sockets=1 started=17608 done=17607 success=17603 fail=4 tx=651459 rx=2429214
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8191 tx_peak=65 payload_avail=8191 payload_peak=65 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=99243 rx=509 scans=263 flush=[CORE][INFO ][main_tg.c:458] traffi263 dirty_enq=261 dirtyc-gen stats active=2 live_sockets=2 started=16784 done=16782 success=16775 fail=7 tx=620897 rx=2314950
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8191 tx_peak=66 payload_avail=_dedup=38191 payload_peak=66 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=100367 rx=502 scans=237 flush=237 dirty_enq=237 dirty_dedup=308 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=19 budget=0 turn_avg_us=91 rx_us=810394 maint_us=1557073 reactor_us=2209870 flush_us=786233
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=100367 events=230 event_burst_hwm=21 starts=0 tokens=90 socket_releases=426 ring_hwm_in=164 ring_hwm_out=9 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=495 rx_software_hashes[CORE][INFO ][main_tg.c:458] tra=19 dirty_requeue=0 arp_wait=ffic-gen stats active=0 live_sockets=0 started=17030 done=17030 success=17027 fail=3 tx=630110 rx=2349726
+[CORE][INFO ][main_tg.c:466] traff0ic-gen memory paused=0 pauses=0 tx_avail=8191 tx_peak= arp_wake=0 dirty_depth=0 dirty_hwm=35 budget=0 turn_avg_us=92 rx_us=818676 maint_us=1556983 reactor_us=2170483 flush_us=787938
+59 payload_avai[CORE][INFO ][main_tg.c:458] [CORE][INFO ][main_tg.c:497] traff7 ic-gen stats active=2 live_sockets=2 started=17995 dorx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=101583 connectn_max_u[CORE][INFO ][main_tg.c:458] l=81[CORE][INFO ][main_tg.c:458] traffic-gen se=17993 success=179990 fail=3 tx=665traff1ic-gen reactor turns=99243 events=231 event_burst_hwm=19 starts=0 tokens=94 socktraffic-gen st741 rx=2482620
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0e  payaloast=405tdpauats active=0 live_sockets=0 started=16755 d3on_eses=0 tx_avail=8191 tx_peapeakk=60 payload_avail=8191 payload_peak=61 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=103605 rx=477 scans=253 flush=253 dirty_enq=233 dirty=_dedup=288 dirty887 first_rx_avg_us=16531316755 success=t=60 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=105428 rx=479 scans=263 flush=263 dirty_enq=249 dirty_dedup=301 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=15 budget=0 turn_avg_us=87 rx_us=818716 maint_us=1604976 reactor_us=1953867 flush_us=8086s active=2 live_sockets=2 started=16743 done=16741 success=16737 fai first_rx_max_us=7120984 complete_avg_us=167900 complete_max32
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=105428 events=224 event_burst_hwm=18 stla__us=32033540
+=rts=0 tokens=93 s4 16752 fail=3rtoelckeas_reques=et_releases=399 ring_hw[CORE][INFO ][main_tg.c:458] traff tx=619935x 4reue=0 arp_3wax=23117776
+=619380 rx=2309706
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8191 tx_peak=58 payload_avail=8191 payloa ring_hwm_in=134 ring_hwm_out=13 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hitsit=0 arp_wake=0 dirty_depth=0 dirty_hwm=26 budget=0 turn_avg_us=88 rim_in=88 ring=xc-gen stad_us=805279 [CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8191 tx_peak=62 payload_avail=8191 paymaint_us=1593265 501 rx_software_hashes=6 rx_paload_peak=62 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=103517 rx=477 scans=252 flush=252 dirty_enq=234 dirty_dedup=311 dirty_requeue=0 arp_wait=0 arp_wake=0 drse_fart_peak=5i8 tlelba_hwacrty_depth=tor_us=2042863 flush_us=800423
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=103605 events=236 event_bcks=0
+0 dirs active=1 livmurx_e_out=18 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=38alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=105806 rx=472 scans=257 flush=257 dirty_enq=231 dirty_dedup=284 di[CORE][INFO ][main_tg.c:458] traffic-gen stats active=1 live_sockets=1 _[CORE][INFO ][main_tg.c:512] soty_hwm=34 budget=0 turn_avg_us=89 rx_us=864776 maint_us=1571900 reactor_us=2050114 flush_us=796329
+traffic-ckets=19rtsy_regqen  sta[CORE][INFO ][main_tg.c:497] ueue=0 arp_wait=0 arp_wake=0 dirty_depth=0 distarted=16rted=16811 d819 done=16818 success=16816 fail=2 tx=622266 rx=2320608
+[CORE][INFO ][main_tg.c:466] traftrty_h lwfraffic-gen reoaictam=34 budget=0 turn_avg_orx_software_hashes=4 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=101827 connect_max_us=4057792 first_rx_avg_us=167537 first_rx_max_us=7142915 complete_avg_us=167945 complete_max_us=7142923
+tency connene=16810 success=16805 fail=5 tx=621970 rx=2319090
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8191 tx_peak=58 payload_cat_hwm=19 starts=0 tokens=89 socket_releases=397 ring_hwm_in=108 ring_hwm_out=8 rx_ring_dropsc-gen memory paused=0 pauses=0 tx_avail=8191 tx_peak=57 =paryload_avail=8191 payload_peak=50 tx_nic_drops=0 rx_owner_hits=373 rx_software_hashes=10 rx_parse_fallbacks=2
+[CORE][INFO ][main_tg.c:512] 8 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=110406 rx=t485  scus=87 rx_us=792963 maint_us=1560990 reactor_us=2t_avg_us=98631 connect_max_us=40577175806 flush_us=7875ans=272 flush=2vail=8191 p72 dirty_enq=245 dirty_dedup=293 dirty_requeraffiue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=19 budget=0 turn_avg_us=83 rx_us=804341 maint_us=1582066 reactor_us=2058180 flush_us=798972
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=110406 events=232 event_burst_hwm=20 starts=0 tokens=92 socket_releases=427 ring_hwm_in=106 ring_hwm_out=6 rx_turns=103517 eventsa=223 event_bu5cring_8d2 first_rx_avg_us=162099 first_rx_maxrst_hwm=20 starts=0 rop-s=0 tx_ni_2usc_drops=0 rx_owner_hits=401 rx_software_hashes=0 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency conny
+logten =o506elka6t[CORE][INFO ][main_tg.c:497] c080 complete_avg_us=162600 complete_max_us=5066087
+t_avg_us=102353 connect_max_us=4058569 first_rx_avg_us=169855 first_rx_max_us=5096320 complete_avg_us=170149 complete_max_us=5096337
+ency connect_avg_us=96670 connect_max_us=4054009ad_pte firraffic-st_rx_avg_us=157859 first_rx_max_us=7116214 complete_avg_us=158186 complete_maens=93 socket_releases=443 ring_hwm_in=122 ring_hwm_out=24 rx_ring_drgen reactora turnopsk=58 tx_alloc_faix_us=7116226
+=0 tx_nic_drops=0 rx_owner_hits=395 rx_software_hashes=0 rx_parss=105806 events=205 event_burst_hwm=17 starts=0 tokens=93 socket_releases=390 ring_hwm_in=110 ring_hwml_e_falo=ulba0cks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=102201 connect_max_us=2069896 first_
+tr[CORE][INFO ][main_tg.c:476] trx_avgaff=9ic-g rx_ring_drops=0 tx_nic__usdrops=0 rx_oen worker turns=108798 rx=48=w0170168 first_rx_max_us=4129475 complete_avg_us=170579 complete_max_us=4129483
+ner_hits=386 rx_software_hashes=3 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen scans=245 flush=245 d latency connect_avg_us=100223 connect_max_us=4058982 first_rx_avg_us=166583 irty_enq=221 dirty_dedup=298 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=17 budget=0 turn_avg_us=84 rx_us=803658 maint_us=1577044 reactor_us=2093032 flush_us=796255
+first_rx_max_us=7087213 [CORE][INFO ][main_tg.c:497] completraffic-gen reactor turns=108798 events=228 event_burst_hwm=17 starts=0 tokens=93 socket_releasete_avg_us=168960 complete_max_us=32036050
+s=388 ring_hwm_in=111 ring_hwm_out=18 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=373 rx_software_hashes=9 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=100295 connect_max_us=4067846 first_rx_avg_us=168842 first_rx_max_us=7047593 complete_avg_us=169479 complete_max_us=7047625
+[TCP][WARN ][tcp.c:1448] sock=37 gen=16 state=SYN_SENT local=192.168.21.2:49200 peer=192.168.21.106:8888 event=rto-give-up kind=syn
+[TCP][WARN ][tcp.c:1448] sock=401 gen=26 state=SYN_SENT local=192.168.21.2:54935 peer=192.168.21.106:8888 event=rto-give-up kind=syn
+[TCP][WARN ][tcp.c:1448] sock=342 gen=19 state=SYN_SENT local=192.168.21.2:56442 peer=192.168.21.106:8888 event=rto-give-up kind=syn
+[CORE][INFO ][main_tg.c:458] traffic-gen stats active=1 live_sockets=1 started=17608 done=17607 success=17603 fail=4 tx=651459 rx=2429214
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8191 tx_peak=65 payload_avail=8191 payload_peak=65 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=101103 rx=6 scans=1 flush=1 dirty_enq=1 dirty_dedup=0 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=1 budget=0 turn_avg_us=91 rx[CORE][INFO ][main_tg.c:458] traffic-gen stats active=0 live_sockets=0 started=16784 done=16784 success=16775 fail=9 tx=620897 rx=2314950
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8191 tx_peak=66 payload_avail=8191 payload_peak=66 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=105789 rx=8 scans=0 flush=0 dirty_enq=0 dirty_dedup=0 dirty_requeue=0 arp_wait=0 arp_wake=0 di_us=785445 maint_us=1586418 reactor_us=2112125 flush_us=790059
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor rty_depth=0 dirty_hwm=0 budget=0 turn_avg_us=86 rx_us=79t6465 maint_us=1613734 reactor_us=1995230 flush_us=801982
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=105789 eventurns=2 event_bs=[CORE][INFO ][main_tg.c:458] traffic-gen stats1u0 active=rst_hwm=1 s10tarts1=0 tokens=90 s03 events=0 event_burst_hwm=0 starts=0 tokens=94 socket_releases=0 ring_hwm_in=1 ring_hwm_out=1 rx_ring_drops=0 tx_nic_d live_sockockerops=0 rx_owets=t_releases=2 ring_hwm_in=1 ring_hwm_out=0 rx_ring_drops=0 tx_nic_drops=0 rx_owner_[CORE][INFO ][main_tg.c:458] traffic-gen stats a0 started=ner_hits=2 rx_software_hashes=4 rx_parse_fallb17030 done=17030 suhits=0 rx_software_hashes=8 rx_parse_fallbac[CORE][INFO ][main_tg.c:458] traffic-gen st[CORE][INFO ][main_tg.c:458] traffic-gen stats active=2 live_sockets=acckctive=2 live_soks=0
+c[CORE][INFO ][main_tg.c:512] estratacffike2 startesd=1 sats=2 started=17995 done=17993 success=17990 fail=3 tx=665741 rx=2482620
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 ps=17027 fail=3 tx=630110 rx=2349726
+[CORE][INFO ][main_tg.c:466] traffic-ge6auses=cn-gen laten=0
+743 done=16741 success=16737 fail=4 tx=619380 rx=23097060
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=c8  c[CORE][INFO ][main_tg.c:512] y191mtttiv t emory paused=0 pauses=0 tx_avail=8191 tx_peak=59 payload_avail=8191 payload_peak=60 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=106855 rx=1 scans=0 flush=0 dirty_enq=0 dirty_dedup=0 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=0 budget=0 turn_avg_us=86 rx_us=800093 maint_us=1594527 reactor_us=2002522 x_avail=8191 tx_peak=60 payload_avail=8191 payload_peak=61 tx_alloc_fail=0
+r[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=105267 rx=16 scans=1 flush=1 dirty_enq=1 dirtyf_dedae=0 live_solush_ux_fpeauk=58 ckets=0 started=16fic-gen latency connect_avg_us=101583 connect_max_us=4053887 first_rx_avg_us=165313 first_rx_max_us=7s=797669
+p=payload_avail=8191 payload_peak=58 tx0 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depconnect_avg_us=98631 _alloc_fail=0t7h55 d[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=106855 events=0 event_burst_hwm=0 starts=0 tokens=93 socket_120984 complete_avg_us=171697 como
+ne=16r7eleaconnect_max_us=4057782 first_rx_avg_us=162099 first_rx_max_us=5066080 complete_avg_us=162600 complete_max_us=5066087
+plete_max_us=32036077
+ses=0 ring_hwm_in=1 ring_hwm_out=0 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=0 rx_software_hashes=1 rx_parse_fallbac[CORE][INFO ][main_tg.c:476] 55= tra[CORE][INFO ][main_tg.c:458] k0 dirty_hwm=1 budgetf=0 turn_avg_us=87 rx_us=795518 maintsuccess=16752 fail=3 tx=619935 rx=2311776
+[CORE][INFO ][main_tg.c:466] traffic-gen memory_us=158fic-gens worker tt paused=0 pauses=0 tx_avail=8191 txurnr=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=101827 connect_max_us=4057792 first_rx_avg_us=167537 first_rx_max_us=714882 reactor_us=2057890 flush_us=797606
+[CORE][INFO ][main_tg.c:497] traffic-gen reactora turns=105267 events=0 event_burst_hwm=0 s=10739[CORE][INFO ][main_tg.c:458] _peak=62 payload_avail=8191 payload_peak=62 tx_astarts=0 tokens=89 socket_releases=0 ring_hwm_in=1 ring_hwm_oulloc_fail=0
+4[CORE][INFO ][main_tg.c:476] trafftraffic-gi8 rxt=0 r2=ce-gen worker turnsn stats94 fscans==x_r1 flush=11 di0fi15 comc- 6ge0in stats acpactive=36 rx=1 scans=0 flush=0 dirty_enq=0 dirty_n1 lgtive=rl_didroty_enq=1 dirty_dedup=0 edirty_vrdup=ps=0 eq0ute e0x_nic_ue=0 dirty_r_sockets=1 stda eete_avg_us=167945 complete_max_us=7142rops=0 rx_owner_hits=3 rx_software_hashes=11 rx_parse_fallbacks=2
+rted=16819 done=16818 success=16816 fail=2 tx=622266 rx=2320608
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8191 tx_peak=queue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=0 budget=0 turn_avg_us=86 rx_uarp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwlm=57 payload_avail=8191 payload_p1[CORE][INFO ][main_tg.c:512] tra923
+eak=58 tx_alloc_fail=0
+ budget=0 turn_avg_us=8ffic-gen latency connect_avg_us=96670 connect_max_us=4054009 first_rx_avg_us=157859 first_rx_max_us=7116214 complete_avg_us=158186 complete_max_us=7116226
+5 rx_us=786606 maint_us=1578848 reactor_us=2116901 flush_us[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=113783=789619
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=107398 es=7908veinvts rx=0=406 maint_us=15842  s52 event_burst_hwm=0 startcans=0 flush=0 dirty_enq=0 dirty_dedup=0 dirty_requeue=0 arp_wasit=0 arp_wake=0reactor_us=2068379 flush_us=798502
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=106036  dirty_depth=0 dirty_hwm=0 budget=e=e0_ven tts=okens=93 socket_releases=0 ring_hwm_in=1 ring_hwm_out=0 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=3 rx_software_hashes=1 rx_parse_0 event_burst_0 turn_avg_us=80 rxfhwm=0 starts=0 tokens=93 socket_releases=0 ring_hwm_in=1 ring_hwm_out=0 rx_ring_drops=0 tx_nic_drops=0 rx_owner_s_allochbacksits=0 rx_software_hashes=1 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=1us=803547 maint_us=1606817 reactor_us=1952847 flush_us=8006696
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=113783 even=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency 2cts=0 event_burst_hwm=o201 connect_max_us=2069896 first_rx_avg_us=170168 first_rx_max_us=4129475 complete_avg_us=170579 comnnect_avg_us=100223 connect_max_us=4058982 first_rx_avg_us=166583 first_rx_max_us=7087213 complete_avg_us=168960 complete_max_us=32036050
+pkets=0 started=16811 done=16811 succlete_max_us=ess=16805 fail=6 tx=621970 rx=2319090
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8191 tx_peak=58 payload_avail=8191 payload_peak=58 tx_all4129483
+oc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=112161 rx=0 scans=0 flush=0 dirty_enq=0 dir0 starts=0 tokens=92 socket_releases=0 ring_hwm_in=0 ring_hwm_out=0 rxty_dedup=0 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=0 budget=0 turn_avg_us=82 rx_us=797124 maint_us=1580270 reactor_us=2086601 flush_us=792613
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=112161 events=1 event_burst_hwm=1 starts=0 tokens=93 socket_rele_ring_drops=0 tx_nic_drops=0 rx_owner_hits=0 rx_software_hashes=0 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avases=1 ring_hwm_in=0 ring_hwm_out=0 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=0 rx_software_hashes=0 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=100295 connect_max_us=4067846 first_rx_avg_us=168842 first_rx_max_us=7047593 complete_avg_us=171375 complete_max_us=32038619
+g_us=102353 connect_max_us=4058569 first_rx_avg_us=169855 first_rx_max_us=5096320 complete_avg_us=170149 complete_max_us=5096337
+[TCP][WARN ][tcp.c:1448] sock=283 gen=21 state=SYN_SENT local=192.168.21.2:64750 peer=192.168.21.106:8888 event=rto-give-up kind=syn
+[TCP][WARN ][tcp.c:1448] sock=432 gen=22 state=SYN_SENT local=192.168.21.2:61467 peer=192.168.21.106:8888 event=rto-give-up kind=syn
+[TCP][WARN ][tcp.c:1448] sock=531 gen=32 state=SYN_SENT local=192.168.21.2:56326 peer=192.168.21.106:8888 event=rto-give-up kind=syn
+[TCP][WARN ][tcp.c:1448] sock=256 gen=31 state=SYN_SENT local=192.168.21.2:51557 peer=192.168.21.106:8888 event=rto-give-up kind=syn
+[TCP][WARN ][tcp.c:1448] sock=491 gen=24 state=SYN_SENT local=192.168.21.2:61753 peer=192.168.21.106:8888 event=rto-give-up kind=syn
+[CORE][INFO ][main_tg.c:458] traffic-gen stats active=0 live_sockets=0 started=17608 done=17608 success=17603 fail=5 tx=651459 rx=2429214
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8191 tx_peak=65 payload_avail=8191 payload_peak=65 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=100814 rx=3 scans=0 flush=0 dirty_enq=0 dirty_[CORE][INFO ][main_tg.c:458] dedup=0 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=0 budget=0 turn_avg_us=91 rx_us=803443 maint_us=1595496 reactor_us=2028332 flush_us=796090
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=100814 events=1 event_btraffic-gen stats active=0 live_sockets=0 started=16784 done=16784 success=16775 faiurst_hwm=1 starts=0 tokens=94 socket_releases=1 ring_hwm_in=1 ring_hwm_outl=9 tx=620897 rx=2314950
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_=0 rx_ring_drops=0 tx_nic_drops=0 rxavail=8191 tx_peak=66 payload_avail=8191 payload_peak=66 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worke_owner_hits=0 rx_software_hashes=3 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=98631 connect_max_us=4057782 first_rx_avg_us=162099 first_rx_max_us=5066080 compler turns=103710 rx=7 scans=0 flush=0 dirty_ete_avg_us=164411 complete_max_us=32044130
+[CORE][INFO ][main_tg.c:458] traffic-gen stats active=0 live_sockets=0 started=17030 done=17030 success=17027 fail=3 tx=630110 rx=2349726
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_avail=8191 tx_peak=59 payload_avail=8191 payload_peak=60 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] nq=[CORE][INFO ][main_tg.c:458] traffic-gen wo[CORE][INFO ][main_tg.c:458] t0traffic-gen stats active=1 live_socrker turns=105943 rx=0 scans=0 flush=0 dirraffic-gen stats active=0 lkets=1 started=16743 done=16742 success=16737 fail=5 tx=619380 rx=2309706
+t[CORE][INFO ][main_tg.c:466] traffic-gen y_enq=0 dirt dirty_dedup=0 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=memyory p0_ive_sockets=0 started=17995 done=17995 success=17990 fail=5 tx=665741 rx=2482620
+[CORE][INFO ][main_tg.c:466] traffic-gen mem[CORE][INFO ][main_tg.c:458] traffic-ge nodedup=0 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=0 budget=0 aused=0 pauses=0 tx_avail=8191 tx_peak=58 payload_avail=8191 payload_peak=58 tx_al ry paused=0 pauses=0 tx_avail=8191 tx_peak=60 payload_avaloc_fail=0
+stats active=0 live_sockets=0 sturn_avg_us=86tarted=16755 done=16755 success=16752 fail=3 tx=619935 rx=2311776
+[CORE][INFO ][main_tg.c:466] traffic-gen memory paused=0 pauses=0 tx_dirty_hwm=0 budaget=0 turn_avg_us=88 rxil=8191 [CORE][INFO ][main_tg.c:476] traffic-_uvs =80payload_peak=61 tx_allorxg_us2en =7cw_5a71 maint_us=1598132 reactor_us=2019097 flush_oi99651 maintfl=8191 tx_peak=62 payload_avail=8191 payload_peak=62 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=105136 rx=2 sc_aail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker nturns=104371 rx=13 scans=0 flush=0 dirty_uus=1592220 reactor_us=2011511 flush_us=801098
+rker turns=10671s=798 rx=1 scane8559
+[CORE][INFO ][main_tg.c:497] t[CORE][INFO ][main_tg.c:458] rafftraff[CORE][INFO ][main_tg.c:497] traffic-geins=isccn-ge=q0 flush=-=0 dirty_dedup=0 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=0 budget=0 turn_avg_us=88 rx_ugen reactos=802937 maint_us=15990130 flush= re0n r ra0 d e actctor sittaurns=10371o0 events=0 ets active=0 live_sockets=0 star_us=2018183 flush_us=794299
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=104371 events=2 event_burst_hwm=1 starts=0 tokens=89[CORE][INFO ][main_tg.c:458]  travent_bsdockertfedurst_irty=_fhicet16811 done=16811 suwm=0 stccess=16805 fail=6 tx=621970 rx=2319090
+[CORE][INFO ][main_tg.c:466] traffarts=0 tokens=90 socket_releases=0 ring_hwm_in=1 ring_hwm_out=0 rx_rring_drops=0 tx_nic_drops=0 rx_owner_hits=0 rx_software_hashes=7 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=101583 connect_max_us=4053887 first_rx_avg_us=165313 first_rx_max_us=71209-gen stats atic-gen memory pausedty_enq=0 dirty_dedup=0 dirty_requ=eue=nq=0_relueases=2 ring_hwm_i0 paruse0n=1 84 comctive=0 live_sockets=0 started=16819 done=16819 success=16816 fail=3 tx=622266 rx=2320608
+[CORE][INFO ][main_tg.c:466]  arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=0 budget=0 turndirty_dedup=0 s=0 tx_avail=8191 tx_peak=58 payload_avail=8191 paydloaplete_avg_us=171697 complete_ns=i1d05max_us=32036077
+943 events=0 rty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=0 budget=0 turn_avg_us=86 rx_us=791431 maint_us=1589347 reactor_us_av=20764tg_us=87 rx_us=7_ r12 flush_us=786455
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turnsevent_burst_hwm=0 starts=0 tokens=93 socket_releases=0 ring_hwm_in=0 ring_hwm_out=0 rxpea=106718r_akfring_hwm_of9i=58 tx_alloc_fail=0
+ eventis=1 3u216 mainc-gen memory paused=0 pausevent_burses=0 tx_avail=8191 tx_peak=57 payload_avat_hwm=t[CORE][INFO ][main_tg.c:476] tt=0 rx_ring_droiraffic-gen work1nps=0 er turns=113562 rx=2_us=158387tx_nic_drops=0 rx_owner_g_drops=0 tx_nic_drops=0 rx_owner_hits=0 rx_software_hashes=0 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=101827 connect_mlax_us=4057792h=its=0 rx_ 2 reactor_us=2067418 f lstaurts=s0 tos8191 payload_peak=58 tx_alloc_fail=0
+[CORE][INFO ][main_tg.c:476] traffic-gen worker turns=cans=0 flush=0 dirty_enq=0 dirty_de dkes114675 rx=0 scans=0 flush=0 dirty_enq=0 dirty_dedup=0 dirty_requeue=0 arp_wait=0 arp_wake=0 dirty_depth=0 dirty_hwm=0 budget=0 turn_nhsoftware_hashes=11 rx_parse_fallbacks=2
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_aavg_us=96670 connect_max_us=4054009 first_rx_avg_us=157859 firs_us=up=0 dirty_requeue=0 arp_wait=f0irst_r7x_avg at_rx_max_us=7116214 complete_avg_us=161729 _us=167537 first_rx_max_us=7142915 complete_avg_us=1679=93 socket_releases=190099
+[CORE][INFO ][main_tg.c:497] traffic-gen reactor turns=105136 events=0 event_burst_hwm=0 starts=0 tokens=93 socket_releases=0 ring_hwm_in=1 ring_hwm_out=0 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=0 rx_software_hashes=2 rx_parse_f45complete_max_us= rp_wake=0 a320356llbacks=0
+[CORE][INFO ][main_tg.c:512]  traffi19
+ring_hwm_in=1 ring_hwm_out=0 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=0 rx_sodirty_depth=0 dirty_hwm=0 budget=0 turn_avg_us=81 rx_us=798190 maint_us=1576086 reactor_us=2077080 flushvg_us=80 rx_us=794412 maifctware_hashes=1 rx_parse_fal_lbacksuc-gen =0
+nt_us=1591565 omplete_max_us=714292s=791reactor_latency connect_avg_us[CORE][INFO ][main_tg.c:512] =1u03
+22s0t1 connect_max_us=2069896 first_rx_avg_u=r20as4ffic-gen latency37 conn=170168 first_rx_max_us=43
+[CORE][INFO ][main_tg.c:497] 5trafefic-gc1t_en 26ar9475 complete_avg_us=7170579 cov8g_us=m100223 connect_max_u feactorpletelushs=405_us=798045
+[CORE][INFO ][main_tg.c:497] tr taf898u_rmax_us=4129483
+2 first_rx_avg_us=166583 first_rx_max_us=7087213 complns=113562 events=0 event_burst_hwm=0 sftarts=0 tokens=93 socket_releases=0 ring_hwm_in=1 ring_hwm_out=0 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=0 rx_software_hashes=2 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=100295 connect_max_us=4067846 first_rx_avg_us=168842 first_rx_max_us=7047593 complete_avg_us=171375 complete_max_us=32038619
+ete_avg_us=170862 complete_max_us=32036050
+ic-gen reactor turns=114675 events=1 event_burst_hwm=1 starts=0 tokens=92 socket_releases=1 ring_hwm_in=0 ring_hwm_out=0 rx_ring_drops=0 tx_nic_drops=0 rx_owner_hits=0 rx_software_hashes=0 rx_parse_fallbacks=0
+[CORE][INFO ][main_tg.c:512] traffic-gen latency connect_avg_us=102353 connect_max_us=4058569 first_rx_avg_us=169855 first_rx_max_us=5096320 complete_avg_us=172043 complete_max_us=32029013
+[TCP][WARN ][tcp.c:1448] sock=64 gen=25 state=SYN_SENT local=192.168.21.2:59980 peer=192.168.21.106:8888 event=rto-give-up kind=syn
+[CORE][INFO ][main_tg.c:608] traffic-gen aggregate workers=8 started=136545 done=136545 success=136505 fail=40 tx=5051758 rx=18837690
+
+
