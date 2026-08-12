@@ -110,6 +110,10 @@ struct tcp_sndbuf {
 #ifdef TCP_TESTING
 struct nsock;
 
+/** Test the owner-match rule used when RSS prediction is unavailable. */
+bool tcp_test_port_prediction_matches_owner(int predicted_queue,
+                                            uint16_t owner_queue);
+
 /**
  * Test-only OFO helpers. They expose internal reassembly operations while
  * leaving the production TCP API unchanged.

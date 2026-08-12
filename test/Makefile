@@ -19,6 +19,7 @@ BUILD_DIR := build
 RBTREE_TEST := $(BUILD_DIR)/test_rbtree
 OFO_TEST := $(BUILD_DIR)/test_ofo
 PAWS_TEST := $(BUILD_DIR)/test_tcp_paws
+EPHEMERAL_TEST := $(BUILD_DIR)/test_tcp_ephemeral
 OWNER_IO_TEST := $(BUILD_DIR)/test_owner_io
 HTTP_CLIENT_TEST := $(BUILD_DIR)/test_http_client
 DNS_CLIENT_TEST := $(BUILD_DIR)/test_dns_client
@@ -61,17 +62,18 @@ SCENARIO_SCHEDULER_OBJS := $(BUILD_DIR)/test_scenario_scheduler.o \
 
 .PHONY: all test test-arp test-owner-io test-http-client test-dns-client \
 	test-scenario-scheduler \
-	test-rx-dispatch test-port-topology test-flow-udp clean
+	test-rx-dispatch test-port-topology test-flow-udp test-tcp-ephemeral clean
 
 all: test
 
 # Compilation and execution both must succeed for the test target to pass.
-test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(OWNER_IO_TEST) \
+test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(EPHEMERAL_TEST) $(OWNER_IO_TEST) \
 	$(HTTP_CLIENT_TEST) $(DNS_CLIENT_TEST) $(SCENARIO_SCHEDULER_TEST) $(ARP_TEST) \
 	$(RX_DISPATCH_TEST) $(PORT_TOPOLOGY_TEST) $(FLOW_UDP_TEST)
 	$(RBTREE_TEST)
 	$(OFO_TEST)
 	$(PAWS_TEST)
+	$(EPHEMERAL_TEST)
 	$(OWNER_IO_TEST) --no-huge --no-pci --file-prefix ownerio-test
 	$(HTTP_CLIENT_TEST)
 	$(DNS_CLIENT_TEST)
@@ -90,6 +92,8 @@ test-http-client: $(HTTP_CLIENT_TEST)
 test-dns-client: $(DNS_CLIENT_TEST)
 
 test-scenario-scheduler: $(SCENARIO_SCHEDULER_TEST)
+
+test-tcp-ephemeral: $(EPHEMERAL_TEST)
 
 test-rx-dispatch: $(RX_DISPATCH_TEST)
 
@@ -110,6 +114,13 @@ $(PAWS_TEST): test_tcp_paws.c ../pro-stack/tcp_options.c \
 		../pro-stack/tcp_options.h ../pro-stack/tcp.h | $(BUILD_DIR)
 	$(CC) $(PAWS_CFLAGS) $(DPDK_CFLAGS) test_tcp_paws.c \
 		../pro-stack/tcp_options.c -o $@ $(DPDK_LIBS)
+
+$(EPHEMERAL_TEST): test_tcp_ephemeral.c ../pro-stack/tcp.c \
+		../pro-stack/tcp.h ../pro-stack/rbtree.c ../pro-stack/rbtree.h | \
+		$(BUILD_DIR)
+	$(CC) $(OFO_CFLAGS) $(DPDK_CFLAGS) -DTCP_TESTING -ffunction-sections \
+		test_tcp_ephemeral.c ../pro-stack/tcp.c ../pro-stack/rbtree.c -o $@ \
+		-Wl,--gc-sections $(DPDK_LIBS) -pthread
 
 $(OWNER_IO_TEST): test_owner_io.c ../pro-stack/build/libpro-stack.a | $(BUILD_DIR)
 	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) -I../pro-stack test_owner_io.c \

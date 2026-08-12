@@ -1346,10 +1346,23 @@ static uint64_t tcp_ms_to_cycles(uint64_t ms) {
  * Returns the port in network byte order, or 0 if the range is exhausted.
  * @return Available port in network byte order, or 0 when exhausted.
  */
+static bool tcp_port_prediction_matches_owner(int predicted_queue,
+                                              uint16_t owner_queue) {
+        return predicted_queue < 0 || predicted_queue == owner_queue;
+}
+
+#ifdef TCP_TESTING
+bool tcp_test_port_prediction_matches_owner(int predicted_queue,
+                                            uint16_t owner_queue) {
+        return tcp_port_prediction_matches_owner(predicted_queue, owner_queue);
+}
+#endif
+
 static uint16_t tcp_alloc_ephemeral_port(const struct nsock *sk) {
         static uint16_t next[RTE_MAX_LCORE];
         unsigned int lcore_id = rte_lcore_id();
         uint16_t owner_queue;
+        int predicted_queue;
         const uint32_t port_count =
             TCP_EPHEMERAL_PORT_MAX - TCP_EPHEMERAL_PORT_MIN + 1U;
 
@@ -1381,11 +1394,19 @@ static uint16_t tcp_alloc_ephemeral_port(const struct nsock *sk) {
                                                        g_net.local_ip, be))
                         continue;
                 if (stack_runtime_queue_for_lcore(sk->owner_lcore,
-                                                  &owner_queue) == 0 &&
-                    port_rss_queue_for_tcp(sk->u.tcp.remote_ip, sk->local_ip,
-                                           sk->u.tcp.remote_port,
-                                           be) != owner_queue)
-                        continue;
+                                                  &owner_queue) == 0) {
+                        predicted_queue = port_rss_queue_for_tcp(
+                            sk->u.tcp.remote_ip, sk->local_ip,
+                            sk->u.tcp.remote_port, be);
+                        /*
+                         * A single-queue port deliberately has no RSS state.
+                         * A negative prediction means "no constraint", not a
+                         * mismatch with owner queue zero.
+                         */
+                        if (!tcp_port_prediction_matches_owner(predicted_queue,
+                                                               owner_queue))
+                                continue;
+                }
                 return be;
         }
         return 0;
@@ -3553,13 +3574,18 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
         if (sk->local_port == 0) {
                 sk->local_port = tcp_alloc_ephemeral_port(sk);
                 if (sk->local_port == 0) {
+                        errno = EADDRNOTAVAIL;
                         LOG_ERROR("tcp_connect: " TCP_ID_FMT
                                   " local port allocation failed",
                                   TCP_ID_ARG(sk));
                         return -1;
                 }
-                if (nsock_bind_local(sk, g_net.local_ip, sk->local_port) != 0)
+                int bind_rc =
+                    nsock_bind_local(sk, g_net.local_ip, sk->local_port);
+                if (bind_rc != 0) {
+                        errno = -bind_rc;
                         return -1;
+                }
         }
 
         sk->u.tcp.listener = NULL;
