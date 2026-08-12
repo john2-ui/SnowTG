@@ -15,6 +15,7 @@
 #include "core/scheduler.h"
 #include "core/socket_capacity.h"
 #include "core/stats.h"
+#include "core/stats_csv.h"
 
 #include "../pro-stack/arp.h"
 #include "../pro-stack/config.h"
@@ -58,15 +59,18 @@ static const uint32_t tg_local_ip = MAKE_IPV4_ADDR(192, 168, 21, 2);
  */
 static int tg_parse_app_args(int argc, char *argv[], unsigned int *workers_out,
                              const char **scenario_out,
-                             uint32_t *socket_id_max_out) {
+                             uint32_t *socket_id_max_out,
+                             const char **stats_csv_out) {
         bool workers_seen = false;
         bool socket_id_max_seen = false;
+        bool stats_csv_seen = false;
         const char *scenario_path = NULL;
+        const char *stats_csv_path = NULL;
         unsigned int workers = 1;
         uint32_t socket_id_max = 0;
 
         if (workers_out == NULL || scenario_out == NULL ||
-            socket_id_max_out == NULL) {
+            socket_id_max_out == NULL || stats_csv_out == NULL) {
                 errno = EINVAL;
                 return -1;
         }
@@ -110,6 +114,16 @@ static int tg_parse_app_args(int argc, char *argv[], unsigned int *workers_out,
                         socket_id_max_seen = true;
                         continue;
                 }
+                if (strcmp(argv[i], "--stats-csv") == 0) {
+                        if (stats_csv_seen || ++i == argc ||
+                            argv[i][0] == '\0') {
+                                errno = EINVAL;
+                                return -1;
+                        }
+                        stats_csv_path = argv[i];
+                        stats_csv_seen = true;
+                        continue;
+                }
                 if (argv[i][0] == '-' || scenario_path != NULL) {
                         errno = EINVAL;
                         return -1;
@@ -121,6 +135,7 @@ static int tg_parse_app_args(int argc, char *argv[], unsigned int *workers_out,
         *scenario_out =
             scenario_path == NULL ? TG_DEFAULT_SCENARIO_PATH : scenario_path;
         *socket_id_max_out = socket_id_max;
+        *stats_csv_out = stats_csv_path;
         return 0;
 }
 
@@ -140,10 +155,17 @@ struct tg_shard {
         struct tg_plan plan;
         struct tg_scheduler scheduler;
         struct tg_stats stats;
+        struct tg_stats_snapshot runtime_totals;
+        struct tg_stats_snapshot final_snapshot;
         struct owner_io_memory_snapshot memory;
         struct tg_reactor *reactor; /**< Needed to snapshot reactor counters. */
-        uint64_t scheduler_starts;  /**< Attempts since the prior report. */
+        struct tg_stats_channel *stats_channel;
+        uint64_t stats_sequence;
+        uint64_t worker_index;
+        uint64_t lcore_id;
+        uint64_t scheduler_starts; /**< Attempts since the prior report. */
         uint64_t socket_releases; /**< Final TCB releases since prior report. */
+        bool final_snapshot_valid;
         /* The main lcore records dispatch/NIC counters between reports. */
         atomic_uint_fast64_t rx_ring_drops;
         atomic_uint_fast64_t tx_nic_drops;
@@ -153,8 +175,6 @@ struct tg_shard {
         struct tg_runtime_control *runtime;
         bool scheduling_enabled;
         bool drained;
-        bool scheduling_stop_reported;
-        bool duration_stats_reported;
 };
 
 /** Complete application and stack context associated with one flow worker. */
@@ -166,49 +186,100 @@ struct tg_worker {
         struct tg_shard shard;
         struct tg_reactor reactor;
         struct stack_runtime_worker runtime;
+        struct tg_stats_channel stats_channel;
 };
 
-/** Convert DPDK cycle-clock values for human-readable periodic diagnostics. */
-static uint64_t tg_cycles_to_us(uint64_t cycles) {
-        uint64_t hz = rte_get_timer_hz();
-
-        return hz == 0 ? 0 : cycles * 1000000U / hz;
-}
-
-/** Avoid division by zero for phases not reached in the report interval. */
-static uint64_t tg_average_cycles(uint64_t total, uint64_t samples) {
-        return samples == 0 ? 0 : total / samples;
-}
-
 /**
- * @brief Prints one cumulative statistics snapshot when scheduling ends.
- *
- * Transactions still in flight are deliberately retained in @p active and are
- * not counted as completed until their flow observer runs.
+ * Capture one owner-local snapshot. All fields that require owner-local
+ * access, including stack-runtime and dirty-TX metrics, are sampled here
+ * before the record is published to the main lcore.
  */
-static void tg_report_duration_stats(const struct tg_shard *shard) {
-        uint64_t success_rate_hundredths = 0;
-        const struct tg_stats *stats;
+static void tg_capture_stats_snapshot(struct tg_shard *shard,
+                                      enum tg_stats_snapshot_phase phase,
+                                      uint64_t now_cycles) {
+        struct tg_stats_snapshot snapshot;
+        struct stack_runtime_metrics runtime = {0};
+        uint64_t reactor_turns = 0;
+        uint64_t reactor_events = 0;
+        uint32_t reactor_burst_high_water = 0;
 
-        if (shard == NULL)
+        if (shard == NULL || shard->stats_channel == NULL)
                 return;
-        stats = &shard->stats;
-        if (stats->txns_done != 0)
-                success_rate_hundredths =
-                    stats->txns_success * 10000U / stats->txns_done;
-        LOG_INFO("traffic-gen duration summary active=%u live_sockets=%u "
-                 "started=%" PRIu64 " done=%" PRIu64 " success=%" PRIu64
-                 " fail=%" PRIu64 " success_rate=%" PRIu64 ".%02" PRIu64 "%%"
-                 " fail_connect=%" PRIu64 " fail_io=%" PRIu64
-                 " fail_proto=%" PRIu64 " fail_resource=%" PRIu64
-                 " deferred_resource=%" PRIu64 " tx=%" PRIu64 " rx=%" PRIu64,
-                 stats->concurrency, shard->scheduler.live_sockets,
-                 stats->txns_started, stats->txns_done, stats->txns_success,
-                 stats->txns_fail, success_rate_hundredths / 100U,
-                 success_rate_hundredths % 100U, stats->fail_connect,
-                 stats->fail_io, stats->fail_proto, stats->fail_resource,
-                 stats->starts_deferred_resource, stats->bytes_tx,
-                 stats->bytes_rx);
+        tg_stats_snapshot_from_stats(
+            &snapshot, &shard->stats, now_cycles, ++shard->stats_sequence,
+            shard->worker_index, shard->lcore_id, phase);
+        snapshot.live_sockets = shard->scheduler.live_sockets;
+        snapshot.memory_paused = shard->scheduler.resource_paused;
+        snapshot.memory_pauses = shard->scheduler.resource_pauses;
+        snapshot.tx_available =
+            shard->memory.tcp.available[TCP_MEMORY_TX_CHUNK];
+        snapshot.tx_peak = shard->memory.tcp.peak_in_use[TCP_MEMORY_TX_CHUNK];
+        snapshot.payload_available =
+            shard->memory.tcp.available[TCP_MEMORY_PAYLOAD];
+        snapshot.payload_peak =
+            shard->memory.tcp.peak_in_use[TCP_MEMORY_PAYLOAD];
+        snapshot.tx_alloc_fail =
+            shard->memory.tcp.alloc_fail[TCP_MEMORY_TX_CHUNK];
+        snapshot.scheduler_starts = shard->scheduler_starts;
+        snapshot.tokens = shard->scheduler.cycles_per_second == 0
+                              ? 0
+                              : shard->scheduler.token_numerator /
+                                    shard->scheduler.cycles_per_second;
+        snapshot.socket_releases = shard->socket_releases;
+
+        stack_runtime_metrics_take(&runtime);
+        tg_reactor_metrics_take(shard->reactor, &reactor_turns, &reactor_events,
+                                &reactor_burst_high_water);
+        snapshot.worker_turns = runtime.worker_turns;
+        snapshot.rx_packets = runtime.rx_packets;
+        snapshot.socket_scans = runtime.socket_scans;
+        snapshot.tx_flush_calls = runtime.tx_flush_calls;
+        snapshot.dirty_tx_enqueues = runtime.dirty_tx_enqueues;
+        snapshot.dirty_tx_dedup_hits = runtime.dirty_tx_dedup_hits;
+        snapshot.dirty_tx_requeues = runtime.dirty_tx_requeues;
+        snapshot.dirty_tx_arp_waits = runtime.dirty_tx_arp_waits;
+        snapshot.dirty_tx_arp_wakeups = runtime.dirty_tx_arp_wakeups;
+        snapshot.dirty_tx_depth = runtime.dirty_tx_depth;
+        snapshot.dirty_tx_high_water = runtime.dirty_tx_high_water;
+        snapshot.dirty_tx_budget_exhausted = runtime.dirty_tx_budget_exhausted;
+        snapshot.turn_cycles = runtime.turn_cycles;
+        snapshot.rx_cycles = runtime.rx_cycles;
+        snapshot.maintenance_cycles = runtime.maintenance_cycles;
+        snapshot.reactor_cycles = runtime.reactor_cycles;
+        snapshot.tx_flush_cycles = runtime.tx_flush_cycles;
+        snapshot.reactor_turns = reactor_turns;
+        snapshot.reactor_events = reactor_events;
+        snapshot.reactor_burst_high_water = reactor_burst_high_water;
+        snapshot.rx_ring_drops = atomic_exchange(&shard->rx_ring_drops, 0);
+        snapshot.tx_nic_drops = atomic_exchange(&shard->tx_nic_drops, 0);
+        snapshot.rx_owner_hits = atomic_exchange(&shard->rx_owner_hits, 0);
+        snapshot.rx_software_hashes =
+            atomic_exchange(&shard->rx_software_hashes, 0);
+        snapshot.rx_parse_fallbacks =
+            atomic_exchange(&shard->rx_parse_fallbacks, 0);
+
+        tg_stats_snapshot_add_runtime(&shard->runtime_totals, &snapshot);
+        if (phase == TG_STATS_PHASE_FINAL) {
+                tg_stats_snapshot_copy_runtime(&snapshot,
+                                               &shard->runtime_totals);
+                /* These are gauges, not interval counters. */
+                snapshot.memory_paused = shard->scheduler.resource_paused;
+                snapshot.tx_available =
+                    shard->memory.tcp.available[TCP_MEMORY_TX_CHUNK];
+                snapshot.payload_available =
+                    shard->memory.tcp.available[TCP_MEMORY_PAYLOAD];
+                snapshot.dirty_tx_depth = runtime.dirty_tx_depth;
+                snapshot.tokens = shard->scheduler.cycles_per_second == 0
+                                      ? 0
+                                      : shard->scheduler.token_numerator /
+                                            shard->scheduler.cycles_per_second;
+                shard->final_snapshot = snapshot;
+                shard->final_snapshot_valid = true;
+                return;
+        }
+        shard->scheduler_starts = 0;
+        shard->socket_releases = 0;
+        (void)tg_stats_channel_publish(shard->stats_channel, &snapshot);
 }
 
 /**
@@ -428,120 +499,16 @@ static void tg_shard_tick(void *ctx, unsigned int budget) {
         }
         shard->scheduler_starts += tg_scheduler_tick(
             &shard->scheduler, now_cycles, budget, tg_start_class, shard);
-        if (tg_stats_report_due(&shard->stats, now_cycles, rte_get_timer_hz(),
-                                shard->plan.report_interval_sec)) {
-                /*
-                 * These counters are interval deltas. Keep flow latency in
-                 * tg_stats cumulative so rare long transactions remain visible.
-                 */
-                struct stack_runtime_metrics runtime = {0};
-                uint64_t reactor_turns = 0;
-                uint64_t reactor_events = 0;
-                uint32_t reactor_burst_high_water = 0;
-                uint64_t rx_ring_drops;
-                uint64_t tx_nic_drops;
-                uint64_t rx_owner_hits;
-                uint64_t rx_software_hashes;
-                uint64_t rx_parse_fallbacks;
-
-                stack_runtime_metrics_take(&runtime);
-                tg_reactor_metrics_take(shard->reactor, &reactor_turns,
-                                        &reactor_events,
-                                        &reactor_burst_high_water);
-                rx_ring_drops = atomic_exchange(&shard->rx_ring_drops, 0);
-                tx_nic_drops = atomic_exchange(&shard->tx_nic_drops, 0);
-                rx_owner_hits = atomic_exchange(&shard->rx_owner_hits, 0);
-                rx_software_hashes =
-                    atomic_exchange(&shard->rx_software_hashes, 0);
-                rx_parse_fallbacks =
-                    atomic_exchange(&shard->rx_parse_fallbacks, 0);
-                LOG_INFO("traffic-gen stats active=%u live_sockets=%u "
-                         "started=%" PRIu64 " done=%" PRIu64 " success=%" PRIu64
-                         " fail=%" PRIu64 " tx=%" PRIu64 " rx=%" PRIu64,
-                         shard->stats.concurrency,
-                         shard->scheduler.live_sockets,
-                         shard->stats.txns_started, shard->stats.txns_done,
-                         shard->stats.txns_success, shard->stats.txns_fail,
-                         shard->stats.bytes_tx, shard->stats.bytes_rx);
-                LOG_INFO("traffic-gen memory paused=%u pauses=%" PRIu64
-                         " tx_avail=%u tx_peak=%u payload_avail=%u "
-                         "payload_peak=%u tx_alloc_fail=%u",
-                         shard->scheduler.resource_paused,
-                         shard->scheduler.resource_pauses,
-                         shard->memory.tcp.available[TCP_MEMORY_TX_CHUNK],
-                         shard->memory.tcp.peak_in_use[TCP_MEMORY_TX_CHUNK],
-                         shard->memory.tcp.available[TCP_MEMORY_PAYLOAD],
-                         shard->memory.tcp.peak_in_use[TCP_MEMORY_PAYLOAD],
-                         shard->memory.tcp.alloc_fail[TCP_MEMORY_TX_CHUNK]);
-                LOG_INFO("traffic-gen worker turns=%" PRIu64 " rx=%" PRIu64
-                         " scans=%" PRIu64 " flush=%" PRIu64
-                         " dirty_enq=%" PRIu64 " dirty_dedup=%" PRIu64
-                         " dirty_requeue=%" PRIu64 " arp_wait=%" PRIu64
-                         " arp_wake=%" PRIu64 " dirty_depth=%u dirty_hwm=%u"
-                         " budget=%" PRIu64 " turn_avg_us=%" PRIu64
-                         " rx_us=%" PRIu64 " maint_us=%" PRIu64
-                         " reactor_us=%" PRIu64 " flush_us=%" PRIu64,
-                         runtime.worker_turns, runtime.rx_packets,
-                         runtime.socket_scans, runtime.tx_flush_calls,
-                         runtime.dirty_tx_enqueues, runtime.dirty_tx_dedup_hits,
-                         runtime.dirty_tx_requeues, runtime.dirty_tx_arp_waits,
-                         runtime.dirty_tx_arp_wakeups, runtime.dirty_tx_depth,
-                         runtime.dirty_tx_high_water,
-                         runtime.dirty_tx_budget_exhausted,
-                         tg_cycles_to_us(tg_average_cycles(
-                             runtime.turn_cycles, runtime.worker_turns)),
-                         tg_cycles_to_us(runtime.rx_cycles),
-                         tg_cycles_to_us(runtime.maintenance_cycles),
-                         tg_cycles_to_us(runtime.reactor_cycles),
-                         tg_cycles_to_us(runtime.tx_flush_cycles));
-                LOG_INFO(
-                    "traffic-gen reactor turns=%" PRIu64 " events=%" PRIu64
-                    " event_burst_hwm=%u starts=%" PRIu64 " tokens=%" PRIu64
-                    " socket_releases=%" PRIu64
-                    " ring_hwm_in=%u ring_hwm_out=%u"
-                    " rx_ring_drops=%" PRIu64 " tx_nic_drops=%" PRIu64
-                    " rx_owner_hits=%" PRIu64 " rx_software_hashes=%" PRIu64
-                    " rx_parse_fallbacks=%" PRIu64,
-                    reactor_turns, reactor_events, reactor_burst_high_water,
-                    shard->scheduler_starts,
-                    shard->scheduler.token_numerator /
-                        shard->scheduler.cycles_per_second,
-                    shard->socket_releases, runtime.in_ring_high_water,
-                    runtime.out_ring_high_water, rx_ring_drops, tx_nic_drops,
-                    rx_owner_hits, rx_software_hashes, rx_parse_fallbacks);
-                LOG_INFO("traffic-gen latency connect_avg_us=%" PRIu64
-                         " connect_max_us=%" PRIu64 " first_rx_avg_us=%" PRIu64
-                         " first_rx_max_us=%" PRIu64 " complete_avg_us=%" PRIu64
-                         " complete_max_us=%" PRIu64,
-                         tg_cycles_to_us(
-                             tg_average_cycles(shard->stats.connect_cycles,
-                                               shard->stats.connect_samples)),
-                         tg_cycles_to_us(shard->stats.connect_max_cycles),
-                         tg_cycles_to_us(
-                             tg_average_cycles(shard->stats.first_rx_cycles,
-                                               shard->stats.first_rx_samples)),
-                         tg_cycles_to_us(shard->stats.first_rx_max_cycles),
-                         tg_cycles_to_us(
-                             tg_average_cycles(shard->stats.complete_cycles,
-                                               shard->stats.complete_samples)),
-                         tg_cycles_to_us(shard->stats.complete_max_cycles));
-                shard->scheduler_starts = 0;
-                shard->socket_releases = 0;
-        }
-        if (tg_scheduler_is_stopped(&shard->scheduler) &&
-            !shard->scheduling_stop_reported) {
-                shard->scheduling_stop_reported = true;
-                LOG_INFO("traffic-gen plan duration elapsed; draining %u flows",
-                         shard->stats.concurrency);
-        }
-        if (tg_scheduler_is_stopped(&shard->scheduler) &&
-            !shard->duration_stats_reported) {
-                shard->duration_stats_reported = true;
-                tg_report_duration_stats(shard);
-        }
+        if (shard->stats_channel != NULL &&
+            tg_stats_report_due(&shard->stats, now_cycles, rte_get_timer_hz(),
+                                shard->plan.report_interval_sec))
+                tg_capture_stats_snapshot(shard, TG_STATS_PHASE_PERIODIC,
+                                          now_cycles);
         if (tg_scheduler_is_stopped(&shard->scheduler) &&
             shard->scheduler.active == 0 &&
             shard->scheduler.live_sockets == 0 && !shard->drained) {
+                tg_capture_stats_snapshot(shard, TG_STATS_PHASE_FINAL,
+                                          now_cycles);
                 shard->drained = true;
                 if (shard->runtime != NULL &&
                     atomic_fetch_sub(&shard->runtime->remaining_shards, 1) == 1)
@@ -586,29 +553,59 @@ static void tg_on_event(void *ctx, const struct owner_io_event *event) {
                          event->events);
 }
 
-static void tg_report_aggregate(const struct tg_worker *workers,
-                                unsigned int worker_count) {
-        uint64_t started = 0;
-        uint64_t done = 0;
-        uint64_t success = 0;
-        uint64_t failed = 0;
-        uint64_t bytes_tx = 0;
-        uint64_t bytes_rx = 0;
-
+static void tg_drain_stats_csv(struct tg_worker *workers,
+                               unsigned int worker_count,
+                               struct tg_stats_csv *csv) {
+        if (workers == NULL || csv == NULL || csv->file == NULL || csv->failed)
+                return;
         for (unsigned int index = 0; index < worker_count; index++) {
-                const struct tg_stats *stats = &workers[index].shard.stats;
+                struct tg_stats_snapshot snapshot;
 
-                started += stats->txns_started;
-                done += stats->txns_done;
-                success += stats->txns_success;
-                failed += stats->txns_fail;
-                bytes_tx += stats->bytes_tx;
-                bytes_rx += stats->bytes_rx;
+                while (tg_stats_channel_consume(&workers[index].stats_channel,
+                                                &snapshot)) {
+                        if (tg_stats_csv_write(csv, &snapshot) != 0) {
+                                LOG_ERROR("stats CSV write failed path=%s",
+                                          csv->path);
+                                return;
+                        }
+                }
         }
-        LOG_INFO(
-            "traffic-gen aggregate workers=%u started=%" PRIu64 " done=%" PRIu64
-            " success=%" PRIu64 " fail=%" PRIu64 " tx=%" PRIu64 " rx=%" PRIu64,
-            worker_count, started, done, success, failed, bytes_tx, bytes_rx);
+}
+
+static void tg_report_aggregate(struct tg_worker *workers,
+                                unsigned int worker_count,
+                                struct tg_stats_csv *csv) {
+        struct tg_stats_snapshot aggregate = {0};
+
+        aggregate.worker_index = UINT64_MAX;
+        aggregate.lcore_id = UINT64_MAX;
+        aggregate.phase = TG_STATS_PHASE_FINAL;
+        for (unsigned int index = 0; index < worker_count; index++) {
+                struct tg_worker *worker = &workers[index];
+                struct tg_stats_snapshot *snapshot =
+                    &worker->shard.final_snapshot;
+                uint64_t dropped;
+
+                dropped = tg_stats_channel_take_dropped(&worker->stats_channel);
+                if (dropped != 0) {
+                        snapshot->stats_queue_drops += dropped;
+                        LOG_WARN("stats CSV queue dropped records worker=%u "
+                                 "count=%" PRIu64,
+                                 index, dropped);
+                }
+                if (!worker->shard.final_snapshot_valid)
+                        continue;
+                if (csv != NULL && csv->file != NULL && !csv->failed &&
+                    tg_stats_csv_write(csv, snapshot) != 0) {
+                        LOG_ERROR("stats CSV write failed path=%s", csv->path);
+                        continue;
+                }
+                tg_stats_snapshot_add(&aggregate, snapshot);
+        }
+        if (csv != NULL && csv->file != NULL && !csv->failed) {
+                if (tg_stats_csv_write(csv, &aggregate) != 0)
+                        LOG_ERROR("stats CSV write failed path=%s", csv->path);
+        }
 }
 
 /*
@@ -682,6 +679,7 @@ static void tg_report_aggregate(const struct tg_worker *workers,
  */
 int main(int argc, char *argv[]) {
         const char *scenario_path;
+        const char *stats_csv_path;
         int eal_args;
         unsigned int worker_count;
         unsigned int main_lcore;
@@ -691,6 +689,7 @@ int main(int argc, char *argv[]) {
         struct tg_plan plan = {0};
         struct tg_worker *workers;
         struct tg_runtime_control runtime = {0};
+        struct tg_stats_csv stats_csv = {0};
         struct rte_mempool *mp;
         struct port_topology port_topology;
 
@@ -703,9 +702,10 @@ int main(int argc, char *argv[]) {
 
         /* Stage 2: Parse application options and locate the scenario file. */
         if (tg_parse_app_args(argc, argv, &worker_count, &scenario_path,
-                              &socket_id_max_override) != 0)
+                              &socket_id_max_override, &stats_csv_path) != 0)
                 rte_exit(EXIT_FAILURE, "usage: traffic-gen [--workers N] "
-                                       "[--socket-id-max N] [scenario.json]\n");
+                                       "[--socket-id-max N] "
+                                       "[--stats-csv PATH] [scenario.json]\n");
 
         /* Stage 3: Load the scenario and validate its shard constraints. */
         if (worker_count > RTE_MAX_LCORE)
@@ -729,6 +729,11 @@ int main(int argc, char *argv[]) {
                          "invalid socket capacity: required=%u override=%u "
                          "errno=%d\n",
                          socket_id_capacity, socket_id_max_override, errno);
+        if (stats_csv_path != NULL &&
+            tg_stats_csv_open(&stats_csv, stats_csv_path, rte_get_timer_hz()) !=
+                0)
+                rte_exit(EXIT_FAILURE, "stats CSV open failed (%s): errno=%d\n",
+                         stats_csv_path, errno);
         LOG_INFO(
             "traffic-gen scenario=%s classes=%u workers=%u active_shards=%u "
             "cps=%u concurrency=%u socket_id_capacity=%u",
@@ -780,6 +785,11 @@ int main(int argc, char *argv[]) {
                     (uint16_t)(index % port_topology.tx_queue_count);
                 worker->shard.runtime = &runtime;
                 worker->shard.scheduling_enabled = index < active_shards;
+                worker->shard.worker_index = index;
+                worker->shard.lcore_id = worker->lcore_id;
+                worker->shard.stats_channel =
+                    stats_csv.file == NULL ? NULL : &worker->stats_channel;
+                tg_stats_channel_init(&worker->stats_channel);
                 tg_stats_init(&worker->shard.stats);
 
                 /* Initialize resources owned by this worker's lcore. */
@@ -886,6 +896,7 @@ int main(int argc, char *argv[]) {
                                             nb_tx - sent);
                         }
                 }
+                tg_drain_stats_csv(workers, worker_count, &stats_csv);
         }
 
         /* Stage 10: Wait for workers to stop and flush pending TX packets. */
@@ -894,9 +905,12 @@ int main(int argc, char *argv[]) {
         for (unsigned int index = 0; index < worker_count; index++)
                 tg_drain_tx_ring(workers[index].ring,
                                  workers[index].tx_queue_id);
+        tg_drain_stats_csv(workers, worker_count, &stats_csv);
 
         /* Stage 11: Report aggregate traffic statistics from all workers. */
-        tg_report_aggregate(workers, worker_count);
+        tg_report_aggregate(workers, worker_count, &stats_csv);
+        if (tg_stats_csv_close(&stats_csv) != 0)
+                LOG_ERROR("stats CSV close failed path=%s", stats_csv.path);
 
         /* Stage 12: Release per-worker and global resources before exit. */
         for (unsigned int index = 0; index < worker_count; index++) {

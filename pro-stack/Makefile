@@ -5,9 +5,9 @@
 # Enable the required category explicitly while debugging, for example:
 #   make LOG_LEVEL=LOG_LVL_TRACE TCP_LOG_INFO_ENABLED=1 \
 #       TCP_LOG_DEBUG_ENABLED=1 TCP_LOG_TRACE_ENABLED=1 TCP_LOG_PACKETS=1
-# INFO keeps normal traffic-generator statistics visible without per-flow
-# owner and transport DEBUG output. Explicit debugging commands override it.
-LOG_LEVEL ?= LOG_LVL_INFO
+# WARN keeps normal traffic-generator runs focused on actionable failures.
+# Explicit debugging commands can opt back into INFO/DEBUG/TRACE output.
+LOG_LEVEL ?= LOG_LVL_WARN
 ARP_LOG_ENABLED ?= 0
 TCP_LOG_PACKETS ?= 0
 TCP_LOG_INFO_ENABLED ?= 0

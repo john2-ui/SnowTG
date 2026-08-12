@@ -7,6 +7,8 @@
 
 # @brief Output binary name.
 APP := traffic-gen
+# @brief Default console level; override for protocol diagnostics.
+LOG_LEVEL ?= LOG_LVL_WARN
 # @brief Location of the vendored llhttp parser source tree.
 LLHTTP_DIR := ../third_party/llhttp
 # @brief Application and parser sources compiled into the executable.
@@ -19,6 +21,7 @@ SRCS := main_tg.c \
 	core/socket_capacity.c \
 	core/scheduler.c \
 	core/stats.c \
+	core/stats_csv.c \
 	core/txn.c \
 	proto/registry.c \
 	proto/http/http_client.c \
@@ -37,6 +40,7 @@ DPDK_PC := $(shell $(PKGCONF) --path libdpdk)
 CFLAGS += -O3 -I. -Icore -Iproto -I../pro-stack -I$(LLHTTP_DIR)/include \
 	$(shell $(PKGCONF) --cflags libdpdk)
 CFLAGS += -DALLOW_EXPERIMENTAL_API
+CFLAGS += -DLOG_LEVEL=$(LOG_LEVEL)
 # @brief Static DPDK link flags resolved through pkg-config.
 LDFLAGS := $(shell $(PKGCONF) --static --libs libdpdk)
 
@@ -44,7 +48,7 @@ LDFLAGS := $(shell $(PKGCONF) --static --libs libdpdk)
 all: build/$(APP)
 
 ../pro-stack/build/libpro-stack.a:
-	$(MAKE) -C ../pro-stack library
+	$(MAKE) -C ../pro-stack library LOG_LEVEL=$(LOG_LEVEL)
 
 build/$(APP): $(SRCS) Makefile ../pro-stack/build/libpro-stack.a | build
 	$(CC) $(CFLAGS) $(SRCS) ../pro-stack/build/libpro-stack.a -o $@ $(LDFLAGS)

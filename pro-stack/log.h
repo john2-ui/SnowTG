@@ -10,10 +10,14 @@
 #ifndef NETARCH_LOG_H
 #define NETARCH_LOG_H
 
+#include <inttypes.h>
 #include <stdarg.h>
+#include <stdatomic.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 enum {
@@ -105,16 +109,10 @@ static inline void net_log_print_message(const char *message, int color) {
         }
 }
 
-static inline void net_log_emit(const char *module, unsigned int level,
-                                const char *tag, const char *file, int line,
-                                const char *fmt, ...) {
-        char message[2048];
-        va_list args;
+static inline void net_log_emit_message(const char *module, unsigned int level,
+                                        const char *tag, const char *file,
+                                        int line, const char *message) {
         int color = net_log_color_enabled();
-
-        va_start(args, fmt);
-        (void)vsnprintf(message, sizeof(message), fmt, args);
-        va_end(args);
 
         if (color)
                 fprintf(stderr, "%s[%s][%-5s]" NET_LOG_COLOR_RESET "[%s:%d] ",
@@ -125,6 +123,79 @@ static inline void net_log_emit(const char *module, unsigned int level,
         fputc('\n', stderr);
 }
 
+static inline void net_log_emit(const char *module, unsigned int level,
+                                const char *tag, const char *file, int line,
+                                const char *fmt, ...) {
+        char message[2048];
+        va_list args;
+
+        va_start(args, fmt);
+        (void)vsnprintf(message, sizeof(message), fmt, args);
+        va_end(args);
+        net_log_emit_message(module, level, tag, file, line, message);
+}
+
+/**
+ * Emit the first repeated warning/error immediately, then at most once per
+ * second from each call site.  The next emitted message reports how many
+ * matching messages were suppressed.  The state is atomic because the same
+ * call site can be reached by multiple owner lcores.
+ */
+static inline uint64_t net_log_clock_ns(void) {
+        struct timespec ts;
+
+        if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+                return 0;
+        return (uint64_t)ts.tv_sec * UINT64_C(1000000000) +
+               (uint64_t)ts.tv_nsec;
+}
+
+static inline void net_log_emit_ratelimited(const char *module,
+                                            unsigned int level, const char *tag,
+                                            const char *file, int line,
+                                            _Atomic uint64_t *last_ns,
+                                            _Atomic uint64_t *suppressed,
+                                            const char *fmt, ...) {
+        char message[2048];
+        uint64_t now_ns;
+        uint64_t last;
+        uint64_t suppressed_count;
+        va_list args;
+
+        now_ns = net_log_clock_ns();
+        last = atomic_load_explicit(last_ns, memory_order_acquire);
+        if (now_ns != 0 && last != 0 && now_ns - last < UINT64_C(1000000000)) {
+                atomic_fetch_add_explicit(suppressed, 1, memory_order_relaxed);
+                return;
+        }
+        if (now_ns != 0) {
+                uint64_t candidate = last;
+
+                if (!atomic_compare_exchange_strong_explicit(
+                        last_ns, &candidate, now_ns, memory_order_acq_rel,
+                        memory_order_acquire)) {
+                        atomic_fetch_add_explicit(suppressed, 1,
+                                                  memory_order_relaxed);
+                        return;
+                }
+        }
+
+        suppressed_count =
+            atomic_exchange_explicit(suppressed, 0, memory_order_acq_rel);
+        va_start(args, fmt);
+        (void)vsnprintf(message, sizeof(message), fmt, args);
+        va_end(args);
+        if (suppressed_count != 0) {
+                size_t used = strlen(message);
+
+                if (used < sizeof(message))
+                        (void)snprintf(message + used, sizeof(message) - used,
+                                       " suppressed=%" PRIu64,
+                                       suppressed_count);
+        }
+        net_log_emit_message(module, level, tag, file, line, message);
+}
+
 #define NET_LOG_MOD_(module, lvl, tag, fmt, ...)                               \
         do {                                                                   \
                 if ((lvl) <= LOG_LEVEL)                                        \
@@ -132,10 +203,21 @@ static inline void net_log_emit(const char *module, unsigned int level,
                                      __LINE__, fmt, ##__VA_ARGS__);            \
         } while (0)
 
+#define NET_LOG_MOD_RL_(module, lvl, tag, fmt, ...)                            \
+        do {                                                                   \
+                if ((lvl) <= LOG_LEVEL) {                                      \
+                        static _Atomic uint64_t last_ns;                       \
+                        static _Atomic uint64_t suppressed;                    \
+                        net_log_emit_ratelimited(                              \
+                            module, lvl, tag, LOG_BASENAME_, __LINE__,         \
+                            &last_ns, &suppressed, fmt, ##__VA_ARGS__);        \
+                }                                                              \
+        } while (0)
+
 #define LOG_MOD_ERROR(module, fmt, ...)                                        \
-        NET_LOG_MOD_(module, LOG_LVL_ERROR, "ERROR", fmt, ##__VA_ARGS__)
+        NET_LOG_MOD_RL_(module, LOG_LVL_ERROR, "ERROR", fmt, ##__VA_ARGS__)
 #define LOG_MOD_WARN(module, fmt, ...)                                         \
-        NET_LOG_MOD_(module, LOG_LVL_WARN, "WARN", fmt, ##__VA_ARGS__)
+        NET_LOG_MOD_RL_(module, LOG_LVL_WARN, "WARN", fmt, ##__VA_ARGS__)
 #define LOG_MOD_INFO(module, fmt, ...)                                         \
         NET_LOG_MOD_(module, LOG_LVL_INFO, "INFO", fmt, ##__VA_ARGS__)
 #define LOG_MOD_DEBUG(module, fmt, ...)                                        \
@@ -178,9 +260,9 @@ static inline void net_log_emit(const char *module, unsigned int level,
 
 /**
  * TCP state-transition and packet-path messages are verbose during traffic
- * generation.  Keep TCP errors and warnings enabled while compiling INFO,
- * DEBUG, and TRACE calls out by default.  Define the needed option as 1 in
- * CFLAGS when diagnosing TCP behavior.
+ * generation. Keep TCP errors and warnings available at the WARN threshold,
+ * while compiling INFO, DEBUG, and TRACE calls out by default. Define the
+ * needed option as 1 in CFLAGS when diagnosing TCP behavior.
  */
 #ifndef TCP_LOG_INFO_ENABLED
 #define TCP_LOG_INFO_ENABLED 0

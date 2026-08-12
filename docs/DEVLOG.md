@@ -9,6 +9,8 @@
 - [ARC-003：traffic-gen owner-local 队列与按需 TCP 缓冲](#arc-003traffic-gen-owner-local-队列与按需-tcp-缓冲) — 已实施；原有单 worker 限制由 ARC-005 解除
 - [ARC-004：短连接压测的全 socket TX 扫描与对端 RST](#arc-004短连接压测的全-socket-tx-扫描与对端-rst) — dirty TX queue 已实施；真实 NIC 回归待验证
 - [ARC-005：多 owner worker、硬件 RSS 与软件接收分流](#arc-005多-owner-worker硬件-rss-与软件接收分流) — 已实施；真实 NIC 回退与压力回归待验证
+- [ARC-006：traffic-gen UDP 直发与按需接收队列](#arc-006traffic-gen-udp-直发与按需接收队列) — 已实施；BSD/app-visible UDP 保留兼容路径
+- [ARC-007：traffic-gen 日志处理与低开销可观测性](#arc-007traffic-gen-日志处理与低开销可观测性) — 已实施；性能测量与协议调试分离
 
 ## 条目格式
 
@@ -607,22 +609,6 @@ owner 发布和软件接收分流，解除过程与当前不变量见 ARC-005。
 
 ---
 
-## ARC-006：traffic-gen UDP 直发与按需接收队列
-
-- **状态**：已实施；BSD/app-visible UDP 仍保留 ring-backed 兼容路径。
-- **范围**：`udp.c`、`udp_memory.*`、`socket_owner`、`owner_io` 和 UDP flow。
-- **触发**：UDP traffic-gen 不需要 TCP 式 ACK 保留和重传发送缓存；每个
-  socket 创建 `recv_buf/send_buf` 会让短生命周期流在高并发下持续占用 DPDK
-  ring 元数据。
-- **架构决策**：owner-local UDP 不创建 socket DPDK ring。发送路径在 ARP
-  可用时直接把新建 mbuf 交给 worker 的 `ring->out`，输出队列满即释放并
-  返回资源失败；ARP 未解析时只等待 socket 级 WRITE 事件，不保存 datagram。
-  接收路径只按需从 owner UDP metadata pool 取得小节点，挂入有界 FIFO；队列
-  满或节点耗尽时释放新到 mbuf 并计 drop。
-- **顺序约束**：UDP 短读保留当前 mbuf，不把剩余 datagram 放回队尾；关闭
-  先排空当前 mbuf 和 local RX FIFO，再执行 `nsock_free`。BSD/app-visible
-  UDP 与 UDP echo 仍通过 `NSOCK_IO_RINGS` 使用原有语义。
-
 ---
 
 ## ARC-004：短连接压测的全 socket TX 扫描与对端 RST
@@ -909,3 +895,137 @@ reactor、socket owner 资源和 stack runtime。主 lcore：
    `ENOSPC` 指标，并验证 tombstone 复用期间的无锁读取可见性。
 5. ARC-004 的全 socket TX 扫描已由 owner-local dirty TX queue 替代；多 worker
    和 RSS 仍需结合真实 NIC 压力回归验证。
+
+---
+
+## ARC-006：traffic-gen UDP 直发与按需接收队列
+
+- **状态**：已实施；BSD/app-visible UDP 仍保留 ring-backed 兼容路径。
+- **范围**：`udp.c`、`udp_memory.*`、`socket_owner`、`owner_io` 和 UDP flow。
+- **触发**：UDP traffic-gen 不需要 TCP 式 ACK 保留和重传发送缓存；每个
+  socket 创建 `recv_buf/send_buf` 会让短生命周期流在高并发下持续占用 DPDK
+  ring 元数据。
+- **架构决策**：owner-local UDP 不创建 socket DPDK ring。发送路径在 ARP
+  可用时直接把新建 mbuf 交给 worker 的 `ring->out`，输出队列满即释放并
+  返回资源失败；ARP 未解析时只等待 socket 级 WRITE 事件，不保存 datagram。
+  接收路径只按需从 owner UDP metadata pool 取得小节点，挂入有界 FIFO；队列
+  满或节点耗尽时释放新到 mbuf 并计 drop。
+- **顺序约束**：UDP 短读保留当前 mbuf，不把剩余 datagram 放回队尾；关闭
+  先排空当前 mbuf 和 local RX FIFO，再执行 `nsock_free`。BSD/app-visible
+  UDP 与 UDP echo 仍通过 `NSOCK_IO_RINGS` 使用原有语义。
+
+---
+
+## ARC-007：traffic-gen 日志处理与低开销可观测性
+
+- **状态**：已实施；性能测量与协议调试分离，详细统计按需导出。
+- **范围**：`pro-stack/log.h`、两侧 `Makefile`、`traffic-gen/core/stats.*`、
+  `traffic-gen/core/stats_csv.*` 和 `traffic-gen/main_tg.c`。
+- **触发**：周期性 INFO 统计和 TCP/DEBUG 日志直接写终端，会把可观测性
+  开销变成压测热路径的一部分；需要保留诊断信息，又不能让 owner worker
+  同步承担高频终端 IO。
+- **架构决策**：故障提示保留在限频 stderr 路径，压测统计通过 owner-local
+  snapshot channel 交给 main lcore，再由单一缓冲 CSV writer 写盘；性能
+  测量默认低噪声，协议诊断通过编译期开关显式启用。
+
+### 代码处理方式
+
+本次工作区改动把“实时故障提示”和“压测数据采集”分成两条路径，避免
+worker 在数据面同步刷屏：
+
+1. `pro-stack/Makefile` 和 `traffic-gen/Makefile` 的默认 `LOG_LEVEL` 从
+   `LOG_LVL_INFO` 调整为 `LOG_LVL_WARN`；ARP 日志以及 TCP INFO/DEBUG/TRACE
+   和逐包日志仍通过编译期开关显式开启。正常压测只保留需要关注的
+   warning/error，详细协议诊断由调试构建选择性启用。
+2. `log.h` 将 ERROR/WARN 改为按调用点限频：第一次立即输出，同一调用点
+   在一秒窗口内只保留一条，下一次输出追加 `suppressed=N`。限频状态使用
+   atomic，多个 owner lcore 同时命中同一诊断点时不会恢复成无界刷屏。
+   `LOG_COLOR=auto|always|never` 和 `NO_COLOR` 控制终端颜色；重定向时默认
+   不输出 ANSI 转义，模块、级别、源位置和结构化 key 仍保留，便于检索和
+   人工调试。
+3. `traffic-gen` 不再由每个 worker 通过多条 `LOG_INFO` 周期性输出完整
+   统计。owner 在本地采集 transaction、延迟、runtime、dirty-TX、reactor、
+   ring/drop 和资源水位，写入容量为 16 的单生产者/单消费者 snapshot channel；
+   channel 满时只丢统计记录并增加 `stats_queue_drops`，不阻塞收包和发包。
+4. 传入 `--stats-csv PATH` 后，由 main lcore 统一消费各 worker snapshot，并
+   使用 64 KiB 缓冲的单一 CSV writer 写盘。周期记录中 transaction/延迟为
+   累计值，runtime 和 drop 为本周期值；worker 排空后再写完整的 `final` 行，
+   最后写一行 aggregate。未指定 `--stats-csv` 时不启动该统计写盘路径，
+   终端只承担仍然启用的 warning/error 和显式调试日志。
+
+这样，数据面的处理顺序变为：
+
+```text
+owner worker
+  → 采集本地 counters/metrics
+  → 非阻塞发布 snapshot
+main lcore
+  → 批量 drain 各 worker channel
+  → 单 writer 写入缓冲 CSV
+```
+
+日志错误仍走 stderr，但默认级别、编译期开关和调用点限频共同限制了终端
+写入；详细统计则延后到 main lcore 的缓冲文件路径，避免在 owner lcore 上
+执行 `fprintf`/TTY IO。
+
+### 火焰图证据
+
+对照场景为 `http-sweep-8kcps-250con`、`--workers 8`。吵档打开 TCP/DEBUG
+类日志并直接写终端；安静档使用 `LOG_LEVEL=LOG_LVL_ERROR` 并丢弃重定向
+输出。分析按 `.folded` 中是否出现日志或写终端相关调用栈汇总采样占比
+（包括 `net_log`、`vfprintf`、`printf`、`fputc`、`__libc_write`、
+`vfs_write`、`tty_*` 和 `n_tty_*`）；两档总采样数不同，因此比较百分比，
+不比较绝对 sample 数。
+
+| 指标（占该档全部采样） | noisy | quiet | 差值 |
+| --- | ---: | ---: | ---: |
+| 栈含日志/写终端相关帧 | **54.5%** | **0.6%** | +53.9 pt |
+| 其中 write 家族 | 33.8% | 0.3% | +33.5 pt |
+| 其中 tty 路径 | 15.4% | 0.2% | +15.2 pt |
+| SVG 上 `net_log_emit` 最大 inclusive | ~12.7% | ~0.1% | — |
+
+
+
+[![吵档 noisy 火焰图：日志写终端占比较高](./assets/tg-noisy.svg)](./assets/tg-noisy.svg)
+
+
+[![安静档 quiet 火焰图：协议栈和数据面成为主要热点](./assets/tg-quite.svg)](./assets/tg-quite.svg)
+
+结论是：实时把大量日志打到终端时，IO/TTY 路径约占一半采样；安静档低于
+1%。吵档的叶子热点主要是 `write`、TTY 和调度等待，`net_log_emit`/`fputc`
+自身只有约 0.1% 量级；quiet 档则由 `stack_runtime_worker_entry`、
+`tg_shard_tick`、`vmxnet3_xmit/recv`、`tcp_tx_flush`、TCP options 和 ARP
+组成，符合 DPDK busy-poll 与业务路径。因而不能用 noisy 火焰图直接归因
+“协议栈慢”或“对端慢”。
+
+### 修改后的使用和调试方式
+
+1. **吞吐压测或采集火焰图**：使用默认 WARN，或显式构建
+   `LOG_LEVEL=LOG_LVL_ERROR`，并将 stderr 重定向到文件或丢弃；不要在
+   SSH/PTY 上同步刷高频日志。需要保留结构化结果时使用：
+
+   ```bash
+   sudo ./traffic-gen/build/traffic-gen -l 0-1 -- \
+     --workers 8 --stats-csv /tmp/http-sweep.csv \
+     debug/2026-08-12/http-sweep-8kcps-250con.json
+   ```
+
+2. **协议调试**：只开启需要的类别，例如
+   `make -C pro-stack LOG_LEVEL=LOG_LVL_DEBUG TCP_LOG_INFO_ENABLED=1`
+   `make -C traffic-gen LOG_LEVEL=LOG_LVL_DEBUG`；ACK、窗口、发送队列或
+   逐包路径再分别打开 `TCP_LOG_DEBUG_ENABLED=1`、`TCP_LOG_TRACE_ENABLED=1`
+   和 `TCP_LOG_PACKETS=1`。这些选项会增加日志量，应与性能测量分开。
+3. **保留日志而不刷终端**：设置 `LOG_COLOR=never`，把 stderr 写入文件，
+   配合限频和低频采样；`LOG_COLOR=always` 仅用于交互式人工排查。若必须
+   比较 CPU 画像，应固定 noisy/quiet 的日志级别和输出去向。
+4. **复现火焰图**：稳态后采样并生成 folded/SVG；本次归档的对照图为
+   `docs/assets/tg-noisy.svg` 和 `docs/assets/tg-quite.svg`，其中
+   `tg-quite.svg` 的拼写沿用原始实验产物。
+
+```bash
+PID=$(pgrep -n traffic-gen)
+sudo perf record -F 99 -g -p "$PID" -o /tmp/tg-XXX.data -- sleep 30
+sudo perf script -i /tmp/tg-XXX.data | "$FG/stackcollapse-perf.pl" \
+  > /tmp/tg-XXX.folded
+"$FG/flamegraph.pl" /tmp/tg-XXX.folded > /tmp/tg-XXX.svg
+```

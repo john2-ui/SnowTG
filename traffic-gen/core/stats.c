@@ -109,6 +109,218 @@ void tg_stats_on_flow_finished(struct tg_stats *stats,
         }
 }
 
+/** Fields summed when a runtime snapshot is accumulated. */
+#define TG_RUNTIME_SUM_FIELDS(X)                                               \
+        X(memory_paused)                                                       \
+        X(memory_pauses)                                                       \
+        X(tx_available)                                                        \
+        X(payload_available)                                                   \
+        X(tx_alloc_fail)                                                       \
+        X(worker_turns)                                                        \
+        X(rx_packets)                                                          \
+        X(socket_scans)                                                        \
+        X(tx_flush_calls)                                                      \
+        X(dirty_tx_enqueues)                                                   \
+        X(dirty_tx_dedup_hits)                                                 \
+        X(dirty_tx_requeues)                                                   \
+        X(dirty_tx_arp_waits)                                                  \
+        X(dirty_tx_arp_wakeups)                                                \
+        X(dirty_tx_budget_exhausted)                                           \
+        X(turn_cycles)                                                         \
+        X(rx_cycles)                                                           \
+        X(maintenance_cycles)                                                  \
+        X(reactor_cycles)                                                      \
+        X(tx_flush_cycles)                                                     \
+        X(reactor_turns)                                                       \
+        X(reactor_events)                                                      \
+        X(scheduler_starts)                                                    \
+        X(tokens)                                                              \
+        X(socket_releases)                                                     \
+        X(rx_ring_drops)                                                       \
+        X(tx_nic_drops)                                                        \
+        X(rx_owner_hits)                                                       \
+        X(rx_software_hashes)                                                  \
+        X(rx_parse_fallbacks)                                                  \
+        X(stats_queue_drops)
+
+/** Fields for which an aggregate should retain the largest observation. */
+#define TG_RUNTIME_MAX_FIELDS(X)                                               \
+        X(tx_peak)                                                             \
+        X(payload_peak)                                                        \
+        X(dirty_tx_depth)                                                      \
+        X(dirty_tx_high_water)                                                 \
+        X(reactor_burst_high_water)                                            \
+        X(ring_hwm_in)                                                         \
+        X(ring_hwm_out)
+
+/** @copydoc tg_stats_snapshot_from_stats */
+void tg_stats_snapshot_from_stats(struct tg_stats_snapshot *snapshot,
+                                  const struct tg_stats *stats,
+                                  uint64_t timestamp_cycles, uint64_t sequence,
+                                  uint64_t worker_index, uint64_t lcore_id,
+                                  enum tg_stats_snapshot_phase phase) {
+        if (snapshot == NULL)
+                return;
+        memset(snapshot, 0, sizeof(*snapshot));
+        snapshot->timestamp_cycles = timestamp_cycles;
+        snapshot->sequence = sequence;
+        snapshot->worker_index = worker_index;
+        snapshot->lcore_id = lcore_id;
+        snapshot->phase = phase;
+        if (stats == NULL)
+                return;
+
+        snapshot->txns_started = stats->txns_started;
+        snapshot->txns_done = stats->txns_done;
+        snapshot->txns_success = stats->txns_success;
+        snapshot->txns_fail = stats->txns_fail;
+        snapshot->fail_connect = stats->fail_connect;
+        snapshot->fail_io = stats->fail_io;
+        snapshot->fail_proto = stats->fail_proto;
+        snapshot->fail_resource = stats->fail_resource;
+        snapshot->starts_deferred_resource = stats->starts_deferred_resource;
+        snapshot->bytes_tx = stats->bytes_tx;
+        snapshot->bytes_rx = stats->bytes_rx;
+        snapshot->http_rps_total = stats->http_rps_total;
+        snapshot->concurrency = stats->concurrency;
+        snapshot->connect_samples = stats->connect_samples;
+        snapshot->connect_cycles = stats->connect_cycles;
+        snapshot->connect_max_cycles = stats->connect_max_cycles;
+        snapshot->first_rx_samples = stats->first_rx_samples;
+        snapshot->first_rx_cycles = stats->first_rx_cycles;
+        snapshot->first_rx_max_cycles = stats->first_rx_max_cycles;
+        snapshot->complete_samples = stats->complete_samples;
+        snapshot->complete_cycles = stats->complete_cycles;
+        snapshot->complete_max_cycles = stats->complete_max_cycles;
+}
+
+/** @copydoc tg_stats_snapshot_add_runtime */
+void tg_stats_snapshot_add_runtime(struct tg_stats_snapshot *total,
+                                   const struct tg_stats_snapshot *sample) {
+        if (total == NULL || sample == NULL)
+                return;
+
+#define TG_ADD_FIELD(field) total->field += sample->field;
+        TG_RUNTIME_SUM_FIELDS(TG_ADD_FIELD)
+#undef TG_ADD_FIELD
+#define TG_MAX_FIELD(field)                                                    \
+        if (sample->field > total->field)                                      \
+                total->field = sample->field;
+        TG_RUNTIME_MAX_FIELDS(TG_MAX_FIELD)
+#undef TG_MAX_FIELD
+}
+
+/** @copydoc tg_stats_snapshot_copy_runtime */
+void tg_stats_snapshot_copy_runtime(struct tg_stats_snapshot *snapshot,
+                                    const struct tg_stats_snapshot *total) {
+        if (snapshot == NULL || total == NULL)
+                return;
+
+#define TG_COPY_FIELD(field) snapshot->field = total->field;
+        TG_RUNTIME_SUM_FIELDS(TG_COPY_FIELD)
+        TG_RUNTIME_MAX_FIELDS(TG_COPY_FIELD)
+#undef TG_COPY_FIELD
+}
+
+/** @copydoc tg_stats_snapshot_add */
+void tg_stats_snapshot_add(struct tg_stats_snapshot *aggregate,
+                           const struct tg_stats_snapshot *sample) {
+        if (aggregate == NULL || sample == NULL)
+                return;
+        if (sample->timestamp_cycles > aggregate->timestamp_cycles)
+                aggregate->timestamp_cycles = sample->timestamp_cycles;
+        if (sample->sequence > aggregate->sequence)
+                aggregate->sequence = sample->sequence;
+        aggregate->txns_started += sample->txns_started;
+        aggregate->txns_done += sample->txns_done;
+        aggregate->txns_success += sample->txns_success;
+        aggregate->txns_fail += sample->txns_fail;
+        aggregate->fail_connect += sample->fail_connect;
+        aggregate->fail_io += sample->fail_io;
+        aggregate->fail_proto += sample->fail_proto;
+        aggregate->fail_resource += sample->fail_resource;
+        aggregate->starts_deferred_resource += sample->starts_deferred_resource;
+        aggregate->bytes_tx += sample->bytes_tx;
+        aggregate->bytes_rx += sample->bytes_rx;
+        aggregate->http_rps_total += sample->http_rps_total;
+        aggregate->concurrency += sample->concurrency;
+        aggregate->live_sockets += sample->live_sockets;
+        aggregate->connect_samples += sample->connect_samples;
+        aggregate->connect_cycles += sample->connect_cycles;
+        if (sample->connect_max_cycles > aggregate->connect_max_cycles)
+                aggregate->connect_max_cycles = sample->connect_max_cycles;
+        aggregate->first_rx_samples += sample->first_rx_samples;
+        aggregate->first_rx_cycles += sample->first_rx_cycles;
+        if (sample->first_rx_max_cycles > aggregate->first_rx_max_cycles)
+                aggregate->first_rx_max_cycles = sample->first_rx_max_cycles;
+        aggregate->complete_samples += sample->complete_samples;
+        aggregate->complete_cycles += sample->complete_cycles;
+        if (sample->complete_max_cycles > aggregate->complete_max_cycles)
+                aggregate->complete_max_cycles = sample->complete_max_cycles;
+        tg_stats_snapshot_add_runtime(aggregate, sample);
+}
+
+/** @copydoc tg_stats_channel_init */
+void tg_stats_channel_init(struct tg_stats_channel *channel) {
+        if (channel == NULL)
+                return;
+        memset(channel->records, 0, sizeof(channel->records));
+        atomic_init(&channel->write_seq, 0);
+        atomic_init(&channel->read_seq, 0);
+        atomic_init(&channel->dropped, 0);
+}
+
+/** @copydoc tg_stats_channel_publish */
+bool tg_stats_channel_publish(struct tg_stats_channel *channel,
+                              const struct tg_stats_snapshot *snapshot) {
+        uint64_t write_seq;
+        uint64_t read_seq;
+
+        if (channel == NULL || snapshot == NULL)
+                return false;
+        write_seq =
+            atomic_load_explicit(&channel->write_seq, memory_order_relaxed);
+        read_seq =
+            atomic_load_explicit(&channel->read_seq, memory_order_acquire);
+        if (write_seq - read_seq >= TG_STATS_CHANNEL_CAP) {
+                atomic_fetch_add_explicit(&channel->dropped, 1,
+                                          memory_order_relaxed);
+                return false;
+        }
+        channel->records[write_seq % TG_STATS_CHANNEL_CAP] = *snapshot;
+        atomic_store_explicit(&channel->write_seq, write_seq + 1,
+                              memory_order_release);
+        return true;
+}
+
+/** @copydoc tg_stats_channel_consume */
+bool tg_stats_channel_consume(struct tg_stats_channel *channel,
+                              struct tg_stats_snapshot *snapshot) {
+        uint64_t write_seq;
+        uint64_t read_seq;
+
+        if (channel == NULL || snapshot == NULL)
+                return false;
+        read_seq =
+            atomic_load_explicit(&channel->read_seq, memory_order_relaxed);
+        write_seq =
+            atomic_load_explicit(&channel->write_seq, memory_order_acquire);
+        if (read_seq == write_seq)
+                return false;
+        *snapshot = channel->records[read_seq % TG_STATS_CHANNEL_CAP];
+        atomic_store_explicit(&channel->read_seq, read_seq + 1,
+                              memory_order_release);
+        return true;
+}
+
+/** @copydoc tg_stats_channel_take_dropped */
+uint64_t tg_stats_channel_take_dropped(struct tg_stats_channel *channel) {
+        if (channel == NULL)
+                return 0;
+        return atomic_exchange_explicit(&channel->dropped, 0,
+                                        memory_order_acq_rel);
+}
+
 /** @copydoc tg_stats_report_due */
 bool tg_stats_report_due(struct tg_stats *stats, uint64_t now_cycles,
                          uint64_t cycles_per_second,
