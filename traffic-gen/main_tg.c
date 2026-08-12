@@ -13,6 +13,7 @@
 #include "core/reactor.h"
 #include "core/scenario.h"
 #include "core/scheduler.h"
+#include "core/socket_capacity.h"
 #include "core/stats.h"
 
 #include "../pro-stack/arp.h"
@@ -56,12 +57,16 @@ static const uint32_t tg_local_ip = MAKE_IPV4_ADDR(192, 168, 21, 2);
  * RX queues and software-dispatch packets to those shards when RSS is absent.
  */
 static int tg_parse_app_args(int argc, char *argv[], unsigned int *workers_out,
-                             const char **scenario_out) {
+                             const char **scenario_out,
+                             uint32_t *socket_id_max_out) {
         bool workers_seen = false;
+        bool socket_id_max_seen = false;
         const char *scenario_path = NULL;
         unsigned int workers = 1;
+        uint32_t socket_id_max = 0;
 
-        if (workers_out == NULL || scenario_out == NULL) {
+        if (workers_out == NULL || scenario_out == NULL ||
+            socket_id_max_out == NULL) {
                 errno = EINVAL;
                 return -1;
         }
@@ -86,6 +91,25 @@ static int tg_parse_app_args(int argc, char *argv[], unsigned int *workers_out,
                         workers_seen = true;
                         continue;
                 }
+                if (strcmp(argv[i], "--socket-id-max") == 0) {
+                        char *end = NULL;
+                        unsigned long value;
+
+                        if (socket_id_max_seen || ++i == argc) {
+                                errno = EINVAL;
+                                return -1;
+                        }
+                        errno = 0;
+                        value = strtoul(argv[i], &end, 10);
+                        if (errno != 0 || end == argv[i] || *end != '\0' ||
+                            value == 0 || value > UINT32_MAX) {
+                                errno = EINVAL;
+                                return -1;
+                        }
+                        socket_id_max = (uint32_t)value;
+                        socket_id_max_seen = true;
+                        continue;
+                }
                 if (argv[i][0] == '-' || scenario_path != NULL) {
                         errno = EINVAL;
                         return -1;
@@ -96,6 +120,7 @@ static int tg_parse_app_args(int argc, char *argv[], unsigned int *workers_out,
         *workers_out = workers;
         *scenario_out =
             scenario_path == NULL ? TG_DEFAULT_SCENARIO_PATH : scenario_path;
+        *socket_id_max_out = socket_id_max;
         return 0;
 }
 
@@ -366,7 +391,7 @@ static int tg_start_class(void *ctx, const struct tg_class_plan *class_plan) {
         }
 
         if (start_result != 0) {
-                if (errno == ENOBUFS)
+                if (errno == ENOBUFS || errno == ENFILE)
                         tg_stats_on_resource_deferred(&shard->stats);
                 else
                         tg_stats_on_start_failure(&shard->stats);
@@ -650,7 +675,8 @@ static void tg_report_aggregate(const struct tg_worker *workers,
  */
 /**
  * @brief Initializes DPDK, scenario state, and the owner-worker runtime.
- * @param argc EAL arguments followed by an optional scenario JSON path.
+ * @param argc EAL arguments followed by traffic-gen options and an optional
+ * scenario JSON path.
  * @param argv EAL and application argument vector.
  * @return EXIT_SUCCESS after clean shutdown; failures exit through DPDK.
  */
@@ -660,6 +686,8 @@ int main(int argc, char *argv[]) {
         unsigned int worker_count;
         unsigned int main_lcore;
         unsigned int active_shards;
+        uint32_t socket_id_max_override;
+        uint32_t socket_id_capacity = 0;
         struct tg_plan plan = {0};
         struct tg_worker *workers;
         struct tg_runtime_control runtime = {0};
@@ -674,9 +702,10 @@ int main(int argc, char *argv[]) {
         argv += eal_args;
 
         /* Stage 2: Parse application options and locate the scenario file. */
-        if (tg_parse_app_args(argc, argv, &worker_count, &scenario_path) != 0)
-                rte_exit(EXIT_FAILURE,
-                         "usage: traffic-gen [--workers N] [scenario.json]\n");
+        if (tg_parse_app_args(argc, argv, &worker_count, &scenario_path,
+                              &socket_id_max_override) != 0)
+                rte_exit(EXIT_FAILURE, "usage: traffic-gen [--workers N] "
+                                       "[--socket-id-max N] [scenario.json]\n");
 
         /* Stage 3: Load the scenario and validate its shard constraints. */
         if (worker_count > RTE_MAX_LCORE)
@@ -685,22 +714,26 @@ int main(int argc, char *argv[]) {
         if (tg_plan_load_file(&plan, scenario_path) != 0)
                 rte_exit(EXIT_FAILURE, "scenario load failed (%s): errno=%d\n",
                          scenario_path, errno);
+        if (rx_dispatch_validate_flow_capacity(plan.max_concurrency) != 0)
+                rte_exit(EXIT_FAILURE,
+                         "scenario concurrency exceeds RX dispatch "
+                         "capacity: concurrency=%u errno=%d\n",
+                         plan.max_concurrency, errno);
         active_shards = tg_plan_active_shards(&plan, worker_count);
         if (active_shards == 0)
                 rte_exit(EXIT_FAILURE,
                          "scenario has no active scheduling shard\n");
-        if (((uint64_t)plan.max_concurrency + active_shards - 1U) /
-                active_shards >
-            NSOCK_ID_MAX)
+        if (tg_socket_id_capacity(&plan, active_shards, socket_id_max_override,
+                                  &socket_id_capacity) != 0)
                 rte_exit(EXIT_FAILURE,
-                         "scenario concurrency exceeds per-shard socket "
-                         "capacity for %u active shards\n",
-                         active_shards);
+                         "invalid socket capacity: required=%u override=%u "
+                         "errno=%d\n",
+                         socket_id_capacity, socket_id_max_override, errno);
         LOG_INFO(
             "traffic-gen scenario=%s classes=%u workers=%u active_shards=%u "
-            "cps=%u concurrency=%u",
+            "cps=%u concurrency=%u socket_id_capacity=%u",
             plan.name, plan.class_count, worker_count, active_shards,
-            plan.target_cps, plan.max_concurrency);
+            plan.target_cps, plan.max_concurrency, socket_id_capacity);
 
         /* Stage 4: Initialize global packet, network, and timer resources. */
         if (socket_registry_init() != 0)
@@ -750,16 +783,19 @@ int main(int argc, char *argv[]) {
                 tg_stats_init(&worker->shard.stats);
 
                 /* Initialize resources owned by this worker's lcore. */
-                if (socket_registry_init_owner(worker->lcore_id) != 0 ||
-                    socket_owner_init(worker->lcore_id) != 0 ||
+                if (socket_registry_init_owner_with_capacity(
+                        worker->lcore_id, socket_id_capacity) != 0 ||
+                    socket_owner_init_with_capacity(worker->lcore_id,
+                                                    socket_id_capacity) != 0 ||
                     ring_init_owner(worker->lcore_id) != 0 ||
                     arp_table_init_owner(worker->lcore_id) != 0)
                         rte_exit(EXIT_FAILURE,
                                  "worker %u shard initialization failed\n",
                                  index);
                 worker->ring = ring_for_lcore(worker->lcore_id);
-                if (tg_flow_map_init(&worker->shard.flow_map,
-                                     worker->lcore_id) != 0)
+                if (tg_flow_map_init_with_capacity(&worker->shard.flow_map,
+                                                   worker->lcore_id,
+                                                   socket_id_capacity) != 0)
                         rte_exit(EXIT_FAILURE, "worker %u flow map failed\n",
                                  index);
 

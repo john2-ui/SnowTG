@@ -24,7 +24,7 @@
 static bool tg_flow_handle_valid_for_map(const struct tg_flow_map *map,
                                          struct nsock_handle handle) {
         return map != NULL && map->by_socket_id != NULL &&
-               handle.id < NSOCK_ID_MAX &&
+               handle.id < map->capacity &&
                handle.owner_lcore == map->owner_lcore;
 }
 
@@ -36,22 +36,30 @@ static bool tg_flow_handle_equal(struct nsock_handle left,
                left.protocol == right.protocol;
 }
 
-/** @copydoc tg_flow_map_init */
-int tg_flow_map_init(struct tg_flow_map *map, uint16_t owner_lcore) {
-        if (map == NULL) {
+/** @copydoc tg_flow_map_init_with_capacity */
+int tg_flow_map_init_with_capacity(struct tg_flow_map *map,
+                                   uint16_t owner_lcore, uint32_t capacity) {
+        if (map == NULL || capacity == 0) {
                 errno = EINVAL;
                 return -1;
         }
 
         memset(map, 0, sizeof(*map));
-        map->by_socket_id = calloc(NSOCK_ID_MAX, sizeof(*map->by_socket_id));
+        map->by_socket_id = calloc(capacity, sizeof(*map->by_socket_id));
         if (map->by_socket_id == NULL) {
                 errno = ENOMEM;
                 return -1;
         }
 
+        map->capacity = capacity;
         map->owner_lcore = owner_lcore;
         return 0;
+}
+
+/** @copydoc tg_flow_map_init */
+int tg_flow_map_init(struct tg_flow_map *map, uint16_t owner_lcore) {
+        return tg_flow_map_init_with_capacity(map, owner_lcore,
+                                              NSOCK_ID_DEFAULT_CAPACITY);
 }
 
 /** @copydoc tg_flow_map_fini */
@@ -616,7 +624,7 @@ void tg_flow_expire(struct tg_flow_map *map, struct tg_flow_pool *pool,
         if (map == NULL || pool == NULL || map->by_socket_id == NULL)
                 return;
 
-        for (uint32_t socket_id = 0; socket_id < NSOCK_ID_MAX; socket_id++) {
+        for (uint32_t socket_id = 0; socket_id < map->capacity; socket_id++) {
                 struct tg_flow *flow = map->by_socket_id[socket_id];
 
                 if (flow == NULL || !flow->mapped ||

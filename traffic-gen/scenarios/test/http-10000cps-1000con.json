@@ -1,7 +1,7 @@
 {
     "name": "http-baseline",
     "duration_sec": 120,
-    "max_concurrency": 100,
+    "max_concurrency": 1000,
     "target_cps": 10000,
     "report_interval_sec": 1,
     "classes": [

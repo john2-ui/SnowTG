@@ -11,6 +11,7 @@
 #include <rte_tcp.h>
 #include <rte_udp.h>
 
+#include <errno.h>
 #include <netinet/in.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -19,9 +20,9 @@
 
 #define CHECK(condition)                                                       \
         do {                                                                   \
-                if (!(condition)) {                                           \
-                        fprintf(stderr, "check failed: %s (%s:%d)\n",         \
-                                #condition, __FILE__, __LINE__);              \
+                if (!(condition)) {                                            \
+                        fprintf(stderr, "check failed: %s (%s:%d)\n",          \
+                                #condition, __FILE__, __LINE__);               \
                         return 1;                                              \
                 }                                                              \
         } while (0)
@@ -41,8 +42,7 @@ static uint16_t make_ipv4_frame(uint8_t *frame, uint8_t protocol,
                                 uint32_t remote_ip, uint32_t local_ip,
                                 uint16_t remote_port, uint16_t local_port) {
         struct rte_ether_hdr *eth = (struct rte_ether_hdr *)frame;
-        struct rte_ipv4_hdr *ip =
-            (struct rte_ipv4_hdr *)(frame + sizeof(*eth));
+        struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *)(frame + sizeof(*eth));
         uint16_t l4_len;
 
         memset(frame, 0, 128);
@@ -91,6 +91,16 @@ int main(void) {
         struct rte_mbuf mbuf;
         uint16_t length;
 
+        CHECK(rx_dispatch_validate_flow_capacity(1) == 0);
+        errno = 0;
+        CHECK(rx_dispatch_validate_flow_capacity(0) == -1);
+        CHECK(errno == EINVAL);
+        CHECK(rx_dispatch_validate_flow_capacity(RX_DISPATCH_FLOW_TABLE_SIZE) ==
+              0);
+        errno = 0;
+        CHECK(rx_dispatch_validate_flow_capacity(RX_DISPATCH_FLOW_TABLE_SIZE +
+                                                 1U) == -1);
+        CHECK(errno == ENOSPC);
         CHECK(rx_dispatch_configure_workers(workers, 4) == 0);
         CHECK(port_test_configure_software_rss(4) == 0);
 
@@ -123,9 +133,8 @@ int main(void) {
         rx_dispatch_classify(&mbuf, 0, &first);
         CHECK(first.owner_hit);
         CHECK(first.worker_index == 1);
-        CHECK(rx_dispatch_register_tcp_connection(remote_ip, local_ip,
-                                                  remote_port, local_port,
-                                                  3) == 0);
+        CHECK(rx_dispatch_register_tcp_connection(
+                  remote_ip, local_ip, remote_port, local_port, 3) == 0);
         rx_dispatch_classify(&mbuf, 0, &first);
         CHECK(first.owner_hit);
         CHECK(first.worker_index == 3);
@@ -133,8 +142,8 @@ int main(void) {
                                               local_port, 3);
         rx_dispatch_unregister_endpoint(IPPROTO_TCP, local_ip, local_port, 1);
 
-        length = make_ipv4_frame(frame, IPPROTO_ICMP, remote_ip, local_ip, 0,
-                                 0);
+        length =
+            make_ipv4_frame(frame, IPPROTO_ICMP, remote_ip, local_ip, 0, 0);
         mbuf = mbuf_for_frame(frame, length);
         rx_dispatch_classify(&mbuf, 0, &first);
         rx_dispatch_classify(&mbuf, 0, &second);

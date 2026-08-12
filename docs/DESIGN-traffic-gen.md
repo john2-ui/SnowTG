@@ -406,7 +406,18 @@ HTTP upgrade、response pipeline 或在同一 flow 上复用下一个 keep-alive
 4. 提高规模前先算：`N * (TCB + 平均缓冲 + 事务 ctx)` ≤ 可用巨页内存的 60%。
 
 栈侧需配合：可配置 `TCP_SNDBUF`、chunk pool 与连接上限；pool low/high water
-必须反馈为 scheduler 背压和资源指标。`NSOCK_FD_MAX` / `NSOCK_ID_MAX` 随目标上调并有文档说明。
+必须反馈为 scheduler 背压和资源指标。traffic-gen 的 owner socket 容量在启动期
+按每 shard 并发自动计算：
+
+```text
+per_shard = ceil(max_concurrency / active_shards)
+owner_capacity = max(4096, 2 * per_shard)
+```
+
+`--socket-id-max N` 可显式增大该容量，但低于自动计算值时启动失败。槽表、
+generation、ready ring/mempool、协议 registry hash 和 flow map 使用同一个
+owner capacity；运行中不做扩容或缩容。`NSOCK_FD_MAX` 仍只约束 app-visible
+fd，TCP 缓冲与 fd 表预算是独立的后续配置项。
 
 ### 5.3 定时器
 

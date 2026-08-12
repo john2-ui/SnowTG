@@ -16,6 +16,7 @@
 #include <rte_ring.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /*
@@ -27,11 +28,46 @@ static struct socket_owner g_owners[RTE_MAX_LCORE];
 static bool g_owner_ready[RTE_MAX_LCORE];
 static atomic_uint g_create_owner_next;
 
-#define NSOCK_READY_EVENT_CAP (NSOCK_ID_MAX * 2U)
-
 struct socket_ready_event {
         struct nsock_handle handle;
 };
+
+/**
+ * Derive DPDK queue/pool capacities from the runtime slot capacity.
+ *
+ * rte_ring_create() uses the normal ring mode here, which requires a
+ * power-of-two count.  The ready-event pool follows the same rounded value so
+ * a full ready ring can always be backed by pool objects.
+ */
+static int socket_owner_capacity_params(uint32_t slot_capacity,
+                                        uint32_t *command_capacity,
+                                        uint32_t *ready_capacity) {
+        uint64_t ready_requested;
+        uint32_t command_count = 1;
+        uint32_t ready_count = 1;
+
+        if (slot_capacity == 0 || command_capacity == NULL ||
+            ready_capacity == NULL)
+                return -EINVAL;
+        ready_requested = (uint64_t)slot_capacity * 2U;
+        if (ready_requested > UINT32_MAX)
+                return -EOVERFLOW;
+
+        while (command_count < slot_capacity) {
+                if (command_count > UINT32_MAX / 2U)
+                        return -EOVERFLOW;
+                command_count <<= 1;
+        }
+        while (ready_count < (uint32_t)ready_requested) {
+                if (ready_count > UINT32_MAX / 2U)
+                        return -EOVERFLOW;
+                ready_count <<= 1;
+        }
+
+        *command_capacity = command_count < 2U ? 2U : command_count;
+        *ready_capacity = ready_count < 2U ? 2U : ready_count;
+        return 0;
+}
 
 static struct socket_owner *socket_owner_for_lcore(unsigned int lcore_id) {
         if (lcore_id >= RTE_MAX_LCORE || !g_owner_ready[lcore_id])
@@ -69,6 +105,9 @@ static void socket_owner_init_cleanup(struct socket_owner *owner) {
                 rte_ring_free(owner->ready_ring);
         if (owner->command_ring != NULL)
                 rte_ring_free(owner->command_ring);
+        free(owner->free_ids);
+        free(owner->generations);
+        free(owner->slots);
         memset(owner, 0, sizeof(*owner));
 }
 
@@ -108,7 +147,8 @@ static struct nsock *owner_lookup(struct nsock_handle handle) {
         struct nsock *sk;
         struct socket_owner *owner = socket_owner_current();
 
-        if (owner == NULL || handle.id >= NSOCK_ID_MAX ||
+        if (owner == NULL || owner->slots == NULL ||
+            handle.id >= owner->slot_capacity ||
             handle.owner_lcore != owner->lcore_id)
                 return NULL;
 
@@ -168,22 +208,55 @@ static void waitq_push_front(struct sock_cmd **head, struct sock_cmd **tail,
                 *tail = cmd;
 }
 
-int socket_owner_init(unsigned int lcore_id) {
+int socket_owner_init_with_capacity(unsigned int lcore_id, uint32_t capacity) {
         struct socket_owner *owner;
         char command_name[RTE_RING_NAMESIZE];
         char ready_name[RTE_RING_NAMESIZE];
         char pool_name[RTE_MEMPOOL_NAMESIZE];
+        uint32_t command_capacity;
+        uint32_t ready_capacity;
+        int capacity_rc;
 
         if (lcore_id >= RTE_MAX_LCORE) {
                 errno = EINVAL;
                 return -1;
         }
-        if (g_owner_ready[lcore_id])
-                return 0;
+        capacity_rc = socket_owner_capacity_params(capacity, &command_capacity,
+                                                   &ready_capacity);
+        if (capacity_rc != 0) {
+                errno = -capacity_rc;
+                return -1;
+        }
+        if ((size_t)capacity > SIZE_MAX / sizeof(*g_owners[0].slots) ||
+            (size_t)capacity > SIZE_MAX / sizeof(*g_owners[0].generations) ||
+            (size_t)capacity > SIZE_MAX / sizeof(*g_owners[0].free_ids)) {
+                errno = EOVERFLOW;
+                return -1;
+        }
+        if (g_owner_ready[lcore_id]) {
+                if (g_owners[lcore_id].slot_capacity == capacity)
+                        return 0;
+                errno = EBUSY;
+                return -1;
+        }
 
         owner = &g_owners[lcore_id];
         memset(owner, 0, sizeof(*owner));
         owner->lcore_id = lcore_id;
+        owner->slot_capacity = capacity;
+        owner->ready_capacity = ready_capacity;
+        owner->slots = calloc(capacity, sizeof(*owner->slots));
+        owner->generations = calloc(capacity, sizeof(*owner->generations));
+        owner->free_ids = calloc(capacity, sizeof(*owner->free_ids));
+        if (owner->slots == NULL || owner->generations == NULL ||
+            owner->free_ids == NULL) {
+                errno = ENOMEM;
+                socket_owner_init_cleanup(owner);
+                return -1;
+        }
+        for (uint32_t id = 0; id < capacity; id++)
+                owner->free_ids[id] = capacity - id - 1U;
+        owner->free_count = capacity;
         (void)snprintf(command_name, sizeof(command_name), "socket_commands_%u",
                        lcore_id);
         (void)snprintf(ready_name, sizeof(ready_name), "socket_ready_events_%u",
@@ -196,16 +269,16 @@ int socket_owner_init(unsigned int lcore_id) {
          * packet worker consumes them.  RING_F_SC_DEQ encodes only the latter;
          * enqueue therefore retains DPDK's multi-producer synchronization.
          */
-        owner->command_ring =
-            rte_ring_create(command_name, NSOCK_REGISTRY_ENTRIES,
-                            rte_socket_id(), RING_F_SC_DEQ);
+        owner->command_ring = rte_ring_create(command_name, command_capacity,
+                                              rte_socket_id(), RING_F_SC_DEQ);
         if (owner->command_ring == NULL) {
                 LOG_OWNER_ERROR("owner command ring initialization failed");
+                socket_owner_init_cleanup(owner);
                 return -1;
         }
 
         owner->ready_ring =
-            rte_ring_create(ready_name, NSOCK_READY_EVENT_CAP, rte_socket_id(),
+            rte_ring_create(ready_name, ready_capacity, rte_socket_id(),
                             RING_F_SP_ENQ | RING_F_SC_DEQ);
         if (owner->ready_ring == NULL) {
                 LOG_OWNER_ERROR("owner ready ring initialization failed");
@@ -214,8 +287,8 @@ int socket_owner_init(unsigned int lcore_id) {
         }
 
         owner->ready_event_pool = rte_mempool_create(
-            pool_name, NSOCK_READY_EVENT_CAP, sizeof(struct socket_ready_event),
-            0, 0, NULL, NULL, NULL, NULL, rte_socket_id(), 0);
+            pool_name, ready_capacity, sizeof(struct socket_ready_event), 0, 0,
+            NULL, NULL, NULL, NULL, rte_socket_id(), 0);
         if (owner->ready_event_pool == NULL) {
                 LOG_OWNER_ERROR("owner ready-event pool initialization failed");
                 socket_owner_init_cleanup(owner);
@@ -234,9 +307,14 @@ int socket_owner_init(unsigned int lcore_id) {
 
         g_owner_ready[lcore_id] = true;
         LOG_OWNER_INFO("event=init lcore=%u command_capacity=%u "
-                       "ready_capacity=%u",
-                       lcore_id, NSOCK_REGISTRY_ENTRIES, NSOCK_READY_EVENT_CAP);
+                       "ready_capacity=%u slot_capacity=%u",
+                       lcore_id, command_capacity, ready_capacity, capacity);
         return 0;
+}
+
+int socket_owner_init(unsigned int lcore_id) {
+        return socket_owner_init_with_capacity(lcore_id,
+                                               NSOCK_ID_DEFAULT_CAPACITY);
 }
 
 void socket_owner_fini(void) {
@@ -300,41 +378,39 @@ int socket_owner_adopt(struct nsock *sk) {
         if (owner == NULL || sk == NULL)
                 return -EINVAL;
 
-        for (uint32_t id = 0; id < NSOCK_ID_MAX; id++) {
-                if (owner->slots[id] != NULL)
-                        continue;
+        if (owner->free_count == 0 || owner->free_ids == NULL)
+                return -ENFILE;
 
-                /*
-                 * Retirement, rather than allocation, advances generation.
-                 * Thus every handle becomes stale at the exact point its
-                 * object is unpublished; a reused slot receives the already
-                 * advanced generation.
-                 */
-                uint32_t generation = owner->generations[id];
-                if (generation == 0) {
-                        generation = 1;
-                        owner->generations[id] = generation;
-                }
-
-                sk->id = id;
-                sk->generation = generation;
-                sk->owner_lcore = (uint16_t)owner->lcore_id;
-                owner->slots[id] = sk;
-                LOG_OWNER_DEBUG(OWNER_SK_FMT " event=adopt owner_lcore=%u",
-                                OWNER_SK_ARG(sk), sk->owner_lcore);
-                return 0;
+        uint32_t id = owner->free_ids[--owner->free_count];
+        /*
+         * Retirement, rather than allocation, advances generation.  Thus
+         * every handle becomes stale at the exact point its object is
+         * unpublished; a reused slot receives the already advanced
+         * generation.
+         */
+        uint32_t generation = owner->generations[id];
+        if (generation == 0) {
+                generation = 1;
+                owner->generations[id] = generation;
         }
 
-        return -ENFILE;
+        sk->id = id;
+        sk->generation = generation;
+        sk->owner_lcore = (uint16_t)owner->lcore_id;
+        owner->slots[id] = sk;
+        LOG_OWNER_DEBUG(OWNER_SK_FMT " event=adopt owner_lcore=%u",
+                        OWNER_SK_ARG(sk), sk->owner_lcore);
+        return 0;
 }
 
 void socket_owner_retire(struct nsock *sk) {
         struct socket_owner *owner;
 
-        if (sk == NULL || sk->id >= NSOCK_ID_MAX)
+        if (sk == NULL || sk->id == NSOCK_INVALID_ID)
                 return;
         owner = socket_owner_current();
-        if (owner == NULL || sk->owner_lcore != owner->lcore_id) {
+        if (owner == NULL || sk->id >= owner->slot_capacity ||
+            sk->owner_lcore != owner->lcore_id) {
                 LOG_OWNER_ERROR("reject cross-owner retire socket=%u owner=%u "
                                 "caller=%u",
                                 sk->id, sk->owner_lcore, rte_lcore_id());
@@ -354,6 +430,8 @@ void socket_owner_retire(struct nsock *sk) {
                 uint32_t next = owner->generations[sk->id] + 1;
                 /* Generation zero remains reserved after uint32_t wrap. */
                 owner->generations[sk->id] = next == 0 ? 1 : next;
+                if (owner->free_count < owner->slot_capacity)
+                        owner->free_ids[owner->free_count++] = sk->id;
         }
 }
 
@@ -641,11 +719,16 @@ static void owner_process_one(struct sock_cmd *cmd) {
         ssize_t result;
 
         if (cmd->type == SOCK_CMD_CREATE) {
+                int adopt_rc = 0;
+
                 sk = nsock_alloc(-1, (uint8_t)cmd->args.create.protocol);
-                if (sk == NULL || socket_owner_adopt(sk) != 0) {
+                if (sk != NULL)
+                        adopt_rc = socket_owner_adopt(sk);
+                if (sk == NULL || adopt_rc != 0) {
                         if (sk != NULL)
                                 nsock_free(sk);
-                        socket_owner_complete(cmd, -1, ENOMEM);
+                        socket_owner_complete(
+                            cmd, -1, adopt_rc != 0 ? -adopt_rc : ENOMEM);
                         return;
                 }
                 sk->app_visible = true;

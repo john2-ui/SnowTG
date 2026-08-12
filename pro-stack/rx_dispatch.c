@@ -16,8 +16,6 @@
 #include <stdint.h>
 #include <string.h>
 
-#define RX_ENDPOINT_TABLE_SIZE 16384U
-#define RX_FLOW_TABLE_SIZE 65536U
 #define RX_DISPATCH_TOMBSTONE UINT64_MAX
 
 struct rx_dispatch_flow_slot {
@@ -25,11 +23,23 @@ struct rx_dispatch_flow_slot {
         atomic_uint_fast64_t ports_protocol_owner;
 };
 
-static atomic_uint_fast64_t g_endpoint_entries[RX_ENDPOINT_TABLE_SIZE];
-static struct rx_dispatch_flow_slot g_flow_entries[RX_FLOW_TABLE_SIZE];
+static atomic_uint_fast64_t g_endpoint_entries[RX_DISPATCH_ENDPOINT_TABLE_SIZE];
+static struct rx_dispatch_flow_slot g_flow_entries[RX_DISPATCH_FLOW_TABLE_SIZE];
 static unsigned int g_worker_lcores[RTE_MAX_LCORE];
 static uint16_t g_worker_count;
 static pthread_mutex_t g_registry_lock = PTHREAD_MUTEX_INITIALIZER;
+
+int rx_dispatch_validate_flow_capacity(uint32_t max_concurrency) {
+        if (max_concurrency == 0) {
+                errno = EINVAL;
+                return -1;
+        }
+        if (max_concurrency > RX_DISPATCH_FLOW_TABLE_SIZE) {
+                errno = ENOSPC;
+                return -1;
+        }
+        return 0;
+}
 
 static uint64_t rx_dispatch_mix64(uint64_t value) {
         value ^= value >> 30;
@@ -41,13 +51,13 @@ static uint64_t rx_dispatch_mix64(uint64_t value) {
 
 static unsigned int rx_dispatch_endpoint_start(uint64_t identity) {
         return (unsigned int)(rx_dispatch_mix64(identity) &
-                              (RX_ENDPOINT_TABLE_SIZE - 1U));
+                              (RX_DISPATCH_ENDPOINT_TABLE_SIZE - 1U));
 }
 
 static unsigned int rx_dispatch_flow_start(uint64_t addresses,
                                            uint64_t ports_protocol) {
         return (unsigned int)(rx_dispatch_mix64(addresses ^ ports_protocol) &
-                              (RX_FLOW_TABLE_SIZE - 1U));
+                              (RX_DISPATCH_FLOW_TABLE_SIZE - 1U));
 }
 
 static int rx_dispatch_worker_index(unsigned int owner_lcore) {
@@ -65,8 +75,7 @@ static uint64_t rx_dispatch_endpoint_identity(uint8_t protocol,
                ((uint64_t)protocol << 8);
 }
 
-static uint64_t rx_dispatch_endpoint_value(uint8_t protocol,
-                                           uint32_t local_ip,
+static uint64_t rx_dispatch_endpoint_value(uint8_t protocol, uint32_t local_ip,
                                            uint16_t local_port,
                                            unsigned int owner_lcore) {
         return rx_dispatch_endpoint_identity(protocol, local_ip, local_port) |
@@ -87,8 +96,9 @@ static int rx_dispatch_register_value(atomic_uint_fast64_t *entries,
                         atomic_uint_fast64_t *target =
                             &entries[tombstone == entry_count ? slot
                                                               : tombstone];
-                        uint64_t expected =
-                            tombstone == entry_count ? 0 : RX_DISPATCH_TOMBSTONE;
+                        uint64_t expected = tombstone == entry_count
+                                                ? 0
+                                                : RX_DISPATCH_TOMBSTONE;
 
                         if (atomic_compare_exchange_strong_explicit(
                                 target, &expected, value, memory_order_release,
@@ -143,9 +153,10 @@ static int rx_dispatch_lookup_endpoint(uint8_t protocol, uint32_t local_ip,
             rx_dispatch_endpoint_identity(protocol, local_ip, local_port);
         unsigned int start = rx_dispatch_endpoint_start(identity);
 
-        for (unsigned int probe = 0; probe < RX_ENDPOINT_TABLE_SIZE; probe++) {
+        for (unsigned int probe = 0; probe < RX_DISPATCH_ENDPOINT_TABLE_SIZE;
+             probe++) {
                 unsigned int slot =
-                    (start + probe) & (RX_ENDPOINT_TABLE_SIZE - 1U);
+                    (start + probe) & (RX_DISPATCH_ENDPOINT_TABLE_SIZE - 1U);
                 uint64_t entry = atomic_load_explicit(&g_endpoint_entries[slot],
                                                       memory_order_acquire);
 
@@ -170,8 +181,7 @@ static uint64_t rx_dispatch_flow_identity(uint8_t protocol,
                ((uint64_t)protocol << 16);
 }
 
-static uint64_t rx_dispatch_flow_value(uint8_t protocol,
-                                       uint16_t remote_port,
+static uint64_t rx_dispatch_flow_value(uint8_t protocol, uint16_t remote_port,
                                        uint16_t local_port,
                                        unsigned int owner_lcore) {
         return rx_dispatch_flow_identity(protocol, remote_port, local_port) |
@@ -187,8 +197,10 @@ static int rx_dispatch_lookup_tcp_connection(uint32_t remote_ip,
             rx_dispatch_flow_identity(IPPROTO_TCP, remote_port, local_port);
         unsigned int start = rx_dispatch_flow_start(addresses, identity);
 
-        for (unsigned int probe = 0; probe < RX_FLOW_TABLE_SIZE; probe++) {
-                unsigned int slot = (start + probe) & (RX_FLOW_TABLE_SIZE - 1U);
+        for (unsigned int probe = 0; probe < RX_DISPATCH_FLOW_TABLE_SIZE;
+             probe++) {
+                unsigned int slot =
+                    (start + probe) & (RX_DISPATCH_FLOW_TABLE_SIZE - 1U);
                 uint64_t value = atomic_load_explicit(
                     &g_flow_entries[slot].ports_protocol_owner,
                     memory_order_acquire);
@@ -213,21 +225,23 @@ static int rx_dispatch_lookup_tcp_connection(uint32_t remote_ip,
 static int rx_dispatch_register_tcp_value(uint64_t addresses, uint64_t value,
                                           uint64_t identity,
                                           unsigned int start) {
-        unsigned int tombstone = RX_FLOW_TABLE_SIZE;
+        unsigned int tombstone = RX_DISPATCH_FLOW_TABLE_SIZE;
 
-        for (unsigned int probe = 0; probe < RX_FLOW_TABLE_SIZE; probe++) {
-                unsigned int slot = (start + probe) & (RX_FLOW_TABLE_SIZE - 1U);
+        for (unsigned int probe = 0; probe < RX_DISPATCH_FLOW_TABLE_SIZE;
+             probe++) {
+                unsigned int slot =
+                    (start + probe) & (RX_DISPATCH_FLOW_TABLE_SIZE - 1U);
                 uint64_t entry = atomic_load_explicit(
                     &g_flow_entries[slot].ports_protocol_owner,
                     memory_order_acquire);
 
                 if (entry == 0 || entry == RX_DISPATCH_TOMBSTONE) {
                         if (entry == RX_DISPATCH_TOMBSTONE &&
-                            tombstone == RX_FLOW_TABLE_SIZE)
+                            tombstone == RX_DISPATCH_FLOW_TABLE_SIZE)
                                 tombstone = slot;
                         if (entry != 0)
                                 continue;
-                        if (tombstone != RX_FLOW_TABLE_SIZE)
+                        if (tombstone != RX_DISPATCH_FLOW_TABLE_SIZE)
                                 slot = tombstone;
                         atomic_store_explicit(
                             &g_flow_entries[slot].ports_protocol_owner, 0,
@@ -247,7 +261,7 @@ static int rx_dispatch_register_tcp_value(uint64_t addresses, uint64_t value,
                                 return entry == value ? 0 : -EADDRINUSE;
                 }
         }
-        if (tombstone != RX_FLOW_TABLE_SIZE) {
+        if (tombstone != RX_DISPATCH_FLOW_TABLE_SIZE) {
                 atomic_store_explicit(
                     &g_flow_entries[tombstone].ports_protocol_owner, 0,
                     memory_order_release);
@@ -263,8 +277,7 @@ static int rx_dispatch_register_tcp_value(uint64_t addresses, uint64_t value,
 
 int rx_dispatch_configure_workers(const unsigned int *lcores,
                                   uint16_t worker_count) {
-        if (lcores == NULL || worker_count == 0 ||
-            worker_count > RTE_MAX_LCORE)
+        if (lcores == NULL || worker_count == 0 || worker_count > RTE_MAX_LCORE)
                 return -EINVAL;
 
         pthread_mutex_lock(&g_registry_lock);
@@ -280,10 +293,12 @@ int rx_dispatch_configure_workers(const unsigned int *lcores,
                         }
                 }
         }
-        for (unsigned int index = 0; index < RX_ENDPOINT_TABLE_SIZE; index++)
+        for (unsigned int index = 0; index < RX_DISPATCH_ENDPOINT_TABLE_SIZE;
+             index++)
                 atomic_store_explicit(&g_endpoint_entries[index], 0,
                                       memory_order_relaxed);
-        for (unsigned int index = 0; index < RX_FLOW_TABLE_SIZE; index++) {
+        for (unsigned int index = 0; index < RX_DISPATCH_FLOW_TABLE_SIZE;
+             index++) {
                 atomic_store_explicit(
                     &g_flow_entries[index].ports_protocol_owner, 0,
                     memory_order_relaxed);
@@ -300,10 +315,12 @@ void rx_dispatch_reset(void) {
         pthread_mutex_lock(&g_registry_lock);
         g_worker_count = 0;
         memset(g_worker_lcores, 0, sizeof(g_worker_lcores));
-        for (unsigned int index = 0; index < RX_ENDPOINT_TABLE_SIZE; index++)
+        for (unsigned int index = 0; index < RX_DISPATCH_ENDPOINT_TABLE_SIZE;
+             index++)
                 atomic_store_explicit(&g_endpoint_entries[index], 0,
                                       memory_order_relaxed);
-        for (unsigned int index = 0; index < RX_FLOW_TABLE_SIZE; index++) {
+        for (unsigned int index = 0; index < RX_DISPATCH_FLOW_TABLE_SIZE;
+             index++) {
                 atomic_store_explicit(
                     &g_flow_entries[index].ports_protocol_owner, 0,
                     memory_order_relaxed);
@@ -336,8 +353,8 @@ int rx_dispatch_register_endpoint(uint8_t protocol, uint32_t local_ip,
                                            owner_lcore);
         pthread_mutex_lock(&g_registry_lock);
         rc = rx_dispatch_register_value(
-            g_endpoint_entries, RX_ENDPOINT_TABLE_SIZE, value, identity,
-            rx_dispatch_endpoint_start(identity));
+            g_endpoint_entries, RX_DISPATCH_ENDPOINT_TABLE_SIZE, value,
+            identity, rx_dispatch_endpoint_start(identity));
         pthread_mutex_unlock(&g_registry_lock);
         return rc;
 }
@@ -355,8 +372,9 @@ void rx_dispatch_unregister_endpoint(uint8_t protocol, uint32_t local_ip,
         value = rx_dispatch_endpoint_value(protocol, local_ip, local_port,
                                            owner_lcore);
         pthread_mutex_lock(&g_registry_lock);
-        rx_dispatch_unregister_value(g_endpoint_entries, RX_ENDPOINT_TABLE_SIZE,
-                                     value, rx_dispatch_endpoint_start(identity));
+        rx_dispatch_unregister_value(g_endpoint_entries,
+                                     RX_DISPATCH_ENDPOINT_TABLE_SIZE, value,
+                                     rx_dispatch_endpoint_start(identity));
         pthread_mutex_unlock(&g_registry_lock);
 }
 
@@ -392,7 +410,8 @@ int rx_dispatch_register_tcp_connection(uint32_t remote_ip, uint32_t local_ip,
                                        owner_lcore);
         pthread_mutex_lock(&g_registry_lock);
         rc = rx_dispatch_register_tcp_value(
-            addresses, value, identity, rx_dispatch_flow_start(addresses, identity));
+            addresses, value, identity,
+            rx_dispatch_flow_start(addresses, identity));
         pthread_mutex_unlock(&g_registry_lock);
         return rc;
 }
@@ -417,8 +436,10 @@ void rx_dispatch_unregister_tcp_connection(uint32_t remote_ip,
         start = rx_dispatch_flow_start(addresses, identity);
 
         pthread_mutex_lock(&g_registry_lock);
-        for (unsigned int probe = 0; probe < RX_FLOW_TABLE_SIZE; probe++) {
-                unsigned int slot = (start + probe) & (RX_FLOW_TABLE_SIZE - 1U);
+        for (unsigned int probe = 0; probe < RX_DISPATCH_FLOW_TABLE_SIZE;
+             probe++) {
+                unsigned int slot =
+                    (start + probe) & (RX_DISPATCH_FLOW_TABLE_SIZE - 1U);
                 uint64_t entry = atomic_load_explicit(
                     &g_flow_entries[slot].ports_protocol_owner,
                     memory_order_acquire);
@@ -462,8 +483,7 @@ static bool rx_dispatch_apply_owner(int worker,
 static void rx_dispatch_hash_or_hardware(uint8_t protocol, uint32_t remote_ip,
                                          uint32_t local_ip,
                                          uint16_t remote_port,
-                                         uint16_t local_port,
-                                         uint16_t rx_queue,
+                                         uint16_t local_port, uint16_t rx_queue,
                                          struct rx_dispatch_result *out) {
         int worker;
 
@@ -552,9 +572,9 @@ void rx_dispatch_classify(const struct rte_mbuf *mbuf, uint16_t rx_queue,
                             IPPROTO_TCP, INADDR_ANY, tcp->dst_port);
                 if (rx_dispatch_apply_owner(owner, out))
                         return;
-                rx_dispatch_hash_or_hardware(
-                    IPPROTO_TCP, ip->src_addr, ip->dst_addr, tcp->src_port,
-                    tcp->dst_port, rx_queue, out);
+                rx_dispatch_hash_or_hardware(IPPROTO_TCP, ip->src_addr,
+                                             ip->dst_addr, tcp->src_port,
+                                             tcp->dst_port, rx_queue, out);
                 return;
         }
         if (ip->next_proto_id == IPPROTO_UDP) {
@@ -573,9 +593,9 @@ void rx_dispatch_classify(const struct rte_mbuf *mbuf, uint16_t rx_queue,
                             IPPROTO_UDP, INADDR_ANY, udp->dst_port);
                 if (rx_dispatch_apply_owner(owner, out))
                         return;
-                rx_dispatch_hash_or_hardware(
-                    IPPROTO_UDP, ip->src_addr, ip->dst_addr, udp->src_port,
-                    udp->dst_port, rx_queue, out);
+                rx_dispatch_hash_or_hardware(IPPROTO_UDP, ip->src_addr,
+                                             ip->dst_addr, udp->src_port,
+                                             udp->dst_port, rx_queue, out);
                 return;
         }
         if (ip->next_proto_id == IPPROTO_ICMP && l4_available >= 6) {
@@ -583,9 +603,9 @@ void rx_dispatch_classify(const struct rte_mbuf *mbuf, uint16_t rx_queue,
                 uint16_t type_code = ((uint16_t)l4[0] << 8) | l4[1];
 
                 memcpy(&identifier, l4 + 4, sizeof(identifier));
-                rx_dispatch_hash_or_hardware(
-                    IPPROTO_ICMP, ip->src_addr, ip->dst_addr, identifier,
-                    type_code, rx_queue, out);
+                rx_dispatch_hash_or_hardware(IPPROTO_ICMP, ip->src_addr,
+                                             ip->dst_addr, identifier,
+                                             type_code, rx_queue, out);
                 return;
         }
         rx_dispatch_hash_or_hardware(ip->next_proto_id, ip->src_addr,

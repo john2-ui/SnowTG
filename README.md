@@ -209,7 +209,13 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 
 - [ ] ~~**补齐生命周期并发压力测试**：覆盖~~ `nclose` ~~与 SEND/RECV 并发、fd/owner slot 高频复用、SYN_SENT timeout 与 close、RST 与 pending waiter、listener close 与半连接/已 accept child、FIN/TIME_WAIT 回收、UDP pending RECVFROM，以及多 app lcore 共享 fd。~~
 - [ ] **引入动态竞态检查**：在构建环境允许时运行 ASan/UBSan，并补充真实 NIC 长时间流量测试，确认 command、timer 与延迟回收不存在 UAF、double-free 或 waiter 遗失。
-- [ ] **把连接上限和缓冲预算配置化**：根据目标并发调整 `NSOCK_FD_MAX` / `NSOCK_ID_MAX`，并为 TCP 发送/接收缓冲设定每连接与全局内存预算；发生器的 1k～1 万并发验收不得依赖固定的默认上限。
+- [x] **把 traffic-gen owner socket 上限配置化**：启动时按 scenario 的
+  `max_concurrency / active_shards` 自动计算 per-owner `NSOCK_ID_MAX` 容量，
+  默认保留两倍关闭中 socket 余量，并支持 `--socket-id-max N` 增大容量；
+  owner 槽表、ready 资源、协议 registry 和 flow map 使用同一容量。
+- [ ] **把 app-visible fd 和缓冲预算配置化**：继续独立调整
+  `NSOCK_FD_MAX`，并为 TCP 发送/接收缓冲设定每连接与全局内存预算；
+  真实 1k～1 万并发验收仍需在 NIC 上完成，不能只依据默认容量。
 
 
 
@@ -384,6 +390,10 @@ make -C test test-owner-io
 ./bind-dpdk.sh
 ./apps/stack-demo/build/stack-demo -l 0-2 ...
 ./traffic-gen/build/traffic-gen -l 0-1 ...
+# traffic-gen 会按 scenario 自动计算 owner socket 容量；
+# 需要手动增大时在 `--` 后传入 --socket-id-max N
+./traffic-gen/build/traffic-gen -l 0-1 -- --workers 1 \
+  --socket-id-max 20000 traffic-gen/scenarios/test/http-100000cps-10000con.json
 ```
 
 `pro-stack/` 不包含任何程序入口，只导出协议栈静态库与 public headers。

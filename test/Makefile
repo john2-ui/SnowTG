@@ -47,6 +47,7 @@ DNS_CLIENT_OBJS := $(BUILD_DIR)/test_dns_client.o \
 SCENARIO_SCHEDULER_OBJS := $(BUILD_DIR)/test_scenario_scheduler.o \
 	$(BUILD_DIR)/tg_scenario.o \
 	$(BUILD_DIR)/tg_scenario_json.o \
+	$(BUILD_DIR)/tg_socket_capacity.o \
 	$(BUILD_DIR)/tg_registry.o \
 	$(BUILD_DIR)/tg_scheduler.o \
 	$(BUILD_DIR)/tg_stats.o \
@@ -165,6 +166,7 @@ $(BUILD_DIR)/tg_txn.o: ../traffic-gen/core/txn.c \
 
 $(BUILD_DIR)/test_scenario_scheduler.o: test_scenario_scheduler.c \
 		../traffic-gen/core/scenario.h ../traffic-gen/core/scheduler.h \
+		../traffic-gen/core/socket_capacity.h \
 		../traffic-gen/core/stats.h \
 		../traffic-gen/proto/http/http_client.h \
 		../traffic-gen/proto/dns/dns_client.h | $(BUILD_DIR)
@@ -181,6 +183,12 @@ $(BUILD_DIR)/tg_scenario.o: ../traffic-gen/core/scenario.c \
 $(BUILD_DIR)/tg_scenario_json.o: ../traffic-gen/core/scenario_json.c \
 		../traffic-gen/core/scenario_json.h ../third_party/jsmn/jsmn.h | \
 		$(BUILD_DIR)
+	$(CC) $(HTTP_CLIENT_CFLAGS) -c $< -o $@
+
+$(BUILD_DIR)/tg_socket_capacity.o: ../traffic-gen/core/socket_capacity.c \
+		../traffic-gen/core/socket_capacity.h \
+		../traffic-gen/core/scenario.h \
+		../pro-stack/socket_owner.h | $(BUILD_DIR)
 	$(CC) $(HTTP_CLIENT_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/tg_registry.o: ../traffic-gen/proto/registry.c \

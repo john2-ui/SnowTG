@@ -63,7 +63,7 @@ static void test_on_finish(void *ctx,
 }
 
 static struct tg_flow *only_flow(struct tg_flow_map *map) {
-        for (uint32_t id = 0; id < NSOCK_ID_MAX; id++) {
+        for (uint32_t id = 0; id < map->capacity; id++) {
                 if (map->by_socket_id[id] != NULL)
                         return map->by_socket_id[id];
         }
@@ -295,8 +295,9 @@ int main(int argc, char **argv) {
 
         assert(rte_eal_init(argc, argv) >= 0);
         rte_timer_subsystem_init();
-        assert(socket_registry_init() == 0);
-        assert(socket_owner_init(rte_lcore_id()) == 0);
+        assert(socket_registry_init_owner_with_capacity(rte_lcore_id(), 16) ==
+               0);
+        assert(socket_owner_init_with_capacity(rte_lcore_id(), 16) == 0);
         assert(ring_init_owner(rte_lcore_id()) == 0);
         assert(arp_table_init_owner(rte_lcore_id()) == 0);
 
@@ -319,7 +320,7 @@ int main(int argc, char **argv) {
         assert(socket_owner_resolve_local(implicit_udp)->local_port != 0);
         assert(owner_io_close(implicit_udp) == 0);
 
-        assert(tg_flow_map_init(&map, rte_lcore_id()) == 0);
+        assert(tg_flow_map_init_with_capacity(&map, rte_lcore_id(), 16) == 0);
         assert(tg_flow_pool_init(&pool, 4) == 0);
 
         test_rx_calls = 0;

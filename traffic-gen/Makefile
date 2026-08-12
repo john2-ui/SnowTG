@@ -16,6 +16,7 @@ SRCS := main_tg.c \
 	core/flow_pool.c \
 	core/scenario.c \
 	core/scenario_json.c \
+	core/socket_capacity.c \
 	core/scheduler.c \
 	core/stats.c \
 	core/txn.c \

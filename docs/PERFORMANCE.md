@@ -24,8 +24,8 @@
 | 指标 | 含义 |
 | --- | --- |
 | **目标 CPS** | 剧本期望每秒发起的新事务数；调度上限，不是保证值 |
-| **最大并发** | 允许同时 in-flight 的事务上限（scheduler concurrency） |
-| **workers** | 参与发包/状态机的 owner worker（lcore）数 |
+| **最大并发** | 剧本全局 in-flight 上限（`max_concurrency`）；启动时按 active shard **切开** |
+| **workers** | 参与发包/状态机的 owner worker（lcore）数；active shard 数为 `min(workers, target_cps, max_concurrency)` |
 | **started** | 已发起事务总数（含随后失败的） |
 | **done** | 已结束事务总数（成功 + 失败） |
 | **success** | L7 成功事务数（HTTP 2xx 等） |
@@ -58,7 +58,7 @@
 | **rx_ring_drops** | 软件 RX ring 丢包 |
 | **tx_nic_drops** | 发往 NIC 路径上的丢包计数（日志已统计项） |
 | **TX / RX** | 累计发送 / 接收包数（aggregate） |
-| **ENFILE (errno=23)** | `socket_owner_adopt()` 槽位耗尽（`NSOCK_ID_MAX`），不是 Linux 进程 fd 限制 |
+| **ENFILE (errno=23)** | `socket_owner_adopt()` 槽位耗尽（traffic-gen 启动时选定的 per-owner capacity），不是 Linux 进程 fd 限制 |
 
 ### 2.4 Dirty TX（2026-08-08 起）
 
@@ -167,42 +167,62 @@ ARC-003：按需内存分配、去除重复解析 scenario（详见 `DEVLOG.md`�
 | workers | 并发 | 资源与丢包 | 延迟（worker 范围） | 结论 |
 | ---: | ---: | --- | --- | --- |
 | 4 | 1,000 | paused / tx_alloc_fail / ring drops 均为 0；tx/payload peak 157–207；dirty budget/depth/arp_wait=0 | connect avg 45 ms–1.56 s（max ≈30 s）；first-rx avg 107 ms–2.81 s；complete avg 150 ms–4.88 s（max ≈132–140 s） | vs 08-07 同场景成功 RPS 679：+1,938（+285%）；失败率仍约 0.5%；worker 启动 194k / 101k / 14k / 7k，不均衡加剧；dirty TX 健康，全表扫描已非主瓶颈 |
-| 4 | 10,000 | 大量 `start failed … errno=23`（ENFILE）；paused / tx_alloc_fail 未见异常 | — | 与历史同场景一致：`NSOCK_ID_MAX=4096`，live（含 TIME_WAIT）高于 per-worker 并发（≈2,500）；调大上限可消 ENFILE，不能单独解决 CPS/RST/不均衡 |
+| 4 | 10,000 | 大量 `start failed … errno=23`（ENFILE）；paused / tx_alloc_fail 未见异常 | — | **动态容量改动前的历史结果**：全局 10k 切开后每 shard `active`≈2,500；固定 owner 容量 4,096，`live_sockets`（含 TIME_WAIT）可顶满该表；提高容量可消 ENFILE，不能单独解决 CPS/RST/不均衡 |
 
 > 1k 并发下 dirty TX 显著提升吞吐，但仍远低于 100k CPS。主矛盾转向 worker 负载不均、SYN 失败/超时，以及调度只按 `active` 限流、未计入关闭中 socket。10k 并发仍先撞 ENFILE，无法与 1k 公平对比吞吐。
 
-#### 8 workers 扩展（`http-100000cps-10000con.json`，`max_concurrency=500`）
+#### 多 worker 扩展（`http-100000cps-10000con.json`）
 
-命令：`--workers 8`；时长 120 s；目标 100k CPS。剧本文件名含 `10000con`，实际 `max_concurrency=500`，总并发预算 `8 × 500 = 4,000`（贴近 `NSOCK_ID_MAX=4096` 可用上限）。数字为进程退出时的 aggregate。
+命令：`--workers N`；时长 120 s。剧本文件名含 `10000con`；下表 `目标 CPS` / 全局并发以当时 JSON 为准（均按 shard 切开，**不是** `workers × 并发`）。未特别注明时，数字为进程退出时的 aggregate。
 
 ##### 吞吐与结果
 
-| workers | 并发（每 worker） | 总并发预算 | started | done | success | fail | 成功率 | started CPS | 成功 RPS | TX / RX |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| 8 | 500 | 4,000 | 1,430,504 | 1,430,504 | 1,430,479 | 25 | 99.998% | 11,920.87 | 11,920.66 | 52,927,945 / 197,406,102 |
+| 日期 | workers | 目标 CPS | 全局并发 | 每 shard 并发 | started | done | success | fail | 成功率 | started CPS | 成功 RPS | TX / RX |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 08-08 | 8 | 100,000 | 500 | ≈62 | 1,430,504 | 1,430,504 | 1,430,479 | 25 | 99.998% | 11,920.87 | 11,920.66 | 52,927,945 / 197,406,102 |
+| 08-12 | 8 | 100,000 | 1,000 | 125 | 499,007 | 499,007 | 498,583 | 424 | 99.915% | 4,158.39 | 4,154.86 | 18,455,378 / 68,804,454 |
+| 08-12 | 4 | 100,000 | 500 | 125 | 577,585 | 577,585 | 577,559 | 26 | 99.995% | 4,813.21 | 4,812.99 | 21,370,090 / 79,703,142 |
+| 08-12 | 8 | 15,000 | 500 | ≈62 | 505,996 | 505,996 | 505,946 | 50 | 99.990% | 4,216.63 | 4,216.22 | 18,720,742 / 69,820,548 |
+| 08-12† | 8 | 100,000 | 5,000 | 625 | 473,828 | 473,828 | 468,228 | 5,600 | 98.818% | 3,948.57 | 3,901.90 | 17,420,192 / 64,615,464 |
+
+† 排空阶段 `Ctrl+C`，无 `aggregate` 行；表内数字由 8 个 worker 末次稳定 `stats` 求和，CPS/RPS 仍按 `duration_sec=120` 计算。
 
 ##### 资源、延迟与结论
 
-| workers | 并发 | 资源与丢包 | 延迟（worker 范围） | 结论 |
-| ---: | ---: | --- | --- | --- |
-| 8 | 500 | paused / tx_alloc_fail / rx_ring_drops / tx_nic_drops 均为 0；每 worker tx/payload peak ≈62–63；dirty budget/depth/arp_wait=0（运行中 dirty_hwm 约 15–50） | connect avg ≈14–16 ms（max ≈2–4 s）；first-rx avg ≈41–43 ms；complete avg ≈41–43 ms（max ≈32 s） | vs 同日 4w/1k：成功 RPS +9,303（+355%）；失败仅 25（多为 `rto-give-up kind=syn`，少量 LAST_ACK RST）；worker started 172k–184k（比值 1.07），负载均衡显著改善 |
+| 日期 | workers | 目标 CPS | 全局并发 | 资源与丢包 | 延迟（worker 范围） | 结论 |
+| --- | ---: | ---: | ---: | --- | --- | --- |
+| 08-08 | 8 | 100,000 | 500 | paused / tx_alloc_fail / rx_ring_drops / tx_nic_drops 均为 0；每 worker tx/payload peak ≈62–63；dirty budget/depth/arp_wait=0（运行中 dirty_hwm 约 15–50）；固定 owner 容量 4,096 | connect avg ≈14–16 ms（max ≈2–4 s）；first-rx avg ≈41–43 ms；complete avg ≈41–43 ms（max ≈32 s） | vs 同日 4w/1k：成功 RPS +9,303（+355%）；失败仅 25（多为 `rto-give-up kind=syn`）；worker started 172k–184k（比值 1.07） |
+| 08-12 | 8 | 100,000 | 1,000 | paused / tx_alloc_fail / rx_ring_drops / tx_nic_drops 均为 0；每 worker tx/payload peak ≈110–125；dirty budget/depth/arp_wait=0（dirty_hwm 0–1）；自动 `socket_id_capacity=4096`（`max(4096, 2×125)`），无 ENFILE | connect avg ≈138–147 ms（max ≈8.1–8.2 s）；first-rx avg ≈223–237 ms（max ≈8.1–17.1 s）；complete avg ≈232–250 ms（max ≈32.1–32.4 s） | vs 08-08 8w/500：成功 RPS **−7,766（−65%）**；失败 424（排空期大量 `rto-give-up kind=syn`）；worker started 61.2k–65.1k（比值 1.06） |
+| 08-12 | 4 | 100,000 | 500 | paused / tx_alloc_fail / rx_ring_drops / tx_nic_drops 均为 0；每 worker tx/payload peak ≈115–123；dirty budget/depth/arp_wait=0（运行中 dirty_hwm 约 15–64）；`socket_id_capacity=4096`，无 ENFILE；稳态 `active=125`、`tokens≈125` | connect avg ≈57–58 ms（max ≈2.1–4.1 s）；first-rx avg ≈102–105 ms（max ≈4.1–7.1 s）；complete avg ≈103–105 ms（max ≈7.1–32.0 s） | vs 08-08 8w/500：成功 RPS **−7,108（−60%）**；vs 同日 8w/1k：成功 RPS +658（+16%）；失败仅 26；worker started 143.3k–146.2k（比值 1.02） |
+| 08-12 | 8 | 15,000 | 500 | paused / tx_alloc_fail / rx_ring_drops / tx_nic_drops 均为 0；每 worker tx/payload peak ≈49–62；dirty budget=0、depth≈11–17、hwm≈21–28；`socket_id_capacity=4096`，无 ENFILE；稳态 `tokens≈60–63`（贴每 shard ≈62） | connect avg ≈63–66 ms（max ≈2.1–4.1 s）；first-rx avg ≈116–120 ms（max ≈3.3–7.1 s）；complete avg ≈116–124 ms（max ≈32.0–32.3 s） | vs 08-08 **同结构** 8w/500：成功 RPS **−7,704（−65%）**；vs 同日 8w/1k：RPS 基本持平（+61）；未打到 15k 目标（仅用到约 28%）；失败 50；worker started 60.3k–65.3k（比值 1.08） |
+| 08-12† | 8 | 100,000 | 5,000 | paused / tx_alloc_fail / rx_ring_drops / tx_nic_drops 均为 0；每 worker tx/payload peak ≈310–356；`socket_id_capacity=4096`（`max(4096, 2×625)`），无 ENFILE / 未见 `local port allocation failed`；稳态 `tokens=625`；排空末仍有 live 5–30 | connect avg ≈617–685 ms（max ≈16–17 s）；first-rx avg ≈1.06–1.15 s（max ≈35–67 s）；complete avg ≈1.25–1.42 s（max ≈63–125 s） | vs 同日 8w/500/15k：成功 RPS **−314（−7%）**；complete 从 ~120 ms 恶化到 **~1.3 s**；失败 5,600（成功率降至 98.8%）；worker started 54.4k–62.4k（比值 1.15） |
 
 **解读**
 
-- 实际 started CPS ≈ 11.9k，约为目标 100k 的 12%；相对 4w/1k 的跃升主要来自更多 worker + 完成延迟压到约 40 ms（Little's law：每 worker ≈1.5k CPS × 41 ms ≈ 61 in-flight，与采样 `active≈62–63` 一致，远未打满 500 并发配额）。
-- 资源侧仍干净：无 mempool/ring/NIC 软件丢包计数异常；dirty TX 路径健康。
-- 失败几乎全是 connect 超时（SYN RTO），占比可忽略；排空阶段偶发 `rto-give-up kind=syn`。
-- **socket 表上限**：当前 `workers × max_concurrency` 实测只能稳在约 **4,000** 附近；再抬高会触发 socket 表空 / `ENFILE`（`NSOCK_ID_MAX=4096`，live 含 TIME_WAIT 等关闭中槽位）。本档 4,000 预算刚好贴边，未再撞 ENFILE，但也说明靠继续堆并发预算换 CPS 的空间已很小，除非先抬高 `NSOCK_ID_MAX` 并解决关闭中 socket 占用。
+- **08-08 / 8w / 500 / 100k CPS**：实际 started CPS ≈ 11.9k。Little's law：每 worker ≈1.5k CPS × 41 ms ≈ 61 in-flight，打满每 shard ≈62；资源侧干净。
+- **08-12 / 8w / 1k / 100k CPS**：实际 ≈ 4.16k；每 shard 125 + complete ~244 ms → in-flight 贴满配额；抬并发后延迟恶化，吞吐下降。
+- **08-12 / 4w / 500 / 100k CPS**：实际 ≈ 4.81k；每 shard 125 打满，complete ~104 ms；略优于同日 8w/1k，仍远低于 08-08。
+- **08-12 / 8w / 500 / 15k CPS**：实际 ≈ 4.22k（目标的 28%）。与 08-08 **同为 8w + 全局 500**，但 complete 从 ~42 ms 恶化到 ~118 ms；Little's law：\(500 / 0.118 \approx 4.2\mathrm{k}\)，与实测一致。目标 CPS 已收到 15k（高于实测），**不是 token 瓶颈**；降 CPS 目标**未能**回到 08-08 的 ~12k，说明当日环境/对端延迟底噪已差于 08-08，或存在未对照的本端回归。
+- **08-12 / 8w / 5k / 100k CPS**：实际 ≈ 3.95k。每 shard 625；Little's law：\(5000 / 1.33\mathrm{s} \approx 3.8\mathrm{k}\)，与实测一致。相对同日 500 并发档，并发×10 只换来更差的延迟与更多失败，RPS 不升反降。每 shard 625 仍低于 RSS 切分后的 ephemeral 端口池（约 ~2k/核），故未出现 10k 档的 `local port allocation failed`。
+- **08-12 / 8w / 10k（未完整入表）**：稳态 `active=1250`、`live_sockets≈2000+`，大量 `tcp_connect: local port allocation failed` / `start failed errno=11`——端口池先于 socket 表耗尽（详见下文开放项）。
+- 低并发档负载均衡尚可（started 比值 ≈1.02–1.08）；5k 档比值升至 1.15。失败以 SYN RTO / 对端 RST 为主。
+- **socket 表**：ENFILE 见于高 per-shard `live` 顶满固定 4,096 时（如 4w/10k），不是 `workers × max_concurrency`。08-12 的 500/1k/5k 自动容量下均未撞表。
+- **socket 容量策略（当前代码）**：`max(4096, 2 × ceil(max_concurrency / active_shards))`，可用 `--socket-id-max N` 增大。临时端口范围为 `49152–65535`（16384 个），再按 RSS 亲和切到各 worker。
 
 ---
 
-## 4. 当前结论（截至 2026-08-08）
+## 4. 当前结论（截至 2026-08-12）
 
 | 观察 | 说明 |
 | --- | --- |
-| 最佳实测档 | 8 workers × 500 并发（总预算 4k）+ dirty TX：成功 RPS ≈ **11,921**，成功率 ≈ 99.998% |
-| 未达目标 | 剧本 100k CPS 仍未触及；实际 started CPS 约 11.9k（约目标的 12%） |
-| 已排除（在已统计项内） | mempool 耗尽、TX/payload alloc fail、RX ring / tx_nic drops、dirty 队列堆积 |
-| socket 表天花板 | `workers × max_concurrency` 约 **4,000** 为稳跑上限；更高易 socket 表空 / ENFILE（`NSOCK_ID_MAX=4096`） |
-| 仍开放 | SYN RTO / 对端 RST、关闭中 socket 与 concurrency 记账、`NSOCK_ID_MAX` 扩容、目标 CPS 剩余约 8× 差距 |
-| 对比纪律 | 无同环境对照的改动（如部分 ARP 优化行）不对吞吐变化做归因 |
+| 最佳实测档 | 仍为 08-08：8 workers、全局并发 500、目标 100k CPS：成功 RPS ≈ **11,921**，成功率 ≈ 99.998% |
+| 08-12 复测（8w / 1k / 100k） | 成功 RPS ≈ **4,155**；complete ~240 ms；无 ENFILE |
+| 08-12 复测（4w / 500 / 100k） | 成功 RPS ≈ **4,813**；每 shard 125；complete ~104 ms |
+| 08-12 复测（8w / 500 / 15k） | 成功 RPS ≈ **4,216**；与 08-08 同并发结构但 complete ~118 ms；**未打到 15k** |
+| 08-12 复测（8w / 5k / 100k）† | 成功 RPS ≈ **3,902**；complete ~1.3 s；失败 5,600；抬并发继续恶化，无端口耗尽 |
+| 08-12 观察（8w / 10k） | 未完整收束；大量 `local port allocation failed`（每核 live≈2k 贴 ephemeral/RSS 上限） |
+| 未达目标 | 100k / 15k 目标均未触及；当日可达区约 3.9k–4.8k CPS，随并发升高 complete 单调变差 |
+| 已排除（在已统计项内） | mempool 耗尽、TX/payload alloc fail、RX ring / tx_nic drops；500/1k/5k 未撞 socket 表 |
+| 资源天花板 | socket 表历史 4,096；10k 档先撞 **本地临时端口**（非 ENFILE） |
+| 仍开放 | 08-08→08-12 延迟回归根因；complete 随并发恶化的排队点（对端 vs 本端）；端口/关闭中 socket 背压 |
+| 对比纪律 | 无同环境对照的改动不对吞吐变化做归因 |

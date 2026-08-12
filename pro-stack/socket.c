@@ -58,6 +58,7 @@ struct socket_registry {
         struct rte_hash *tcp_bind_hash;
         struct rte_hash *tcp_listener_hash;
         struct rte_hash *tcp_conn_hash;
+        uint32_t capacity;
         struct nsock *sock_list;
         struct nsock *dirty_tx_head;
         struct nsock *dirty_tx_tail;
@@ -93,11 +94,12 @@ static struct tcp_conn_key tcp_conn_key_make(const struct nsock *sk) {
 
 static struct rte_hash *registry_hash_create(const char *stem,
                                              unsigned int lcore_id,
-                                             uint32_t key_len) {
+                                             uint32_t key_len,
+                                             uint32_t capacity) {
         char name[RTE_HASH_NAMESIZE];
         const struct rte_hash_parameters p = {
             .name = name,
-            .entries = NSOCK_REGISTRY_ENTRIES,
+            .entries = capacity,
             .key_len = key_len,
             .hash_func = rte_jhash,
             .hash_func_init_val = 0,
@@ -117,27 +119,45 @@ static struct socket_registry *registry_current(void) {
         return &g_registries[lcore_id];
 }
 
-int socket_registry_init_owner(unsigned int lcore_id) {
+int socket_registry_init_owner_with_capacity(unsigned int lcore_id,
+                                             uint32_t capacity) {
         struct socket_registry *registry;
+        uint32_t hash_capacity;
 
-        if (lcore_id >= RTE_MAX_LCORE)
+        if (lcore_id >= RTE_MAX_LCORE || capacity == 0) {
+                errno = EINVAL;
                 return -1;
+        }
+        if (capacity > RTE_HASH_ENTRIES_MAX) {
+                errno = ERANGE;
+                return -1;
+        }
+        hash_capacity = capacity < NSOCK_REGISTRY_MIN_ENTRIES
+                            ? NSOCK_REGISTRY_MIN_ENTRIES
+                            : capacity;
         pthread_mutex_lock(&registry_init_lock);
         registry_ready = true;
         registry = &g_registries[lcore_id];
         if (registry->ready) {
+                int result = registry->capacity == capacity ? 0 : -1;
+                if (result != 0)
+                        errno = EBUSY;
                 pthread_mutex_unlock(&registry_init_lock);
-                return 0;
+                return result;
         }
 
-        registry->udp_bind_hash = registry_hash_create(
-            "nsock_udp_bind", lcore_id, sizeof(struct local_key));
-        registry->tcp_bind_hash = registry_hash_create(
-            "nsock_tcp_bind", lcore_id, sizeof(struct local_key));
-        registry->tcp_listener_hash = registry_hash_create(
-            "nsock_tcp_listener", lcore_id, sizeof(struct local_key));
-        registry->tcp_conn_hash = registry_hash_create(
-            "nsock_tcp_conn", lcore_id, sizeof(struct tcp_conn_key));
+        registry->udp_bind_hash =
+            registry_hash_create("nsock_udp_bind", lcore_id,
+                                 sizeof(struct local_key), hash_capacity);
+        registry->tcp_bind_hash =
+            registry_hash_create("nsock_tcp_bind", lcore_id,
+                                 sizeof(struct local_key), hash_capacity);
+        registry->tcp_listener_hash =
+            registry_hash_create("nsock_tcp_listener", lcore_id,
+                                 sizeof(struct local_key), hash_capacity);
+        registry->tcp_conn_hash =
+            registry_hash_create("nsock_tcp_conn", lcore_id,
+                                 sizeof(struct tcp_conn_key), hash_capacity);
 
         if (registry->udp_bind_hash == NULL ||
             registry->tcp_bind_hash == NULL ||
@@ -158,9 +178,15 @@ int socket_registry_init_owner(unsigned int lcore_id) {
                 return -1;
         }
 
+        registry->capacity = capacity;
         registry->ready = true;
         pthread_mutex_unlock(&registry_init_lock);
         return 0;
+}
+
+int socket_registry_init_owner(unsigned int lcore_id) {
+        return socket_registry_init_owner_with_capacity(
+            lcore_id, NSOCK_REGISTRY_DEFAULT_ENTRIES);
 }
 
 int socket_registry_init(void) {

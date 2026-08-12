@@ -79,6 +79,7 @@ typedef void (*tg_flow_socket_created_fn)(void *ctx);
  */
 struct tg_flow_map {
         struct tg_flow **by_socket_id;
+        uint32_t capacity;
         uint16_t owner_lcore;
 };
 
@@ -122,6 +123,9 @@ struct tg_flow {
  * @return 0 on success; -1 with @c errno set otherwise.
  */
 int tg_flow_map_init(struct tg_flow_map *map, uint16_t owner_lcore);
+/** @brief Allocates a socket-id map with an explicit owner capacity. */
+int tg_flow_map_init_with_capacity(struct tg_flow_map *map,
+                                   uint16_t owner_lcore, uint32_t capacity);
 
 /** @brief Releases a flow map and clears its metadata. */
 void tg_flow_map_fini(struct tg_flow_map *map);

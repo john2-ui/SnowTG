@@ -37,7 +37,12 @@
 
 /** Highest fd value the in-process fd table can hand out. */
 #define NSOCK_FD_MAX 1024
-#define NSOCK_REGISTRY_ENTRIES 4096
+/** Default entries per owner protocol registry hash. */
+#define NSOCK_REGISTRY_DEFAULT_ENTRIES 4096U
+/** Minimum accepted by DPDK's rte_hash implementation. */
+#define NSOCK_REGISTRY_MIN_ENTRIES 8U
+/** Compatibility name for the default registry capacity. */
+#define NSOCK_REGISTRY_ENTRIES NSOCK_REGISTRY_DEFAULT_ENTRIES
 
 enum nsock_registry_flags {
         NSOCK_REG_UDP_BIND = 1u << 0,
@@ -155,6 +160,9 @@ struct nsock {
 int socket_registry_init(void);
 /** @brief Create the protocol indexes owned by @p lcore_id. */
 int socket_registry_init_owner(unsigned int lcore_id);
+/** @brief Create one owner registry with an explicit hash capacity. */
+int socket_registry_init_owner_with_capacity(unsigned int lcore_id,
+                                             uint32_t capacity);
 /** @brief Release the process-wide fd table and all owner-local indexes. */
 void socket_registry_fini(void);
 /** Return the current worker's intrusive socket list, or NULL outside an owner.

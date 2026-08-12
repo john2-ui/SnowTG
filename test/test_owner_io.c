@@ -245,6 +245,34 @@ int main(int argc, char **argv) {
                 }
         }
 
+        /*
+         * Capacity-aware owner initialization must reject the third live
+         * socket, then reuse a retired slot with a new generation.
+         */
+        socket_owner_fini();
+        socket_registry_fini();
+        assert(socket_registry_init_owner_with_capacity(rte_lcore_id(), 2) ==
+               0);
+        assert(socket_owner_init_with_capacity(rte_lcore_id(), 2) == 0);
+        struct nsock_handle capacity_handles[2];
+        struct nsock_handle replacement;
+        assert(owner_io_socket_create_local(IPPROTO_UDP,
+                                            &capacity_handles[0]) == 0);
+        assert(owner_io_socket_create_local(IPPROTO_UDP,
+                                            &capacity_handles[1]) == 0);
+        errno = 0;
+        assert(owner_io_socket_create_local(IPPROTO_UDP, &replacement) == -1);
+        assert(errno == ENFILE);
+        assert(owner_io_close(capacity_handles[0]) == 0);
+        assert(owner_io_socket_create_local(IPPROTO_UDP, &replacement) == 0);
+        assert(replacement.id == capacity_handles[0].id);
+        assert(replacement.generation != capacity_handles[0].generation);
+        errno = 0;
+        assert(socket_owner_resolve_local(capacity_handles[0]) == NULL);
+        assert(errno == EBADF);
+        assert(owner_io_close(capacity_handles[1]) == 0);
+        assert(owner_io_close(replacement) == 0);
+
         socket_owner_fini();
         socket_registry_fini();
         return 0;

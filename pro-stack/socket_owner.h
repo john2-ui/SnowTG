@@ -31,8 +31,15 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 
-/** Number of TCB slots owned by each packet worker. */
-#define NSOCK_ID_MAX 4096U
+/** Default number of TCB slots owned by each packet worker. */
+#define NSOCK_ID_DEFAULT_CAPACITY 4096U
+/**
+ * Compatibility name for callers that used the old compile-time default.
+ *
+ * This is no longer a runtime upper bound.  Owner contexts created with the
+ * capacity-aware initializer may use a different slot count.
+ */
+#define NSOCK_ID_MAX NSOCK_ID_DEFAULT_CAPACITY
 /** Sentinel used before a command has produced a socket handle. */
 #define NSOCK_INVALID_ID UINT32_MAX
 
@@ -135,12 +142,26 @@ struct socket_owner {
         /** Owner-local UDP receive-queue metadata pool. */
         struct udp_owner_memory udp_memory;
 
-        struct nsock *slots[NSOCK_ID_MAX];
-        uint32_t generations[NSOCK_ID_MAX];
+        /** Runtime-sized socket slot table and generation array. */
+        struct nsock **slots;
+        uint32_t *generations;
+        /** LIFO of currently unused slot IDs for O(1) allocation. */
+        uint32_t *free_ids;
+        uint32_t slot_capacity;
+        uint32_t free_count;
+        uint32_t ready_capacity;
 };
 
 /** Initialize the context for one packet-worker lcore. */
 int socket_owner_init(unsigned int lcore_id);
+/**
+ * Initialize one packet-worker owner with an explicit slot capacity.
+ *
+ * The capacity is fixed until @ref socket_owner_fini; runtime resizing is not
+ * supported because the owner queues and protocol indexes are initialized
+ * alongside the slot table.
+ */
+int socket_owner_init_with_capacity(unsigned int lcore_id, uint32_t capacity);
 /** Release every initialized owner context after all workers have stopped. */
 void socket_owner_fini(void);
 /** Submit a command to its owner and wait until it is completed. */

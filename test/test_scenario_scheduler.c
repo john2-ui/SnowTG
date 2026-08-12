@@ -1,5 +1,6 @@
 #include "../traffic-gen/core/scenario.h"
 #include "../traffic-gen/core/scheduler.h"
+#include "../traffic-gen/core/socket_capacity.h"
 #include "../traffic-gen/core/stats.h"
 #include "../traffic-gen/proto/dns/dns_client.h"
 #include "../traffic-gen/proto/http/http_client.h"
@@ -325,6 +326,35 @@ static int test_active_shards_and_weight_phase(void) {
         return 0;
 }
 
+static int test_socket_capacity_policy(void) {
+        struct tg_plan plan = {0};
+        uint32_t capacity;
+
+        plan.max_concurrency = 1000;
+        ASSERT_TRUE(tg_socket_id_capacity(&plan, 1, 0, &capacity) == 0);
+        ASSERT_TRUE(capacity == NSOCK_ID_DEFAULT_CAPACITY);
+
+        plan.max_concurrency = 10000;
+        ASSERT_TRUE(tg_socket_id_capacity(&plan, 1, 0, &capacity) == 0);
+        ASSERT_TRUE(capacity == 20000);
+        ASSERT_TRUE(tg_socket_id_capacity(&plan, 4, 0, &capacity) == 0);
+        ASSERT_TRUE(capacity == 5000);
+        ASSERT_TRUE(tg_socket_id_capacity(&plan, 4, 24000, &capacity) == 0);
+        ASSERT_TRUE(capacity == 24000);
+
+        errno = 0;
+        ASSERT_TRUE(tg_socket_id_capacity(&plan, 4, 4999, &capacity) == -1);
+        ASSERT_TRUE(errno == ERANGE);
+        errno = 0;
+        ASSERT_TRUE(tg_socket_id_capacity(&plan, 4, UINT32_MAX, &capacity) ==
+                    -1);
+        ASSERT_TRUE(errno == ERANGE);
+        errno = 0;
+        ASSERT_TRUE(tg_socket_id_capacity(&plan, 0, 0, &capacity) == -1);
+        ASSERT_TRUE(errno == EINVAL);
+        return 0;
+}
+
 static int test_weight_token_and_concurrency_bounds(void) {
         struct tg_plan plan;
         struct tg_scheduler scheduler;
@@ -409,6 +439,7 @@ int main(void) {
         ASSERT_TRUE(test_protocol_transport_validation() == 0);
         ASSERT_TRUE(test_plan_partition() == 0);
         ASSERT_TRUE(test_active_shards_and_weight_phase() == 0);
+        ASSERT_TRUE(test_socket_capacity_policy() == 0);
         ASSERT_TRUE(test_weight_token_and_concurrency_bounds() == 0);
         ASSERT_TRUE(test_failed_start_and_duration_stop() == 0);
         ASSERT_TRUE(test_stats() == 0);
