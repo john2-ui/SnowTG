@@ -98,6 +98,22 @@ static struct tg_flow *start_udp_flow(struct tg_flow_map *map,
         return only_flow(map);
 }
 
+static void test_idle_tcp_read_closes(struct tg_flow_map *map,
+                                      struct tg_flow_pool *pool) {
+        struct tg_flow *flow = tg_flow_pool_get(pool);
+        struct nsock_handle handle;
+
+        assert(flow != NULL);
+        assert(owner_io_socket_create_local(IPPROTO_TCP, &handle) == 0);
+        flow->state = TG_FLOW_IDLE;
+        assert(tg_flow_map_insert(map, flow, handle) == 0);
+
+        tg_flow_on_event(map, pool, flow, OWNER_IO_EV_READ);
+
+        assert(tg_flow_map_lookup(map, handle) == NULL);
+        assert(pool->free_count == pool->capacity);
+}
+
 static void drain_output_ring(void) {
         struct inout_ring *ring = ring_instance();
         struct rte_mbuf *mbuf;
@@ -322,6 +338,8 @@ int main(int argc, char **argv) {
 
         assert(tg_flow_map_init_with_capacity(&map, rte_lcore_id(), 16) == 0);
         assert(tg_flow_pool_init(&pool, 4) == 0);
+
+        test_idle_tcp_read_closes(&map, &pool);
 
         test_rx_calls = 0;
         flow = start_udp_flow(&map, &pool, &peer, &finish);

@@ -721,6 +721,18 @@ void tg_flow_on_event(struct tg_flow_map *map, struct tg_flow_pool *pool,
                 }
         }
 
+        if (flow->state == TG_FLOW_IDLE &&
+            (events & (OWNER_IO_EV_READ | OWNER_IO_EV_HUP))) {
+                /*
+                 * An idle keep-alive has no transaction that can consume
+                 * input.  Close it immediately so level-triggered READ
+                 * readiness cannot keep requeueing the same connection.
+                 */
+                tg_flow_close_connection(map, pool, flow, false,
+                                         TG_FLOW_RESULT_IO_FAILURE);
+                return;
+        }
+
         if (events & OWNER_IO_EV_HUP) {
                 bool connecting = flow->state == TG_FLOW_CONNECTING;
 
