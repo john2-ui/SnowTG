@@ -61,6 +61,10 @@ struct tg_stats_snapshot {
         uint64_t concurrency;
         /** Current live socket count. */
         uint64_t live_sockets;
+        /** Physical TCP connections created for this shard. */
+        uint64_t connections_created;
+        /** Logical transactions assigned to an existing TCP connection. */
+        uint64_t connections_reused;
 
         /**
          * Connect latency: start to CONNECTED.
@@ -173,6 +177,8 @@ struct tg_stats {
         uint64_t complete_cycles; /**< Start to terminal flow callback sum. */
         uint64_t complete_max_cycles;
         uint32_t concurrency;
+        uint64_t connections_created;
+        uint64_t connections_reused;
         uint64_t last_report_cycles;
 };
 
@@ -184,6 +190,11 @@ void tg_stats_init(struct tg_stats *stats);
  * @param stats Owner-local counters to update.
  */
 void tg_stats_on_admitted(struct tg_stats *stats);
+
+/** Records creation of one physical TCP connection. */
+void tg_stats_on_connection_created(struct tg_stats *stats);
+/** Records assignment of one transaction to an existing connection. */
+void tg_stats_on_connection_reused(struct tg_stats *stats);
 
 /**
  * @brief Records a synchronous failure before a flow becomes active.
@@ -198,9 +209,9 @@ void tg_stats_on_start_failure(struct tg_stats *stats);
 void tg_stats_on_resource_deferred(struct tg_stats *stats);
 
 /**
- * @brief Records terminal flow result before the flow is returned to its pool.
+ * @brief Records one logical transaction result before flow reuse or teardown.
  * @param stats Owner-local counters to update.
- * @param flow Completed flow whose transaction byte counts are still intact.
+ * @param flow Flow whose completed transaction byte counts are still intact.
  * @param result Terminal result selected by the transport layer.
  */
 void tg_stats_on_flow_finished(struct tg_stats *stats,

@@ -8,17 +8,21 @@
 #include "../../core/scenario.h"
 #include "http_client.h"
 
+#include <arpa/inet.h>
 #include <errno.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <string.h>
 
 /** @copydoc tg_http_scenario_compile */
 int tg_http_scenario_compile(const struct tg_json_doc *doc, int object_index,
                              struct tg_class_plan *class_plan) {
-        static const char *const allowed[] = {"method", "path", "keepalive"};
+        static const char *const allowed[] = {"method", "path", "host",
+                                              "keepalive"};
         struct tg_http_config *config;
         int method_index;
         int path_index;
+        int host_index;
         int keepalive_index;
         bool keepalive = false;
 
@@ -36,6 +40,7 @@ int tg_http_scenario_compile(const struct tg_json_doc *doc, int object_index,
 
         method_index = tg_json_object_value(doc, object_index, "method");
         path_index = tg_json_object_value(doc, object_index, "path");
+        host_index = tg_json_object_value(doc, object_index, "host");
         keepalive_index = tg_json_object_value(doc, object_index, "keepalive");
         if (method_index < 0 || path_index < 0 ||
             tg_json_copy_string(config->method, sizeof(config->method), doc,
@@ -45,6 +50,21 @@ int tg_http_scenario_compile(const struct tg_json_doc *doc, int object_index,
             config->path[0] != '/') {
                 free(config);
                 errno = EINVAL;
+                return -1;
+        }
+        if (host_index >= 0) {
+                if (tg_json_copy_string(config->host, sizeof(config->host),
+                                        doc, &doc->tokens[host_index]) != 0 ||
+                    config->host[0] == '\0' ||
+                    strchr(config->host, '\r') != NULL ||
+                    strchr(config->host, '\n') != NULL) {
+                        free(config);
+                        errno = EINVAL;
+                        return -1;
+                }
+        } else if (inet_ntop(AF_INET, &class_plan->peer.sin_addr,
+                             config->host, sizeof(config->host)) == NULL) {
+                free(config);
                 return -1;
         }
         if (keepalive_index >= 0 &&

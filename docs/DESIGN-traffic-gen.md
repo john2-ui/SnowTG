@@ -1,6 +1,6 @@
 # 混合流量发生器设计文档
 
-本文档描述在现有 [`pro-stack/`](pro-stack/) 用户态协议栈之上，建设**可演示、可度量、可写进简历**的混合流量发生器（Traffic Generator）的目标、架构与分期。  
+本文档描述在现有 `[pro-stack/](pro-stack/)` 用户态协议栈之上，建设**可演示、可度量、可写进简历**的混合流量发生器（Traffic Generator）的目标、架构与分期。  
 定位是**作品级产品化**：完整闭环 + 硬指标 + 清晰架构叙事；不与商业流量仪表或 TRex 等对标竞争。
 
 相关现状见 [README.md](README.md)；并发与 owner 约束见 [DevLog.md](DevLog.md)。
@@ -11,17 +11,21 @@
 
 ### 1.1 目标
 
-| 维度 | 说明 |
-|------|------|
-| 作品形态 | 基于自研 DPDK TCP/UDP 栈的多协议混合流量发生器 |
-| 可运行 | 文档可复现：环境、巨页、绑核、一场压测怎么跑 |
-| 可配置 | 剧本驱动（并发、速率、协议占比、目标地址），少改编译宏 |
-| 可度量 | 输出 CPS、并发保持、成功率、RPS/QPS、重传、资源占用 |
-| 可讲述 | README/本文有架构图、模块边界与明确取舍 |
+
+| 维度   | 说明                              |
+| ---- | ------------------------------- |
+| 作品形态 | 基于自研 DPDK TCP/UDP 栈的多协议混合流量发生器  |
+| 可运行  | 文档可复现：环境、巨页、绑核、一场压测怎么跑          |
+| 可配置  | 剧本驱动（并发、速率、协议占比、目标地址），少改编译宏     |
+| 可度量  | 输出 CPS、并发保持、成功率、RPS/QPS、重传、资源占用 |
+| 可讲述  | README/本文有架构图、模块边界与明确取舍         |
+
 
 **一句话作品描述（简历可用）：**
 
 > 基于 DPDK 自研用户态 TCP/UDP 栈，实现多协议混合流量发生器；支持剧本编排与指标采集，单机在指定硬件上实测达到并发 X / CPS Y（以实测为准写入简历）。
+
+
 
 ### 1.2 非目标（刻意不做或后置）
 
@@ -31,16 +35,20 @@
 - 不承诺未经实测的「100 万连接」作为对外数字；百万级仅作为**架构愿景与容量规划上限**  
 - 不做 LLM 现场编协议；「智能」先指**可配置流量模型与混合调度**
 
+
+
 ### 1.3 成功标准（简历向）
 
 满足以下即可视为 Phase A 完成：
 
-1. 能按剧本同时打出 **HTTP + DNS** 混合流量，持续跑不少于 5 分钟不崩溃。  
-2. 终端（或日志）周期性输出：并发、CPS、成功率、错误分类、重传计数。  
-3. 在固定硬件配置下给出**可复现**的实测表（见 §8）。  
+1. 能按剧本同时打出 **HTTP + DNS** 混合流量，持续跑不少于 5 分钟不崩溃。
+2. 终端（或日志）周期性输出：并发、CPS、成功率、错误分类、重传计数。
+3. 在固定硬件配置下给出**可复现**的实测表（见 §8）。
 4. 架构说明能讲清：协议栈 owner 模型如何支撑大量短连接客户端。
 
 ---
+
+
 
 ## 2. 与现有协议栈的关系
 
@@ -59,6 +67,8 @@
 └─────────────────────────────────────────────────────────┘
 ```
 
+
+
 ### 2.1 复用
 
 - BSD 风格 API：`nsocket` / `nbind` / `nconnect` / `nsend` / `nrecv` / `nsendto` / `nrecvfrom` / `nclose`  
@@ -67,19 +77,25 @@
 - UDP：DNS 等数据报场景  
 - 基础设施：`g_net`、ARP、mempool、in/out ring
 
+
+
 ### 2.2 栈侧必须补强的能力（发生器依赖）
 
 发生器不是「再写一个 echo」，对栈有刚性依赖。按优先级：
 
-| 优先级 | 能力 | 原因 |
-|--------|------|------|
-| P0 | 非阻塞 / 事件就绪模型（或等价 ready 队列） | 单连接阻塞 `nrecv` 无法驱动海量并发客户端 |
-| P0 | 连接生命周期在高压下正确（close/RST/fd 复用） | 短连接压测会剧烈锻炼 close 路径 |
-| P0 | 每连接内存可控（小默认窗口 / 按需缓冲） | 规模数字由内存决定，不能按 64KB/连接满配 |
-| P1 | dirty TX 队列（替代全表 `tx_flush`） | 活跃连接比例低时避免 O(全部 socket) |
-| P1 | 连接/定时器规模扩展（timer wheel、提高 fd/slot 上限） | 从演示规模迈向数万并发 |
-| P2 | 多 queue + RSS + per-worker owner | 冲更高 CPS/并发时再上 |
-| P2 | RX 校验、MSS 协商、基础拥塞控制 | 打真实对端、跨较复杂链路时需要 |
+
+| 优先级 | 能力                                    | 原因                        |
+| --- | ------------------------------------- | ------------------------- |
+| P0  | 非阻塞 / 事件就绪模型（或等价 ready 队列）            | 单连接阻塞 `nrecv` 无法驱动海量并发客户端 |
+| P0  | 连接生命周期在高压下正确（close/RST/fd 复用）         | 短连接压测会剧烈锻炼 close 路径       |
+| P0  | 每连接内存可控（小默认窗口 / 按需缓冲）                 | 规模数字由内存决定，不能按 64KB/连接满配   |
+| P1  | dirty TX 队列（替代全表 `tx_flush`）          | 活跃连接比例低时避免 O(全部 socket)   |
+| P1  | 连接/定时器规模扩展（timer wheel、提高 fd/slot 上限） | 从演示规模迈向数万并发               |
+| P2  | 多 queue + RSS + per-worker owner      | 冲更高 CPS/并发时再上             |
+| P2  | RX 校验、MSS 协商、基础拥塞控制                   | 打真实对端、跨较复杂链路时需要           |
+
+
+
 
 ### 2.3 架构决策：per-core per-reactor
 
@@ -117,23 +133,27 @@ queue 是 **epoll-like** 接口，而非内核 epoll fd。
 当前可保持三层 lcore 分工，以便在不破坏 owner 边界的前提下尽快完成
 Phase A：
 
-| lcore | 职责 |
-|-------|------|
-| main | NIC RX→`ring->in`，`ring->out`→TX；ARP 等基础设施 timer |
-| worker（owner） | command ring、入包、TCP/UDP 状态机、TCP timer、`tx_flush` |
-| app（traffic-gen） | 读剧本、驱动连接状态机、调用 `n*` API、聚合本地指标 |
+
+| lcore            | 职责                                               |
+| ---------------- | ------------------------------------------------ |
+| main             | NIC RX→`ring->in`，`ring->out`→TX；ARP 等基础设施 timer |
+| worker（owner）    | command ring、入包、TCP/UDP 状态机、TCP timer、`tx_flush` |
+| app（traffic-gen） | 读剧本、驱动连接状态机、调用 `n*` API、聚合本地指标                   |
+
 
 该过渡实现的约束：
 
-- app **永不**直接解引用 `nsock *` / TCB。  
+- app **永不**直接解引用 `nsock `* / TCB。  
 - 阻塞 API 不得拖死调度：海量连接场景下 app 侧应以 **非阻塞 + 就绪通知** 为主（栈侧提供能力后，发生器不再用「一连接一阻塞线程」模型）。
 - app 与 owner 跨核时，ready event 只表示“值得尝试”；不能掩盖
-  `socket_owner_call()` 本身的同步等待成本。
+`socket_owner_call()` 本身的同步等待成本。
 
 目标模型以 §2.3 为准：reactor 与 owner 同核，应用 flow 只经受控的
 owner-local `try_*` 接口访问 socket 状态，不向普通 app 暴露 `nsock *`。
 
 ---
+
+
 
 ## 3. 总体架构
 
@@ -170,18 +190,26 @@ flowchart TB
     Pool --> Stats --> Report
 ```
 
+
+
+
+
 ### 3.1 核心概念
 
-| 概念 | 含义 |
-|------|------|
-| **Scenario（剧本）** | 一次压测的声明式描述：目标、协议权重、并发、时长、限速 |
-| **Traffic class** | 一种 L7 行为（如 `http_get`、`dns_query`），绑定传输（TCP/UDP）与插件 |
-| **Connection / Flow** | 一条传输流；TCP 短连接可「一事务一连接」，也可 keep-alive 复用 |
-| **Transaction** | 一次 L7 往返（请求→响应判定成功/失败） |
-| **Scheduler** | 按目标 CPS/并发/权重决定何时发起新事务 |
-| **Plugin** | 无传输细节的 L7 编解码与成功判定 |
+
+| 概念                    | 含义                                                  |
+| --------------------- | --------------------------------------------------- |
+| **Scenario（剧本）**      | 一次压测的声明式描述：目标、协议权重、并发、时长、限速                         |
+| **Traffic class**     | 一种 L7 行为（如 `http_get`、`dns_query`），绑定传输（TCP/UDP）与插件 |
+| **Connection / Flow** | 一条传输流；TCP 短连接可「一事务一连接」，也可 keep-alive 复用             |
+| **Transaction**       | 一次 L7 往返（请求→响应判定成功/失败）                              |
+| **Scheduler**         | 按目标 CPS/并发/权重决定何时发起新事务                              |
+| **Plugin**            | 无传输细节的 L7 编解码与成功判定                                  |
+
 
 ---
+
+
 
 ## 4. 模块设计
 
@@ -209,8 +237,10 @@ traffic-gen/
 与 `pro-stack` 的集成方式二选一（实现时定一种即可）：
 
 - **A（推荐）**：`pro-stack` 链成库/对象集，`traffic-gen` 作为各 owner worker
-  上的 reactor 任务运行，替换或并列于 `tcp_app` / `udp_app`。  
+上的 reactor 任务运行，替换或并列于 `tcp_app` / `udp_app`。  
 - **B**：在现有 `main.c` 中用 `ENABLE_TRAFFIC_GEN` 挂载入口（适合早期原型）。
+
+
 
 ### 4.1 剧本（Scenario）
 
@@ -232,7 +262,7 @@ traffic-gen/
         "method": "GET",
         "path": "/",
         "host": "example.local",
-        "keepalive": false
+        "keepalive": true
       }
     },
     {
@@ -264,10 +294,11 @@ scheduler shard 数为 `min(workers, target_cps, max_concurrency)`；每个 acti
 
 职责：
 
-1. 维护当前并发（进行中的事务/连接数）≤ `max_concurrency`。  
-2. 按 `target_cps` 做令牌桶或固定间隔发车。  
-3. 按 `weight` 做加权随机或加权轮询，选择 traffic class。  
-4. 从对象池取 `flow`/`transaction`，交给对应插件推进状态机。
+1. 维护当前逻辑事务并发 ≤ `max_concurrency`，物理连接数由连接池单独限制。
+2. 按 `target_cps` 做令牌桶或固定间隔发车。
+3. 按 `weight` 做加权随机或加权轮询，选择 traffic class。
+4. 优先从 class/peer 的 idle connection pool 取连接；没有可用连接时再创建
+  TCP flow，交给对应插件推进一个逻辑 transaction。
 
 第一期算法建议（简单可讲）：
 
@@ -281,18 +312,21 @@ class 前缀同时开始。该 phase 只消除启动同步偏斜；失败率、�
 
 ### 4.3 连接 / 事务状态机（TCP 类）
 
-客户端事务推荐状态（插件可挂接）：
+HTTP keep-alive 连接池中，一个 flow 是一条物理 TCP 连接，同一时刻只承载一个
+逻辑 transaction：
 
 ```text
-IDLE → CONNECTING → SENDING → RECVING → CLOSING → IDLE
-         │            │         │          │
-         └────────────┴─────────┴──────────┴→ FAILED → IDLE
+NEW → CONNECTING → SENDING → RECVING → IDLE
+       │            │         │          │
+       └────────────┴─────────┴──────────┴→ CLOSING
 ```
 
 - `CONNECTING`：`nconnect`（`EINPROGRESS` 时挂起，就绪后继续）。  
 - `SENDING` / `RECVING`：非阻塞 `nsend`/`nrecv`，短读拼缓冲直至满足 L7 判定。  
-- `CLOSING`：`nclose`；短连接默认不复用。  
-- keep-alive（HTTP 后期）：`RECVING` 成功后回到 `SENDING` 或空闲复用池。
+- `IDLE`：当前响应完整结束，连接仍在 class/peer 的 idle pool 中。
+- `CLOSING`：`nclose`；EOF、RST、超时、`Connection: close` 或达到连接请求数上限
+后进入该状态。
+- keep-alive 不使用 HTTP/1.1 pipelining；下一请求只能在前一响应完成后发送。
 
 UDP 类更简单：
 
@@ -301,14 +335,15 @@ IDLE → SENDING → RECVING → IDLE
          └──────────┴→ FAILED → IDLE
 ```
 
-超时：每事务 `response_timeout_ms`（剧本字段，默认如 5s）；超时记失败并回收。
+超时：每事务 response timeout 默认 5s；idle keep-alive connection 默认 30s
+回收。连接池达到 shard 上限时，调度器延迟新的事务准入，不创建无界 socket。
 
 ### 4.4 L7 插件接口
 
 `core/flow.c` 拥有 socket、非阻塞 I/O、ready event 和回收顺序；
 `tg_txn` 持有一次请求/响应的字节与插件引用；插件只处理字节流或数据报，
-不得调用 `owner_io_*`。当前短连接模型中一个 flow 嵌入一个 txn；HTTP
-keep-alive 后可扩展为一个 flow 串行承载多个 txn。
+不得调用 `owner_io_*`。HTTP keep-alive 中一个 flow 持有一个当前 txn，
+txn 完成后 reset/rearm，flow 本身回到 idle connection pool。
 
 统一 C 接口：
 
@@ -347,19 +382,23 @@ HTTP method/path 等协议专用字段。分片时调用 `config_clone`，计划
 `config_free`，因此配置不能借用 JSON 输入缓冲区或另一个 shard 的地址。
 
 当前支持 `Content-Length`、chunked 与 EOF-delimited response body，并在完整 message
-后完成短连接事务。保持严格解析，不启用 llhttp 的 lenient flags。暂不支持
-HTTP upgrade、response pipeline 或在同一 flow 上复用下一个 keep-alive transaction。
+后完成事务。只有有明确边界且 `llhttp_should_keep_alive()` 允许的响应才能复用
+连接；EOF-delimited、`Connection: close`、RST 或超时都会关闭连接。保持严格解析，
+不启用 llhttp 的 lenient flags；不支持 HTTP upgrade、HTTP/1.1 response pipeline、
+HTTP/2 或 HTTP/3。
 
 ### 4.5 协议子集范围
 
-| 协议 | 阶段 | 子集范围 | 成功判定（示例） |
-|------|------|----------|------------------|
-| HTTP/1.x | Phase A | `GET`/`POST` 固定模板；llhttp 解析 Content-Length、chunked 与 EOF body | `HTTP/1.0`/`1.1` 2xx 且完整 message |
-| DNS | Phase A | 单问题 A/AAAA 查询（UDP） | 响应 QR=1 且 rcode=0 |
-| Redis | Phase B | `PING` / 简单 `GET`/`SET`（RESP） | `+PONG` 或批量回复完整 |
-| MQTT | Phase B | CONNECT + PINGREQ 或单次 PUBLISH | CONNACK / PUBACK |
-| MySQL | Phase C | 握手 + 简单 query（慎选范围） | OK 包 |
-| HTTPS | Phase C | 可选：仅握手；或 mbedTLS 小并发 | 握手完成 / HTTP over TLS |
+
+| 协议       | 阶段      | 子集范围                                                                                    | 成功判定（示例）                   |
+| -------- | ------- | --------------------------------------------------------------------------------------- | -------------------------- |
+| HTTP/1.x | Phase A | HTTP/1.1 `GET`/`POST` 固定模板；keep-alive 并发连接池；llhttp 解析 Content-Length、chunked 与 EOF body | `HTTP/1.1` 2xx 且完整 message |
+| DNS      | Phase A | 单问题 A/AAAA 查询（UDP）                                                                      | 响应 QR=1 且 rcode=0          |
+| Redis    | Phase B | `PING` / 简单 `GET`/`SET`（RESP）                                                           | `+PONG` 或批量回复完整            |
+| MQTT     | Phase B | CONNECT + PINGREQ 或单次 PUBLISH                                                           | CONNACK / PUBACK           |
+| MySQL    | Phase C | 握手 + 简单 query（慎选范围）                                                                     | OK 包                       |
+| HTTPS    | Phase C | 可选：仅握手；或 mbedTLS 小并发                                                                    | 握手完成 / HTTP over TLS       |
+
 
 原则：**宁可子集小而判定清晰**，也不要实现完整协议栈式客户端。
 
@@ -367,15 +406,19 @@ HTTP upgrade、response pipeline 或在同一 flow 上复用下一个 keep-alive
 
 **per-lcore 计数（避免原子风暴），汇报线程汇总：**
 
-| 指标 | 含义 |
-|------|------|
-| `txns_started` / `txns_done` | 事务开始/结束 |
-| `txns_success` / `txns_fail` | 成功/失败 |
-| `fail_connect` / `fail_timeout` / `fail_proto` / `fail_reset` | 失败分类 |
-| `cps_connect` | 完成 TCP 握手的速率 |
-| `concurrency` | 当前 in-flight |
-| `bytes_tx` / `bytes_rx` | 应用层字节 |
-| `http_rps` / `dns_qps` | 分协议完成速率 |
+
+| 指标                                                            | 含义                  |
+| ------------------------------------------------------------- | ------------------- |
+| `txns_started` / `txns_done`                                  | 事务开始/结束             |
+| `txns_success` / `txns_fail`                                  | 成功/失败               |
+| `fail_connect` / `fail_timeout` / `fail_proto` / `fail_reset` | 失败分类                |
+| `cps_connect`                                                 | 完成 TCP 握手的速率        |
+| `concurrency`                                                 | 当前 in-flight        |
+| `bytes_tx` / `bytes_rx`                                       | 应用层字节               |
+| `http_rps` / `dns_qps`                                        | 分协议完成速率             |
+| `live_sockets`                                                | 仍由协议栈持有的物理 socket 数 |
+| `connections_created` / `connections_reused`                  | TCP 连接建立数 / 复用事务数   |
+
 
 协议栈侧可另暴露（若易取）：重传次数、OFO 命中、ARP miss——作为「栈健康」附录指标，不作为 L7 成功条件。
 
@@ -383,15 +426,21 @@ HTTP upgrade、response pipeline 或在同一 flow 上复用下一个 keep-alive
 
 ---
 
+
+
 ## 5. 规模与容量规划
+
+
 
 ### 5.1 数字怎么写
 
-| 层级 | 含义 | 简历写法 |
-|------|------|----------|
-| 愿景 | 架构按百万连接预留（分片、池化、timer wheel） | 「架构按百万级连接设计」 |
-| 承诺 | 仅写**本机实测**稳定档位 | 「在 … 配置下稳定 1 万 / 10 万并发」 |
-| 爬坡 | 1k → 1万 → 10万 → … | 每档有复现命令与结果表 |
+
+| 层级  | 含义                           | 简历写法                     |
+| --- | ---------------------------- | ------------------------ |
+| 愿景  | 架构按百万连接预留（分片、池化、timer wheel） | 「架构按百万级连接设计」             |
+| 承诺  | 仅写**本机实测**稳定档位               | 「在 … 配置下稳定 1 万 / 10 万并发」 |
+| 爬坡  | 1k → 1万 → 10万 → …            | 每档有复现命令与结果表              |
+
 
 禁止：未测先写「支持 100 万 TCP 连接」。
 
@@ -399,10 +448,10 @@ HTTP upgrade、response pipeline 或在同一 flow 上复用下一个 keep-alive
 
 百万级不可按「每连接满 `TCP_SNDBUF_SIZE`」线性放大。发生器场景默认策略：
 
-1. **小初始窗口 / 小 sndbuf 默认**（压测请求通常很小）。  
-2. **对象池**：`tg_flow` / `tg_txn` 预分配，禁止热路径 `malloc`。  
+1. **小初始窗口 / 小 sndbuf 默认**（压测请求通常很小）。
+2. **对象池**：`tg_flow` / `tg_txn` 预分配，禁止热路径 `malloc`。
 3. **TCP 缓冲按需**：owner-local fixed chunk 仅在未 ACK payload 存在时占用，
-   ACK 后归还；空闲或 TIME_WAIT socket 不持有完整发送缓存。
+  ACK 后归还；空闲或 TIME_WAIT socket 不持有完整发送缓存。
 4. 提高规模前先算：`N * (TCB + 平均缓冲 + 事务 ctx)` ≤ 可用巨页内存的 60%。
 
 栈侧需配合：可配置 `TCP_SNDBUF`、chunk pool 与连接上限；pool low/high water
@@ -426,6 +475,8 @@ fd，TCP 缓冲与 fd 表预算是独立的后续配置项。
 - Phase A：沿用现有 `rte_timer`，控制并发在可承受范围。  
 - Phase B+：引入 **timer wheel**（事务超时 + TCP RTO 分层），作为冲 10 万+ 的前置。
 
+
+
 ### 5.4 多核扩展（预留）
 
 与 README「per-worker owner + RSS」一致，最终采用 **每个 worker 一个
@@ -433,9 +484,9 @@ traffic-gen reactor/shard**：
 
 - 同一四元组固定在同一 worker。  
 - 每个 worker 同时拥有 socket/TCP owner、发生器调度器、flow 对象池、
-  timer 和 ready queue；flow 不跨 worker 迁移。  
+timer 和 ready queue；flow 不跨 worker 迁移。  
 - 全局 `target_cps`、`max_concurrency` 在启动时按 shard 分配；允许控制面
-  做低频再平衡，但不得把全局原子计数器放入每连接热路径。  
+做低频再平衡，但不得把全局原子计数器放入每连接热路径。  
 - 指标 per-lcore 维护，汇报线程仅周期性聚合。  
 - RX 侧依赖 RSS 保持四元组亲和；TX、ACK、RTO 与对应 flow 在同核完成。
 
@@ -444,6 +495,8 @@ Phase A 可先实现单 worker + 单 reactor，验证事件语义和状态机；
 共享 socket 表的方式扩展。
 
 ---
+
+
 
 ## 6. 事件模型（发生器能否上规模的关键）
 
@@ -454,29 +507,29 @@ Phase A 可先实现单 worker + 单 reactor，验证事件语义和状态机；
 为 traffic-gen 提供 **非阻塞 socket + epoll-like readiness** 语义：
 
 1. socket/flow 标记为 nonblocking；`nrecv` / `nsend` / `nrecvfrom` /
-   `nsendto` 使用 `MSG_DONTWAIT`。不能立即推进时返回 `-1/EAGAIN`，而不是
-   park 调用者。  
+  `nsendto` 使用 `MSG_DONTWAIT`。不能立即推进时返回 `-1/EAGAIN`，而不是
+   park 调用者。
 2. 非阻塞 `nconnect` 启动握手后返回 `-1/EINPROGRESS`；握手完成后报告
-   `TG_EV_CONNECTED` 或 `TG_EV_ERROR`。  
+  `TG_EV_CONNECTED` 或 `TG_EV_ERROR`。
 3. 非阻塞 `naccept4(..., SOCK_NONBLOCK)` 在 accept queue 为空时返回
-   `-1/EAGAIN`。  
+  `-1/EAGAIN`。
 4. owner 将状态变化推入本核 ready queue；reactor 批量消费它，或经
-   `npoll` 获取 ready 子集。两者是同一语义的不同 API 外观。  
+  `npoll` 获取 ready 子集。两者是同一语义的不同 API 外观。
 5. 禁止扫描所有 in-flight fd 的纯忙询；它只可作为小规模原型的临时方案。
 
 实现边界：
 
 - `traffic-gen/` 仅包含 `pro-stack/owner_io.h`，通过
-  `owner_io_socket_create`、`owner_io_bind`、`owner_io_connect`、
-  `owner_io_send`、`owner_io_recv`、`owner_io_sendto`、
-  `owner_io_recvfrom` 和 `owner_io_close` 操作 generation handle。
+`owner_io_socket_create`、`owner_io_bind`、`owner_io_connect`、
+`owner_io_send`、`owner_io_recv`、`owner_io_sendto`、
+`owner_io_recvfrom` 和 `owner_io_close` 操作 generation handle。
 - 这些调用只能发生在 handle 对应的 owner lcore；它们直接调用 transport
-  probe，绝不创建 `sock_cmd`、进入 command ring 或等待 condvar。
+probe，绝不创建 `sock_cmd`、进入 command ring 或等待 condvar。
 - `pro-stack/socket_owner.*` 继续服务公开 `n*` BSD 兼容接口和对象生命周期；
-  上层不包含该内部头文件，也不访问 `nsock`/TCB。
+上层不包含该内部头文件，也不访问 `nsock`/TCB。
 - `owner_io_ready_burst` 消费 owner-local ready queue。每 socket 以
-  `ready_mask + ready_queued` 合并事件，队列项仅保存 generation handle；
-  已回收或复用的 slot 事件会被安全丢弃。
+`ready_mask + ready_queued` 合并事件，队列项仅保存 generation handle；
+已回收或复用的 slot 事件会被安全丢弃。
 
 事件位定义：
 
@@ -533,7 +586,11 @@ RX/timer。发生器不需要一个阻塞的 `epoll_wait()`：DPDK worker 已在
 
 ---
 
+
+
 ## 7. 分期计划
+
+
 
 ### Phase A — 简历可展示的最小闭环（优先）
 
@@ -544,21 +601,25 @@ RX/timer。发生器不需要一个阻塞的 `epoll_wait()`：DPDK worker 已在
 - 插件：HTTP/1.1 GET + DNS A（UDP）  
 - 指标与秒级报表  
 - 栈：非阻塞路径 + 就绪通知（或过渡忙询，但文档标明限制）  
-- 短连接 TCP；HTTP 可不做 keep-alive  
+- TCP 短连接兼容路径与 HTTP/1.1 keep-alive 并发连接池
 
 **验收**
 
 - 混合剧本跑 ≥ 5 min  
 - 给出实测表（§8）至少一档（建议先冲稳定 **1k～1万** 并发）  
-- README 增加「如何跑 traffic-gen」一节  
+- README 增加「如何跑 traffic-gen」一节
+
+
 
 ### Phase B — 规模与插件扩展
 
 - Redis 或 MQTT 择一  
 - dirty TX、连接池与内存预算调优  
 - timer wheel；上探 **10 万** 并发档（若硬件允许）  
-- HTTP keep-alive 可选  
-- 失败分类与简单直方图（延迟分布）  
+- HTTP/1.1 keep-alive 的真实 NIC 性能爬坡与连接池容量调优
+- 失败分类与简单直方图（延迟分布）
+
+
 
 ### Phase C — 加分项 / 面试扩展故事
 
@@ -566,11 +627,15 @@ RX/timer。发生器不需要一个阻塞的 `epoll_wait()`：DPDK worker 已在
 - MySQL 极简客户端  
 - 多 worker + RSS  
 - 基础拥塞控制与校验，便于打更真实的对端  
-- 「百万级」容量实验报告（成功或失败都写清瓶颈）  
+- 「百万级」容量实验报告（成功或失败都写清瓶颈）
 
 ---
 
+
+
 ## 8. 实测与简历数字规范
+
+
 
 ### 8.1 固定记录的环境字段
 
@@ -581,15 +646,19 @@ RX/timer。发生器不需要一个阻塞的 `epoll_wait()`：DPDK worker 已在
 - 巨页配置、进程内存  
 - 对端类型（同机 nginx / 另一主机 / 内核协议栈）  
 - 剧本文件名与关键参数（并发、CPS、时长）  
-- 构建选项（是否 ASan 等——ASan 数字勿与 release 混用）  
+- 构建选项（是否 ASan 等——ASan 数字勿与 release 混用）
+
+
 
 ### 8.2 结果表模板
 
-| 档位 | 并发目标 | 实测稳定并发 | CPS | HTTP RPS | DNS QPS | 成功率 | 备注 |
-|------|----------|--------------|-----|----------|---------|--------|------|
-| A1 | 1_000 | | | | | | |
-| A2 | 10_000 | | | | | | |
-| B1 | 100_000 | | | | | | |
+
+| 档位  | 并发目标    | 实测稳定并发 | CPS | HTTP RPS | DNS QPS | 成功率 | 备注  |
+| --- | ------- | ------ | --- | -------- | ------- | --- | --- |
+| A1  | 1_000   |        |     |          |         |     |     |
+| A2  | 10_000  |        |     |          |         |     |     |
+| B1  | 100_000 |        |     |          |         |     |     |
+
 
 「稳定」定义建议：连续 5 分钟成功率 ≥ 99%，无崩溃、无 fd/内存泄漏趋势（可用周期性 `concurrency` 与失败分类观察）。
 
@@ -598,63 +667,80 @@ RX/timer。发生器不需要一个阻塞的 `epoll_wait()`：DPDK worker 已在
 同机用简陋的「线程池 + 内核 socket HTTP client」跑相近剧本，对比：
 
 - 同并发下的 CPU  
-- 可达的最大 CPS  
+- 可达的最大 CPS
 
 不必赢过所有工具，只要能解释差异来自用户态/DPDK/无内核穿越等。
 
 ---
 
+
+
 ## 9. 风险与取舍
 
-| 风险 | 应对 |
-|------|------|
+
+| 风险                | 应对                                      |
+| ----------------- | --------------------------------------- |
 | 栈事件模型未就绪导致发生器无法推进 | Phase A 可先小并发忙询，但把 ready ring 列为 P0 并行项 |
-| 每连接内存过大 | 压测默认小缓冲；对象池；写明内存公式 |
-| 短连接 close 路径竞态 | 沿用 ARC-002；发生器本身作为 soak 用例反哺栈 |
-| 协议范围膨胀 | 严格按 Phase 解锁；插件接口防止拷贝粘贴六份调度逻辑 |
-| 简历数字不可复现 | §8 强制环境字段；数字与 commit/剧本文件一起记录 |
-| 被理解为攻击工具 | 文档定位为实验室性能验证 / 自研栈能力验证；默认限速与目标白名单 |
+| 每连接内存过大           | 压测默认小缓冲；对象池；写明内存公式                      |
+| 短连接 close 路径竞态    | 沿用 ARC-002；发生器本身作为 soak 用例反哺栈           |
+| 协议范围膨胀            | 严格按 Phase 解锁；插件接口防止拷贝粘贴六份调度逻辑           |
+| 简历数字不可复现          | §8 强制环境字段；数字与 commit/剧本文件一起记录           |
+| 被理解为攻击工具          | 文档定位为实验室性能验证 / 自研栈能力验证；默认限速与目标白名单       |
+
 
 ---
+
+
 
 ## 10. 文档与仓库约定
 
 实现推进时建议同步维护：
 
-| 文件 | 内容 |
-|------|------|
-| 本文 `DESIGN-traffic-gen.md` | 架构与分期（本文件） |
-| `README.md` | 增加 traffic-gen 构建运行入口与指向本文 |
-| `DevLog.md` | 若引入 ready ring / timer wheel 等，新增 ARC 条目 |
-| `traffic-gen/scenarios/*.json` | 可复现剧本 |
-| `traffic-gen/RESULTS.md`（可选） | 实测表归档 |
+
+| 文件                             | 内容                                       |
+| ------------------------------ | ---------------------------------------- |
+| 本文 `DESIGN-traffic-gen.md`     | 架构与分期（本文件）                               |
+| `README.md`                    | 增加 traffic-gen 构建运行入口与指向本文               |
+| `DevLog.md`                    | 若引入 ready ring / timer wheel 等，新增 ARC 条目 |
+| `traffic-gen/scenarios/*.json` | 可复现剧本                                    |
+| `traffic-gen/RESULTS.md`（可选）   | 实测表归档                                    |
+
 
 ---
+
+
 
 ## 11. 简历叙事（建议结构）
 
 面试时可按三条线讲，与本设计一一对应：
 
-1. **协议栈**：DPDK、用户态 TCP、单 owner / 代际句柄，为何能避免 UAF。  
-2. **发生器**：剧本、混合调度、L7 插件、指标；为何用就绪模型而不是每连接一线程。  
+1. **协议栈**：DPDK、用户态 TCP、单 owner / 代际句柄，为何能避免 UAF。
+2. **发生器**：剧本、混合调度、L7 插件、指标；为何用就绪模型而不是每连接一线程。
 3. **规模**：内存与 timer 瓶颈、实测档位、若上多核会如何分片。
 
 ---
 
+
+
 ## 12. 下一步实现顺序（供开发排期）
 
-1. 定集成方式（§4：库入口 vs `ENABLE_TRAFFIC_GEN`）。  
-2. 栈：非阻塞 + ready 通知最小集。  
-3. `scenario` + `stats` + `report` 骨架。  
-4. TCP 短连接事务状态机 + HTTP 插件。  
-5. UDP 路径 + DNS 插件 + 加权混合调度。  
-6. 跑通 A1 实测表，补 README。  
+1. 定集成方式（§4：库入口 vs `ENABLE_TRAFFIC_GEN`）。
+2. 栈：非阻塞 + ready 通知最小集。
+3. `scenario` + `stats` + `report` 骨架。
+4. TCP 短连接事务状态机 + HTTP 插件。
+5. UDP 路径 + DNS 插件 + 加权混合调度。
+6. 跑通 A1 实测表，补 README。
 7. 再迭代内存/dirty TX/更高档位。
 
 ---
 
+
+
 ## 修订记录
 
-| 日期 | 说明 |
-|------|------|
+
+| 日期         | 说明                                      |
+| ---------- | --------------------------------------- |
 | 2026-07-31 | 初版：简历向混合流量发生器设计，对齐现有 pro-stack owner 模型 |
+
+

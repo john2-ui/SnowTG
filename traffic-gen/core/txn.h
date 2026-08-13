@@ -13,6 +13,7 @@
 
 #include "../proto/proto.h"
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -31,6 +32,8 @@ struct tg_txn {
         size_t request_len;
         size_t request_offset;
         uint64_t response_bytes;
+        /** True when the completed response permits TCP connection reuse. */
+        bool connection_reusable;
 };
 
 /**
@@ -57,6 +60,17 @@ int tg_txn_init_with_request(struct tg_txn *txn,
  * @param txn Transaction to reset; @c NULL is accepted.
  */
 void tg_txn_reset(struct tg_txn *txn);
+
+/**
+ * @brief Reinitializes one transaction for a new request on the same socket.
+ *
+ * Existing protocol state is reset before the new parser state is created.
+ * The request bytes remain a borrowed view owned by the compiled scenario.
+ */
+int tg_txn_rearm_with_request(struct tg_txn *txn,
+                              const struct tg_proto_ops *proto,
+                              const void *class_config,
+                              const uint8_t *request, size_t request_len);
 
 /**
  * @brief Notifies the protocol that transport accepted request bytes.

@@ -26,6 +26,16 @@ void tg_stats_on_admitted(struct tg_stats *stats) {
         stats->concurrency++;
 }
 
+void tg_stats_on_connection_created(struct tg_stats *stats) {
+        if (stats != NULL)
+                stats->connections_created++;
+}
+
+void tg_stats_on_connection_reused(struct tg_stats *stats) {
+        if (stats != NULL)
+                stats->connections_reused++;
+}
+
 /** @copydoc tg_stats_on_start_failure */
 void tg_stats_on_start_failure(struct tg_stats *stats) {
         if (stats == NULL)
@@ -183,6 +193,8 @@ void tg_stats_snapshot_from_stats(struct tg_stats_snapshot *snapshot,
         snapshot->bytes_rx = stats->bytes_rx;
         snapshot->http_rps_total = stats->http_rps_total;
         snapshot->concurrency = stats->concurrency;
+        snapshot->connections_created = stats->connections_created;
+        snapshot->connections_reused = stats->connections_reused;
         snapshot->connect_samples = stats->connect_samples;
         snapshot->connect_cycles = stats->connect_cycles;
         snapshot->connect_max_cycles = stats->connect_max_cycles;
@@ -245,6 +257,8 @@ void tg_stats_snapshot_add(struct tg_stats_snapshot *aggregate,
         aggregate->http_rps_total += sample->http_rps_total;
         aggregate->concurrency += sample->concurrency;
         aggregate->live_sockets += sample->live_sockets;
+        aggregate->connections_created += sample->connections_created;
+        aggregate->connections_reused += sample->connections_reused;
         aggregate->connect_samples += sample->connect_samples;
         aggregate->connect_cycles += sample->connect_cycles;
         if (sample->connect_max_cycles > aggregate->connect_max_cycles)

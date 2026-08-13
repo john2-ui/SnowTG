@@ -48,6 +48,22 @@ int tg_txn_init_with_request(struct tg_txn *txn,
         return 0;
 }
 
+/** @copydoc tg_txn_rearm_with_request */
+int tg_txn_rearm_with_request(struct tg_txn *txn,
+                              const struct tg_proto_ops *proto,
+                              const void *class_config,
+                              const uint8_t *request, size_t request_len) {
+        if (txn == NULL || proto == NULL || request == NULL ||
+            request_len == 0) {
+                errno = EINVAL;
+                return -1;
+        }
+
+        tg_txn_reset(txn);
+        return tg_txn_init_with_request(txn, proto, class_config, request,
+                                        request_len);
+}
+
 /** @copydoc tg_txn_reset */
 void tg_txn_reset(struct tg_txn *txn) {
         if (txn == NULL)

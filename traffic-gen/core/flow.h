@@ -5,9 +5,9 @@
  * @file flow.h
  * @brief Owner-local TCP/UDP flow state, socket mapping, and lifecycle API.
  *
- * A flow is the transport owner for exactly one transaction.  It is mapped by
- * generation-qualified socket handle while active, then reports completion
- * before its transaction state is reset and the object re-enters its pool.
+ * A flow owns one transport connection and one active transaction. TCP flows
+ * may return to an owner-local idle pool after a successful HTTP transaction;
+ * the socket mapping remains in place until connection teardown.
  */
 
 #include "txn.h"
@@ -24,6 +24,12 @@
 #define TG_FLOW_RESPONSE_CAP 4096U
 /** @brief Default upper bound for an owner-local UDP response wait. */
 #define TG_FLOW_RESPONSE_TIMEOUT_MS 5000U
+/** @brief Default timeout for one TCP transaction, including connect. */
+#define TG_FLOW_TCP_RESPONSE_TIMEOUT_MS 5000U
+/** @brief Default timeout for an idle reusable TCP connection. */
+#define TG_FLOW_TCP_IDLE_TIMEOUT_MS 30000U
+/** @brief Maximum logical requests served by one reusable TCP connection. */
+#define TG_FLOW_TCP_MAX_REQUESTS 100U
 
 /** @brief Transport lifecycle states for a short-lived TCP flow. */
 enum tg_flow_state {
@@ -36,6 +42,8 @@ enum tg_flow_state {
         TG_FLOW_SENDING,
         /** @brief Request is accepted and response bytes are being parsed. */
         TG_FLOW_RECEIVING,
+        /** @brief TCP connection has no active transaction and is reusable. */
+        TG_FLOW_IDLE,
         /** @brief Protocol completed successfully before object reclamation. */
         TG_FLOW_DONE,
         /** @brief Terminal transport or protocol failure before reclamation. */
@@ -44,6 +52,8 @@ enum tg_flow_state {
 
 struct tg_flow;
 struct tg_flow_pool;
+struct tg_conn_pool;
+struct tg_class_plan;
 
 /** @brief Stable terminal classifications reported to scheduler and stats. */
 enum tg_flow_result {
@@ -61,7 +71,7 @@ enum tg_flow_result {
 };
 
 /**
- * @brief Observes one terminal flow result before the flow is reset.
+ * @brief Observes one logical transaction result before flow reuse or reset.
  * @param ctx Opaque observer context supplied at flow creation.
  * @param flow Completed flow with transaction counters still available.
  * @param result Terminal result classified by the transport state machine.
@@ -84,7 +94,7 @@ struct tg_flow_map {
 };
 
 /**
- * @brief Reusable state for one nonblocking request/response exchange.
+ * @brief Reusable state for one nonblocking connection and transaction.
  *
  * Completion observers run before mapping removal, socket close, and pool
  * reset.  They must not retain @p flow because it may be reused immediately
@@ -95,18 +105,24 @@ struct tg_flow {
         enum tg_flow_state state;
         struct tg_txn txn;
         struct sockaddr_in peer;
+        const struct tg_class_plan *class_plan;
+        struct tg_conn_pool *conn_pool;
+        struct tg_flow *pool_next;
 
         bool mapped;
         bool in_use;
+        bool in_idle_pool;
         bool completion_notified;
         tg_flow_finish_fn on_finish;
         void *on_finish_ctx;
+        uint32_t requests_started;
         /** Cycle timestamps are zero until each lifecycle phase occurs. */
         uint64_t start_cycles;     /**< Flow object accepted for connection. */
         uint64_t connected_cycles; /**< TCP CONNECTED notification observed. */
         uint64_t first_rx_cycles;  /**< First application response byte read. */
-        uint64_t
-            deadline_cycles; /**< UDP response deadline, or zero for TCP. */
+        uint64_t deadline_cycles;  /**< Active transaction or UDP response
+                                      deadline. */
+        uint64_t idle_since_cycles; /**< Nonzero while a TCP flow is idle. */
 
         /**
          * Retained diagnostics prefix.  Protocol parsing receives every
@@ -163,15 +179,24 @@ int tg_flow_map_remove(struct tg_flow_map *map, struct tg_flow *flow);
  *
  * @return 0 on admission; -1 with @c errno set if no flow or socket is usable.
  */
-int tg_flow_start_tcp(struct tg_flow_map *map, struct tg_flow_pool *pool,
-                      const struct sockaddr *peer, socklen_t peer_len,
-                      const struct tg_proto_ops *proto,
+int tg_flow_start_tcp(
+    struct tg_flow_map *map, struct tg_flow_pool *pool,
+    const struct sockaddr *peer, socklen_t peer_len,
+    const struct tg_proto_ops *proto, const void *class_config,
+    const struct tg_class_plan *class_plan, struct tg_conn_pool *conn_pool,
+    const uint8_t *request, size_t request_len, tg_flow_finish_fn on_finish,
+    void *on_finish_ctx, tg_flow_socket_created_fn on_socket_created,
+    owner_io_release_fn on_socket_released, void *socket_lifecycle_ctx);
+
+/**
+ * @brief Rearms an idle TCP flow for one new logical transaction.
+ *
+ * The connection remains mapped and owned by the same worker. The caller
+ * accounts logical admission separately from physical socket creation.
+ */
+int tg_flow_rearm_tcp(struct tg_flow *flow, const struct tg_proto_ops *proto,
                       const void *class_config, const uint8_t *request,
-                      size_t request_len, tg_flow_finish_fn on_finish,
-                      void *on_finish_ctx,
-                      tg_flow_socket_created_fn on_socket_created,
-                      owner_io_release_fn on_socket_released,
-                      void *socket_lifecycle_ctx);
+                      size_t request_len);
 
 /**
  * @brief Acquires, initializes, maps, and starts one nonblocking UDP flow.
@@ -203,7 +228,18 @@ int tg_flow_start_udp(struct tg_flow_map *map, struct tg_flow_pool *pool,
 void tg_flow_on_event(struct tg_flow_map *map, struct tg_flow_pool *pool,
                       struct tg_flow *flow, uint32_t events);
 
-/** Reclaims owner-local UDP flows whose response deadline has expired. */
+/**
+ * @brief Closes a flow's TCP connection, optionally finishing its transaction.
+ *
+ * Idle flows must pass @p finish_transaction as false. Active flows are
+ * notified before the socket mapping and flow-pool object are reclaimed.
+ */
+void tg_flow_close_connection(struct tg_flow_map *map,
+                              struct tg_flow_pool *pool, struct tg_flow *flow,
+                              bool finish_transaction,
+                              enum tg_flow_result result);
+
+/** Reclaims owner-local UDP and TCP flows whose deadlines have expired. */
 void tg_flow_expire(struct tg_flow_map *map, struct tg_flow_pool *pool,
                     uint64_t now_cycles);
 

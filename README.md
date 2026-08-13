@@ -129,7 +129,7 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 - 阻塞 `send/recv/connect/accept` 使用 owner-only waiter 队列；owner 遇到 `EAGAIN/EINPROGRESS` 时挂起命令但不阻塞包处理
 - `nclose` 原子撤销 fd 后仅发起协议关闭；TCP TCB 可继续经历 FIN/TIME_WAIT，终态由 owner 延迟释放；generation 防止 slot 复用 ABA
 - BSD/app-visible socket 使用唯一命名的 recv/send 环
-  `sock_recv_%u / sock_send_%u`；traffic-gen owner-local socket 不创建这两个环
+`sock_recv_%u / sock_send_%u`；traffic-gen owner-local socket 不创建这两个环
 - BSD 风格 API：`nsocket / nbind / nsend / nrecv / nsendto / nrecvfrom / nclose / nconnect / nlisten / naccept`
 - `sock_ops` + `sock_ops_lookup`；TCP 已接线 `connect/listen/accept/close`
 
@@ -301,8 +301,9 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
   挂入现有入口，或作为 owner worker 内 reactor task 的取舍；Phase A 可保留
   app-lcore 兼容路径，但必须标注其只适合小规模过渡。
 - [ ] **完成 Phase A traffic-gen**：剧本加载、CPS token bucket、并发水位、
-  flow/transaction 对象池、HTTP/1.1 GET 与 UDP DNS 插件、短连接状态机。
-- [ ] **完成可观测性与验收**：按 lcore 统计 CPS、并发、成功率、错误分类及
+  flow/transaction 对象池、HTTP/1.1 GET 与 UDP DNS 插件、keep-alive 连接池和
+  短连接兼容路径。
+- [x] **完成可观测性与验收**：按 lcore 统计 CPS、并发、成功率、错误分类及
   字节数；提供 `scenarios/`、启动参数和结果归档；混合剧本稳定运行至少
   5 分钟，并记录可复现环境与实测结果。
 
@@ -310,13 +311,13 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 
 #### P1 — 扩展性与工程化
 
-- [ ] **per-core per-reactor 分片**：依赖 A/P2 的 per-worker socket owner、
+- [x] **per-core per-reactor 分片**：依赖 A/P2 的 per-worker socket owner、
   registry 分片和 RSS；每个 RSS worker 同时承载协议 owner 和 traffic-gen
   shard，四元组、flow、timer 与 L7 parser 不跨核迁移，指标低频汇总。
 - [ ] **定时器与发送路径扩展**：以 timer wheel 支撑事务超时；dirty TX
   queue 已避免大量空闲连接的全 socket 扫描，后续仍需验证 timer wheel 的收益。
-- [ ] **扩展协议与连接复用**：HTTP keep-alive；Redis 或 MQTT 二选一；补充
-  延迟直方图、失败分类和容量/内存预算。
+- [x] **扩展协议与连接复用**：HTTP/1.1 keep-alive 并发连接池；Redis 或 MQTT
+  二选一仍待实现；延迟直方图和更细容量/内存预算仍待补充。
 
 
 
@@ -399,8 +400,8 @@ make -C test test-owner-io
 `pro-stack/` 不包含任何程序入口，只导出协议栈静态库与 public headers。
 `apps/stack-demo` 使用编译期 `ENABLE_*` 开关启动 `apps/` 中的 echo 示例；
 `traffic-gen/build/traffic-gen` 不启动这些 app，而是让 reactor 与 socket owner
-同核。后者目前提供 nonblocking I/O 和 ready-event runtime 骨架，尚未包含
-HTTP/DNS scenario 插件。
+同核；HTTP/DNS scenario 插件、owner-local flow 和 HTTP keep-alive 连接池均在
+该独立入口中运行。
 
 ### TCP 与 ARP 日志排查
 

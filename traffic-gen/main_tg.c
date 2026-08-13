@@ -10,6 +10,7 @@
 
 #include "core/flow.h"
 #include "core/flow_pool.h"
+#include "core/conn_pool.h"
 #include "core/reactor.h"
 #include "core/scenario.h"
 #include "core/scheduler.h"
@@ -152,6 +153,7 @@ struct tg_runtime_control {
 struct tg_shard {
         struct tg_flow_map flow_map;
         struct tg_flow_pool flow_pool;
+        struct tg_conn_pool conn_pool;
         struct tg_plan plan;
         struct tg_scheduler scheduler;
         struct tg_stats stats;
@@ -314,6 +316,19 @@ static void tg_on_socket_released(void *ctx) {
         }
 }
 
+/** Close all idle keep-alive connections when a shard stops admitting work. */
+static void tg_close_idle_connections(struct tg_shard *shard) {
+        struct tg_flow *flow;
+
+        if (shard == NULL)
+                return;
+        tg_conn_pool_begin_drain(&shard->conn_pool);
+        while ((flow = tg_conn_pool_take_any_idle(&shard->conn_pool)) != NULL)
+                tg_flow_close_connection(
+                    &shard->flow_map, &shard->flow_pool, flow, false,
+                    TG_FLOW_RESULT_IO_FAILURE);
+}
+
 static void tg_drain_tx_ring(struct inout_ring *ring, uint16_t tx_queue_id) {
         if (ring == NULL)
                 return;
@@ -434,6 +449,7 @@ static void tg_dispatch_rx_burst(struct tg_worker *workers,
 static int tg_start_class(void *ctx, const struct tg_class_plan *class_plan) {
         struct tg_shard *shard = ctx;
         const void *class_config;
+        struct tg_flow *idle_flow = NULL;
         int start_result;
 
         if (shard == NULL || class_plan == NULL)
@@ -441,11 +457,37 @@ static int tg_start_class(void *ctx, const struct tg_class_plan *class_plan) {
         class_config = class_plan->proto_config;
 
         if (class_plan->transport == TG_TRANSPORT_TCP) {
+                idle_flow =
+                    tg_conn_pool_take_idle(&shard->conn_pool, class_plan);
+                if (idle_flow != NULL) {
+                        start_result = tg_flow_rearm_tcp(
+                            idle_flow, class_plan->proto, class_config,
+                            class_plan->request_template,
+                            class_plan->request_template_len);
+                        if (start_result == 0) {
+                                tg_stats_on_connection_reused(&shard->stats);
+                                tg_stats_on_admitted(&shard->stats);
+                                return 0;
+                        }
+                        {
+                                int saved_errno = errno;
+
+                                tg_flow_close_connection(
+                                    &shard->flow_map, &shard->flow_pool,
+                                    idle_flow, false,
+                                    TG_FLOW_RESULT_IO_FAILURE);
+                                errno = saved_errno;
+                        }
+                } else if (!tg_conn_pool_can_create(&shard->conn_pool)) {
+                        errno = EAGAIN;
+                        tg_stats_on_resource_deferred(&shard->stats);
+                        return -1;
+                }
                 start_result = tg_flow_start_tcp(
                     &shard->flow_map, &shard->flow_pool,
                     (const struct sockaddr *)&class_plan->peer,
                     sizeof(class_plan->peer), class_plan->proto, class_config,
-                    class_plan->request_template,
+                    class_plan, &shard->conn_pool, class_plan->request_template,
                     class_plan->request_template_len, tg_on_flow_finished,
                     shard, tg_on_socket_created, tg_on_socket_released, shard);
         } else if (class_plan->transport == TG_TRANSPORT_UDP) {
@@ -471,6 +513,8 @@ static int tg_start_class(void *ctx, const struct tg_class_plan *class_plan) {
                 return -1;
         }
         tg_stats_on_admitted(&shard->stats);
+        if (class_plan->transport == TG_TRANSPORT_TCP)
+                tg_stats_on_connection_created(&shard->stats);
         return 0;
 }
 
@@ -499,6 +543,9 @@ static void tg_shard_tick(void *ctx, unsigned int budget) {
         }
         shard->scheduler_starts += tg_scheduler_tick(
             &shard->scheduler, now_cycles, budget, tg_start_class, shard);
+        if (tg_scheduler_is_stopped(&shard->scheduler) &&
+            !shard->conn_pool.draining)
+                tg_close_idle_connections(shard);
         if (shard->stats_channel != NULL &&
             tg_stats_report_due(&shard->stats, now_cycles, rte_get_timer_hz(),
                                 shard->plan.report_interval_sec))
@@ -816,6 +863,9 @@ int main(int argc, char *argv[]) {
                             tg_scheduler_init(&worker->shard.scheduler,
                                               &worker->shard.plan,
                                               rte_get_timer_hz()) != 0 ||
+                            tg_conn_pool_init(
+                                &worker->shard.conn_pool,
+                                worker->shard.plan.max_concurrency) != 0 ||
                             tg_flow_pool_init(
                                 &worker->shard.flow_pool,
                                 worker->shard.plan.max_concurrency) != 0)
@@ -914,6 +964,7 @@ int main(int argc, char *argv[]) {
 
         /* Stage 12: Release per-worker and global resources before exit. */
         for (unsigned int index = 0; index < worker_count; index++) {
+                tg_conn_pool_fini(&workers[index].shard.conn_pool);
                 tg_flow_pool_fini(&workers[index].shard.flow_pool);
                 tg_flow_map_fini(&workers[index].shard.flow_map);
                 tg_plan_fini(&workers[index].shard.plan);

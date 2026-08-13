@@ -110,9 +110,12 @@ static int test_plan_load_and_validation(void) {
         ASSERT_TRUE(http_config != NULL);
         ASSERT_TRUE(strcmp(http_config->method, "GET") == 0);
         ASSERT_TRUE(strcmp(http_config->path, "/") == 0);
+        ASSERT_TRUE(strcmp(http_config->host, "192.168.21.106") == 0);
         ASSERT_TRUE(plan.classes[0].request_template_len != 0);
         ASSERT_TRUE(memcmp(plan.classes[0].request_template,
-                           "GET / HTTP/1.0\r\nConnection: close\r\n\r\n",
+                           "GET / HTTP/1.1\r\n"
+                           "Host: 192.168.21.106\r\n"
+                           "Connection: keep-alive\r\n\r\n",
                            plan.classes[0].request_template_len) == 0);
         tg_plan_fini(&plan);
 

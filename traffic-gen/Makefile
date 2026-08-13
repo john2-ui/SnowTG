@@ -14,6 +14,7 @@ LLHTTP_DIR := ../third_party/llhttp
 # @brief Application and parser sources compiled into the executable.
 SRCS := main_tg.c \
 	core/reactor.c \
+	core/conn_pool.c \
 	core/flow.c \
 	core/flow_pool.c \
 	core/scenario.c \

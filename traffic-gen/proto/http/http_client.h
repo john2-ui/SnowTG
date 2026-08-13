@@ -18,6 +18,8 @@
 #define TG_HTTP_METHOD_CAP 16U
 /** @brief Capacity, including NUL, of an HTTP request path. */
 #define TG_HTTP_PATH_CAP 768U
+/** @brief Capacity, including NUL, of an HTTP Host header value. */
+#define TG_HTTP_HOST_CAP 256U
 
 /**
  * @brief Owning immutable request parameters for an HTTP traffic class.
@@ -29,13 +31,14 @@
 struct tg_http_config {
         char method[TG_HTTP_METHOD_CAP];
         char path[TG_HTTP_PATH_CAP];
+        char host[TG_HTTP_HOST_CAP];
         bool connection_close;
 };
 
 /** @brief HTTP protocol operations used by scenario-compiled HTTP classes. */
 extern const struct tg_proto_ops tg_http_proto_ops;
 
-/** @brief Default close-delimited HTTP GET configuration for bootstrap use. */
+/** @brief Default HTTP GET configuration with explicit connection close. */
 extern const struct tg_http_config tg_http_bootstrap_config;
 
 #endif /* TRAFFIC_GEN_HTTP_CLIENT_H */

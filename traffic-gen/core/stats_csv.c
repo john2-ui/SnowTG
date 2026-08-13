@@ -61,7 +61,8 @@ int tg_stats_csv_open(struct tg_stats_csv *csv, const char *path,
                 "reactor_burst_high_water,scheduler_starts,tokens,"
                 "socket_releases,ring_hwm_in,ring_hwm_out,rx_ring_drops,"
                 "tx_nic_drops,rx_owner_hits,rx_software_hashes,"
-                "rx_parse_fallbacks,stats_queue_drops\n") < 0) {
+                "rx_parse_fallbacks,stats_queue_drops,connections_created,"
+                "connections_reused\n") < 0) {
                 (void)fclose(csv->file);
                 memset(csv, 0, sizeof(*csv));
                 return -1;
@@ -97,7 +98,8 @@ int tg_stats_csv_write(struct tg_stats_csv *csv,
             "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
             "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
             "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
-            "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 "\n",
+            "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
+            "%" PRIu64 ",%" PRIu64 "\n",
             scope, tg_csv_phase(snapshot->phase),
             tg_csv_cycles_to_us(snapshot->timestamp_cycles, hz),
             snapshot->sequence, snapshot->worker_index, snapshot->lcore_id,
@@ -141,7 +143,8 @@ int tg_stats_csv_write(struct tg_stats_csv *csv,
             snapshot->ring_hwm_out, snapshot->rx_ring_drops,
             snapshot->tx_nic_drops, snapshot->rx_owner_hits,
             snapshot->rx_software_hashes, snapshot->rx_parse_fallbacks,
-            snapshot->stats_queue_drops);
+            snapshot->stats_queue_drops, snapshot->connections_created,
+            snapshot->connections_reused);
         if (result < 0)
                 csv->failed = true;
         return result < 0 ? -1 : 0;
