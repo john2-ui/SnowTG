@@ -172,8 +172,7 @@ static uint64_t tg_flow_udp_deadline(uint64_t start_cycles) {
 }
 
 /** @brief Converts a millisecond timeout into owner timer cycles. */
-static uint64_t tg_flow_deadline(uint64_t start_cycles,
-                                 uint32_t timeout_ms) {
+static uint64_t tg_flow_deadline(uint64_t start_cycles, uint32_t timeout_ms) {
         uint64_t timer_hz = rte_get_timer_hz();
 
         if (timer_hz == 0)
@@ -184,17 +183,14 @@ static uint64_t tg_flow_deadline(uint64_t start_cycles,
 static int tg_flow_send_pending(struct tg_flow *flow);
 
 /** @copydoc tg_flow_start_tcp */
-int tg_flow_start_tcp(struct tg_flow_map *map, struct tg_flow_pool *pool,
-                      const struct sockaddr *peer, socklen_t peer_len,
-                      const struct tg_proto_ops *proto,
-                      const void *class_config,
-                      const struct tg_class_plan *class_plan,
-                      struct tg_conn_pool *conn_pool,
-                      const uint8_t *request, size_t request_len,
-                      tg_flow_finish_fn on_finish, void *on_finish_ctx,
-                      tg_flow_socket_created_fn on_socket_created,
-                      owner_io_release_fn on_socket_released,
-                      void *socket_lifecycle_ctx) {
+int tg_flow_start_tcp(
+    struct tg_flow_map *map, struct tg_flow_pool *pool,
+    const struct sockaddr *peer, socklen_t peer_len,
+    const struct tg_proto_ops *proto, const void *class_config,
+    const struct tg_class_plan *class_plan, struct tg_conn_pool *conn_pool,
+    const uint8_t *request, size_t request_len, tg_flow_finish_fn on_finish,
+    void *on_finish_ctx, tg_flow_socket_created_fn on_socket_created,
+    owner_io_release_fn on_socket_released, void *socket_lifecycle_ctx) {
         struct tg_flow *flow;
         struct nsock_handle handle;
 
@@ -212,9 +208,8 @@ int tg_flow_start_tcp(struct tg_flow_map *map, struct tg_flow_pool *pool,
         flow->on_finish = on_finish;
         flow->on_finish_ctx = on_finish_ctx;
         flow->start_cycles = rte_get_timer_cycles();
-        flow->deadline_cycles =
-            tg_flow_deadline(flow->start_cycles,
-                             TG_FLOW_TCP_RESPONSE_TIMEOUT_MS);
+        flow->deadline_cycles = tg_flow_deadline(
+            flow->start_cycles, TG_FLOW_TCP_RESPONSE_TIMEOUT_MS);
         flow->class_plan = class_plan;
 
         if (tg_txn_init_with_request(&flow->txn, proto, class_config, request,
@@ -395,9 +390,8 @@ int tg_flow_rearm_tcp(struct tg_flow *flow, const struct tg_proto_ops *proto,
         flow->start_cycles = rte_get_timer_cycles();
         flow->connected_cycles = 0;
         flow->first_rx_cycles = 0;
-        flow->deadline_cycles =
-            tg_flow_deadline(flow->start_cycles,
-                             TG_FLOW_TCP_RESPONSE_TIMEOUT_MS);
+        flow->deadline_cycles = tg_flow_deadline(
+            flow->start_cycles, TG_FLOW_TCP_RESPONSE_TIMEOUT_MS);
         flow->idle_since_cycles = 0;
         flow->response_prefix_len = 0;
         flow->completion_notified = false;
@@ -454,10 +448,15 @@ static int tg_flow_drain_receive(struct tg_flow *flow, bool *eof_out,
                                 errno = EPROTO;
                                 return -1;
                         }
-                        if (result == TG_PROTO_COMPLETE) {
+                        /*
+                         * Completion is terminal for the transaction, not
+                         * for the transport drain.  Continue reading until
+                         * EAGAIN or EOF so buffered bytes and a coalesced FIN
+                         * are observed before the caller decides how to
+                         * finish the flow.
+                         */
+                        if (result == TG_PROTO_COMPLETE)
                                 *complete_out = true;
-                                return 0;
-                        }
                         continue;
                 }
                 if (received == 0) {
@@ -474,8 +473,8 @@ static int tg_flow_drain_receive(struct tg_flow *flow, bool *eof_out,
  * @brief Unmaps, closes, and returns one physical connection to its flow pool.
  */
 void tg_flow_close_connection(struct tg_flow_map *map,
-                              struct tg_flow_pool *pool,
-                              struct tg_flow *flow, bool finish_transaction,
+                              struct tg_flow_pool *pool, struct tg_flow *flow,
+                              bool finish_transaction,
                               enum tg_flow_result result) {
         struct nsock_handle handle = flow->handle;
 
@@ -503,8 +502,7 @@ static void tg_flow_finish_transaction(struct tg_flow_map *map,
                                        bool allow_reuse) {
         bool reusable = allow_reuse && result == TG_FLOW_RESULT_SUCCESS &&
                         flow->txn.connection_reusable &&
-                        flow->conn_pool != NULL &&
-                        !flow->conn_pool->draining &&
+                        flow->conn_pool != NULL && !flow->conn_pool->draining &&
                         flow->requests_started < TG_FLOW_TCP_MAX_REQUESTS;
 
         if (!flow->completion_notified && flow->on_finish != NULL) {
@@ -621,7 +619,7 @@ static void tg_flow_on_udp_event(struct tg_flow_map *map,
         if (events & (OWNER_IO_EV_ERROR | OWNER_IO_EV_HUP)) {
                 flow->state = TG_FLOW_FAILED;
                 tg_flow_finish_transaction(map, pool, flow,
-                                            TG_FLOW_RESULT_IO_FAILURE, false);
+                                           TG_FLOW_RESULT_IO_FAILURE, false);
                 return;
         }
 
@@ -629,7 +627,7 @@ static void tg_flow_on_udp_event(struct tg_flow_map *map,
                 if (tg_flow_send_udp(flow) != 0) {
                         flow->state = TG_FLOW_FAILED;
                         tg_flow_finish_transaction(map, pool, flow,
-                                                    tg_flow_io_result(), false);
+                                                   tg_flow_io_result(), false);
                         return;
                 }
         }
@@ -640,13 +638,13 @@ static void tg_flow_on_udp_event(struct tg_flow_map *map,
                 if (tg_flow_drain_udp_receive(flow, &complete) != 0) {
                         flow->state = TG_FLOW_FAILED;
                         tg_flow_finish_transaction(map, pool, flow,
-                                                    tg_flow_rx_result(), false);
+                                                   tg_flow_rx_result(), false);
                         return;
                 }
                 if (complete) {
                         flow->state = TG_FLOW_DONE;
-                        tg_flow_finish_transaction(map, pool, flow,
-                                                    TG_FLOW_RESULT_SUCCESS, false);
+                        tg_flow_finish_transaction(
+                            map, pool, flow, TG_FLOW_RESULT_SUCCESS, false);
                 }
         }
 }
@@ -666,11 +664,11 @@ void tg_flow_on_event(struct tg_flow_map *map, struct tg_flow_pool *pool,
                 bool connecting = flow->state == TG_FLOW_CONNECTING;
 
                 flow->state = TG_FLOW_FAILED;
-                tg_flow_finish_transaction(
-                    map, pool, flow,
-                    connecting ? TG_FLOW_RESULT_CONNECT_FAILURE
-                               : TG_FLOW_RESULT_IO_FAILURE,
-                    false);
+                tg_flow_finish_transaction(map, pool, flow,
+                                           connecting
+                                               ? TG_FLOW_RESULT_CONNECT_FAILURE
+                                               : TG_FLOW_RESULT_IO_FAILURE,
+                                           false);
                 return;
         }
 
@@ -685,7 +683,7 @@ void tg_flow_on_event(struct tg_flow_map *map, struct tg_flow_pool *pool,
                 if (tg_flow_send_pending(flow) != 0) {
                         flow->state = TG_FLOW_FAILED;
                         tg_flow_finish_transaction(map, pool, flow,
-                                                    tg_flow_io_result(), false);
+                                                   tg_flow_io_result(), false);
                         return;
                 }
         }
@@ -699,13 +697,13 @@ void tg_flow_on_event(struct tg_flow_map *map, struct tg_flow_pool *pool,
                 if (tg_flow_drain_receive(flow, &eof, &complete) != 0) {
                         flow->state = TG_FLOW_FAILED;
                         tg_flow_finish_transaction(map, pool, flow,
-                                                    tg_flow_rx_result(), false);
+                                                   tg_flow_rx_result(), false);
                         return;
                 }
                 if (complete) {
                         flow->state = TG_FLOW_DONE;
-                        tg_flow_finish_transaction(map, pool, flow,
-                                                    TG_FLOW_RESULT_SUCCESS, true);
+                        tg_flow_finish_transaction(
+                            map, pool, flow, TG_FLOW_RESULT_SUCCESS, true);
                         return;
                 }
                 if (eof) {
@@ -727,11 +725,11 @@ void tg_flow_on_event(struct tg_flow_map *map, struct tg_flow_pool *pool,
                 bool connecting = flow->state == TG_FLOW_CONNECTING;
 
                 flow->state = TG_FLOW_FAILED;
-                tg_flow_finish_transaction(
-                    map, pool, flow,
-                    connecting ? TG_FLOW_RESULT_CONNECT_FAILURE
-                               : TG_FLOW_RESULT_IO_FAILURE,
-                    false);
+                tg_flow_finish_transaction(map, pool, flow,
+                                           connecting
+                                               ? TG_FLOW_RESULT_CONNECT_FAILURE
+                                               : TG_FLOW_RESULT_IO_FAILURE,
+                                           false);
         }
 }
 
