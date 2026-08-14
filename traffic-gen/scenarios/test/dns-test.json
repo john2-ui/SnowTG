@@ -1,0 +1,22 @@
+{
+    "name": "dns-test",
+    "duration_sec": 120,
+    "max_concurrency": 4500,
+    "target_cps": 100000,
+    "report_interval_sec": 60,
+    "classes": [
+      {
+        "name": "dns_a",
+        "weight": 1,
+        "transport": "udp",
+        "peer": {
+          "ip": "192.168.21.106",
+          "port": 53
+        },
+        "dns": {
+          "qname": "www.example.local",
+          "qtype": "A"
+        }
+      }
+    ]
+  }
