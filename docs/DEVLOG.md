@@ -11,6 +11,7 @@
 - [ARC-005：多 owner worker、硬件 RSS 与软件接收分流](#arc-005多-owner-worker硬件-rss-与软件接收分流) — 已实施；真实 NIC 回退与压力回归待验证
 - [ARC-006：traffic-gen UDP 直发与按需接收队列](#arc-006traffic-gen-udp-直发与按需接收队列) — 已实施；BSD/app-visible UDP 保留兼容路径
 - [ARC-007：traffic-gen 日志处理与低开销可观测性](#arc-007traffic-gen-日志处理与低开销可观测性) — 已实施；性能测量与协议调试分离
+- [ARC-008：TCP SACK、丢包恢复与可插拔拥塞控制](#arc-008tcp-sack丢包恢复与可插拔拥塞控制) — 已实施；D-SACK undo、NewReno 与跨 ACK 重传历史待后续扩展
 
 ## 条目格式
 
@@ -897,3 +898,366 @@ sudo perf script -i /tmp/tg-XXX.data | "$FG/stackcollapse-perf.pl" \
   > /tmp/tg-XXX.folded
 "$FG/flamegraph.pl" /tmp/tg-XXX.folded > /tmp/tg-XXX.svg
 ```
+
+---
+
+## ARC-008：TCP SACK、丢包恢复与可插拔拥塞控制
+
+- **状态**：已实施；D-SACK 当前仅通知拥塞控制，尚未实现虚假恢复 undo。
+- **范围**：`pro-stack/tcp.c`、`tcp.h`、`tcp_options.*`、`tcp_sack.*`、
+  `tcp_cc.*`、`tcp_rtt.*`、`tcp_memory.*` 和 `test/test_tcp_sack.c`。
+- **触发**：原发送路径只依赖累计 ACK 与 RTO，无法表达对端已收到的非连续
+  区间，也缺少 SACK Fast Recovery、显式恢复边界及可替换的拥塞控制接口。
+- **架构决策**：接收侧 SACK/D-SACK 生成、发送侧 RFC 6675 scoreboard、恢复
+  调度和拥塞控制分层；worker/socket owner 在 `sk->mutex` 下串行提交 ACK、
+  scoreboard、恢复模式和 `cwnd`，只有报文成功进入 TX ring 后才提交重传状态。
+
+### 协议范围与核心不变量
+
+本次实现覆盖：
+
+- RFC 2018 SACK-Permitted 协商、SACK option 解析与接收侧 SACK 生成；
+- RFC 2883 D-SACK 生成、识别及向拥塞控制回调上报；
+- RFC 6675 发送侧 scoreboard、`IsLost()`、`Pipe`、Limited Transmit、
+  `NextSeg` 四级调度和固定 `RecoveryPoint`；
+- RFC 5681 风格的内置 Reno：慢启动、拥塞避免、三重复 ACK Fast Retransmit、
+  Fast Recovery、RTO 降窗和 idle restart；
+- 拥塞控制 vtable，使恢复模块负责选包/发包，算法仅负责修改拥塞控制状态。
+
+所有 TCP 字节区间统一使用主机字节序半开区间 `[left, right)`，并使用
+模 `2^32` 的 TCP serial-number 比较函数。以下不变量必须保持：
+
+1. `sacked` 和 `retransmitted` 均按序号排序、互不重叠，相邻或重叠区间插入
+   时合并；两条链表共享每连接 128 个节点的容量上限。
+2. 单个 TCP option 最多保存 4 个 SACK block；该限制不等于连接级 scoreboard
+   只能保存 4 个区间，后者会跨 ACK 累积和合并。
+3. `flight_end = min(sent_seq, sndbuf_end)` 只覆盖已经发送的 payload；
+   `sndbuf_end = sndbuf.head_seq + sndbuf.len` 还可能包含尚未发送的 payload。
+   FIN 占序号空间但不得进入 payload-only scoreboard。
+4. `recovery_point` 在进入恢复时固定为当时的 `flight_end`；恢复期间发送新数据
+   不得扩展它。累计 ACK 到达该边界才结束 SACK/RTO 恢复。
+5. `pending` 只是已选择、尚未提交的候选。ARP、mbuf 或 TX-ring 暂时失败时
+   保留相同候选；只有成功入输出 ring 后才更新 `HighRxt`、`Pipe` 和
+   `retransmitted`。
+6. 拥塞控制回调在 socket mutex 下运行，只修改 `tcp_cc_state`；scoreboard、
+   `sndbuf`、序号推进、选包和实际发送仍由 TCP 恢复/发送模块负责。
+
+### 结构关联
+
+`tcp_stream` 同时保存接收侧 SACK 生成提示、当前入站报文解析结果、发送侧恢复
+状态和拥塞控制状态。`tcp_sack_state` 这个名称包含历史原因：其中
+`mode`、`dup_acks`、`recovery_point` 和 `pending` 也被非 SACK 的 Classic Reno
+与 RTO 恢复复用。
+
+```mermaid
+classDiagram
+direction LR
+
+class tcp_stream {
+    +bool sack_local_offered
+    +bool sack_peer_permitted
+    +bool sack_permitted
+
+    +bool sack_recent_valid
+    +tcp_sack_block sack_recent
+    +uint8_t sack_history_count
+    +tcp_sack_block sack_history[4]
+
+    +bool dsack_pending
+    +tcp_sack_block dsack_block
+
+    +uint8_t rx_sack_count
+    +tcp_sack_block rx_sacks[4]
+
+    +tcp_sack_state sack
+    +tcp_cc_state cc
+
+    +uint32_t snd_una
+    +uint32_t sent_seq
+    +uint32_t snd_mss
+}
+
+class tcp_sack_block {
+    +uint32_t left
+    +uint32_t right
+}
+
+class tcp_sack_state {
+    +tcp_sack_range* sacked
+    +tcp_sack_range* retransmitted
+    +uint16_t range_count
+    +bool degraded
+    +uint32_t degraded_until
+
+    +tcp_recovery_mode mode
+    +uint32_t high_data
+    +uint32_t high_rxt
+    +uint32_t rescue_rxt
+    +uint32_t recovery_point
+    +uint32_t pipe
+    +uint8_t dup_acks
+    +bool limited_transmit
+
+    +tcp_recovery_candidate pending
+}
+
+class tcp_sack_range {
+    +tcp_sack_range* next
+    +uint32_t left
+    +uint32_t right
+    +uint8_t flags
+}
+
+class tcp_recovery_candidate {
+    +tcp_recovery_tx_kind kind
+    +uint8_t nextseg_rule
+    +bool rescue
+    +uint32_t seq
+    +uint32_t end
+}
+
+class tcp_cc_state {
+    +tcp_cc_ops* ops
+    +uint32_t cwnd
+    +uint32_t ssthresh
+    +uint32_t initial_window
+    +uint32_t ca_acked
+    +uint32_t rto_loss_seq
+    +bool rto_loss_valid
+    +uint32_t last_data_tx_ms
+    +uint8_t priv[64]
+}
+
+class tcp_cc_ops {
+    +char* name
+    +init()
+    +reset()
+    +on_ack()
+    +on_packet_sent()
+    +on_loss()
+    +on_recovery_exit()
+    +on_rto()
+    +on_idle_restart()
+    +on_dsack()
+}
+
+class tcp_recovery_mode {
+    <<enumeration>>
+    NORMAL
+    SACK
+    RTO
+    CLASSIC_RENO
+}
+
+class tcp_recovery_tx_kind {
+    <<enumeration>>
+    NONE
+    RETRANSMIT
+    NEW_DATA
+}
+
+class tcp_sack_range_flags {
+    <<enumeration>>
+    SACKED
+    RETRANSMITTED
+}
+
+tcp_stream *-- tcp_sack_state : 发送侧恢复状态
+tcp_stream *-- tcp_cc_state : 拥塞控制状态
+
+tcp_stream *-- tcp_sack_block : sack_recent
+tcp_stream *-- tcp_sack_block : sack_history[4]
+tcp_stream *-- tcp_sack_block : dsack_block
+tcp_stream *-- tcp_sack_block : rx_sacks[4]
+
+tcp_sack_state *-- tcp_recovery_candidate : pending
+tcp_sack_state --> tcp_recovery_mode : mode
+
+tcp_sack_state --> tcp_sack_range : sacked链表
+tcp_sack_state --> tcp_sack_range : retransmitted链表
+tcp_sack_range --> tcp_sack_range : next
+tcp_sack_range --> tcp_sack_range_flags : flags
+
+tcp_recovery_candidate --> tcp_recovery_tx_kind : kind
+tcp_cc_state --> tcp_cc_ops : ops
+```
+
+### SACK/D-SACK 与恢复数据流
+
+接收侧和发送侧使用同一个 `tcp_stream`，但数据方向相反：
+
+- `sack_recent`、`sack_history[]`、`dsack_pending` 和 `dsack_block` 来自本端
+  接收/OFO 状态，用于生成发给对端的 SACK/D-SACK；
+- `rx_sacks[]` 是从对端当前报文解析出的临时输入，随后进入发送侧
+  `sacked` scoreboard；
+- `retransmitted` 是本端恢复发送历史，不代表对端请求重传的区间。
+
+```mermaid
+flowchart LR
+    subgraph RXSide["本端作为接收端：生成 SACK / D-SACK"]
+        PeerData["对端数据段"] --> SeqCheck{"按序、乱序或重复？"}
+        SeqCheck -->|乱序| OFO["OFO tree / ordered list"]
+        OFO --> Recent["sack_recent + sack_history"]
+        SeqCheck -->|重复/重叠| DSPending["dsack_pending + dsack_block"]
+        Recent --> Emit["tcp_options_emit_sack()"]
+        DSPending --> Emit
+        Emit --> OutAck["发出 ACK + SACK/D-SACK"]
+    end
+
+    subgraph TXSide["本端作为发送端：消费对端 SACK 并恢复"]
+        InAck["收到 ACK + SACK/D-SACK"] --> Parse["tcp_options_parse()"]
+        Parse --> RxSacks["rx_sacks[]"]
+        RxSacks --> Update["tcp_sack_update()"]
+        Update --> Score["合并 sacked scoreboard"]
+        Update --> DSClass["识别 D-SACK并匹配 retransmitted"]
+        Score --> Loss["dup_acks / IsLost()"]
+        Loss --> Enter["tcp_cc_on_loss()+进入恢复"]
+        Enter --> Pipe["SetPipe"]
+        Pipe --> Credit{"cwnd - Pipe >= SMSS？"}
+        Credit -->|是| NextSeg["NextSeg Rule 1..4"]
+        NextSeg --> Pending["pending candidate"]
+        Pending --> TXRing{"构造报文并进入 TX ring？"}
+        TXRing -->|暂时失败| Pending
+        TXRing -->|成功| Commit["commit_candidate()"]
+        Commit --> Retrans["更新 HighRxt / Pipe / retransmitted"]
+        DSClass --> DSCallback["cc.ops.on_dsack()"]
+        Retrans --> InAck
+        Update --> Exit{"累计 ACK >= RecoveryPoint？"}
+        Exit -->|是| CCExit["on_recovery_exit()"]
+    end
+```
+
+### 接收侧 SACK 与 D-SACK 生成
+
+SACK 只有在双方 SYN 都携带 SACK-Permitted 后启用。接收侧以真实 OFO 内容
+为准，先把相邻/重叠节点规范化，再按有限 option 空间选择 block：
+
+1. 若存在一次性的 `dsack_pending`，D-SACK 必须先发；若重复区间位于累计
+   ACK 之上，第二个 block 同时携带包含它的较大普通 SACK 区间。
+2. 否则最近触发 ACK 的规范化 OFO 区间 `sack_recent` 优先成为首个普通 block。
+3. `sack_history[]` 作为最多 4 项的 MRU 提示，保存近期成功报告的首块；发包
+   前必须与当前 OFO 区间重新验证，历史本身不拥有或复制接收数据。
+4. 剩余空间按规范化 OFO 顺序补充，重复/被包含的 block 不重复发出。
+
+TCP options 总长受 40 字节限制。无 Timestamp 时最多编码 4 个 SACK block；
+Timestamp 与 SACK 共存时容量会减少，数据 MSS 同步扣除实际 option 长度。
+
+### 发送侧 scoreboard 与 D-SACK
+
+`tcp_sack_update()` 在一个 ACK 事务中完成 flight 裁剪、D-SACK 分类、普通
+SACK 合并、新增 SACK 字节统计和恢复退出检测：
+
+- 第一个 block 完全位于该报文累计 ACK 左侧，或被第二个 SACK block 完整
+  包含时，按 RFC 2883 识别为 D-SACK；识别必须使用同一报文的 ACK 字段，
+  不能使用可能已受 ACK 重排影响的历史值。
+- D-SACK 表示对端重复收到该区间，不是“请求重传”。首个 D-SACK block 不
+  进入普通 scoreboard；条件二中的第二个较大 block 仍完整加入 `sacked`，
+  不得从中挖掉 D-SACK 子区间，否则会制造虚假 hole。
+- `newly_sacked_bytes` 只统计此前未覆盖的字节，供重复 ACK/SACK 判定和拥塞
+  控制事件使用。
+- D-SACK 与 `retransmitted` 的相交结果只说明重复数据可能与本地重传有关，
+  不能单凭一次匹配证明整个恢复窗口没有真实丢包。
+
+scoreboard 节点由 owner-local pool 提供。节点池耗尽或达到每连接上限时，
+实现清空两条建议性链表、退出 SACK 恢复并设置 `degraded_until = HighData`；
+在累计 ACK 越过该 flight 前不再使用 SACK 优化，可靠性由累计 ACK 与 RTO
+保证，应用 `sndbuf` 数据不受影响。
+
+### 丢包判定、Pipe 与 NextSeg
+
+`tcp_sack_is_lost(tp, seq)` 只适用于 RFC 6675 SACK 恢复，不是通用丢包
+判定器。当前阈值 `DupThresh = 3`，满足任一条件即把 `seq` 判为丢失：
+
+```text
+seq 上方至少有 3 个不连续 SACK 区间
+或
+seq 上方已 SACK 字节数严格大于 2 * SMSS
+```
+
+严重乱序仍可能导致虚假 Fast Retransmit；D-SACK 提供事后识别线索。无 SACK
+的 Classic Reno 使用 3 个形状合法的重复 ACK，RTO 路径使用定时器超时，二者
+不调用这套 `IsLost()` 规则。
+
+`tcp_sack_set_pipe()` 遍历 `[SND.UNA, flight_end)` 中的未 SACK hole：已被
+`IsLost()` 判丢失的原始副本不计入，尚未判丢失的原始数据计入，已经发出的
+重传副本仍计入。SACK Fast Recovery 只有在 `cwnd - Pipe >= SMSS` 时继续
+调度；正常发送使用 `sent_seq - SND.UNA`，Classic Reno 使用窗口膨胀，RTO
+使用保守的 ACK-clocked 恢复，因此不跨模式复用 `Pipe`。
+
+`tcp_sack_schedule_next()` 按固定优先级选择最多一个 SMSS：
+
+1. Rule 1：最低、已满足 `IsLost()` 的未 SACK hole；
+2. Rule 2：窗口允许时发送 `[HighData, sndbuf_end)` 中从未发送的新数据；
+3. Rule 3：最高 SACK 边界以下尚未满足严格 `IsLost()` 的最低 hole；
+4. Rule 4：本轮最多一次，从最高未 SACK hole 的末尾选择 rescue segment。
+
+`HighRxt` 只在普通重传成功入 TX ring 后推进，不随 ACK 前进或后退；ACK 只
+裁剪 `retransmitted` 链表。rescue 成功更新 `RescueRxt` 而不推进 `HighRxt`。
+
+### 恢复模式与拥塞控制
+
+恢复状态互斥：
+
+```mermaid
+stateDiagram-v2
+    [*] --> NORMAL
+    NORMAL --> SACK : 新SACK达到阈值或IsLost
+    NORMAL --> CLASSIC_RENO : 未协商SACK且3个重复ACK
+    NORMAL --> RTO : 重传定时器超时
+    SACK --> NORMAL : 累计ACK到达RecoveryPoint
+    RTO --> NORMAL : 累计ACK到达RecoveryPoint
+    CLASSIC_RENO --> NORMAL : 首个推进累计ACK
+```
+
+内置 Reno 的当前行为：
+
+- 慢启动：非恢复 ACK 每次最多增加一个 SMSS；
+- 拥塞避免：累计确认约一个 `cwnd` 的字节后增加一个 SMSS；
+- SACK loss：`ssthresh = max(FlightSize / 2, 2 * SMSS)`，`cwnd = ssthresh`；
+- Classic Reno 第三个重复 ACK：设置相同 `ssthresh`，并将
+  `cwnd = ssthresh + 3 * SMSS`；恢复中的额外重复 ACK 每次再膨胀一个 SMSS；
+- RTO：首次针对当前 `SND.UNA` 超时时更新 `ssthresh`，所有 RTO 都把
+  `cwnd` 降为一个 SMSS；同一 `SND.UNA` 重复超时不反复降低 `ssthresh`；
+- 恢复退出：把膨胀的 `cwnd` 收缩到不高于 `ssthresh`，清空加性增长计数；
+- idle restart：空闲超过一个 RTO 后将 `cwnd` 限制到初始窗口；
+- D-SACK：回调已暴露，但默认 Reno 有意保持 `cwnd`、`ssthresh` 不变。
+
+`tcp_cc_ops` 将 `init/reset/on_ack/on_packet_sent/on_loss/on_recovery_exit/
+on_rto/on_idle_restart/on_dsack` 统一为 vtable。ACK 处理先原子更新累计 ACK、
+SACK 和恢复模式，再发送一个包含 `acked_bytes`、`newly_sacked_bytes`、
+`flight_size` 和 `in_recovery` 的事件；恢复期 ACK 不触发 Reno 正常增窗。
+
+### 实施边界与遗留事项
+
+1. 当前 Classic Reno 在恢复中收到第一个推进累计 ACK 就退出，是基础 Reno，
+   不是可在同一窗口连续恢复多个丢包的 NewReno；需要多丢包非 SACK 恢复时应
+   增加 partial-ACK 语义，不能直接复用当前退出条件。
+2. `retransmitted` 当前随 scoreboard 裁剪到 `[SND.UNA, flight_end)`，且裁剪
+   发生在 D-SACK 历史匹配之前。位于新累计 ACK 左侧的条件一 D-SACK 可能在
+   匹配前失去对应重传区间；若实现 RFC 3708 式虚假重传判定，应保留跨 ACK
+   的短期历史、重传次数和 recovery generation，或在裁剪前完成匹配。
+3. `dsack_covers_retransmission` 当前调用区间相交判断，实际语义是“与任一
+   本地重传区间有交集”，并不要求完整覆盖；后续对外扩展时应改名或加强判定。
+4. D-SACK 只能提供多余重传证据。网络复制、同一窗口真实丢包和多次重传会
+   造成歧义；实现拥塞窗口 undo 前必须使用保守判定，不能见到 D-SACK 就恢复
+   `cwnd`。
+5. `tcp_sack_state` 同时保存 SACK 专属和通用恢复字段。若继续增加 NewReno、
+   RACK/TLP 或其他恢复算法，应拆分/重命名为通用 `tcp_recovery_state` 与
+   SACK scoreboard，避免模块名继续扩大语义。
+
+### 验证重点
+
+`test/test_tcp_sack.c` 覆盖 option 解析与协商、接收侧 block 规范化和容量、
+sender scoreboard 合并/裁剪/回绕、容量耗尽降级、D-SACK 分类、`IsLost()`、
+`Pipe`、NextSeg/RTO、Reno vtable、三次新 SACK 恢复进入和 OFO duplicate
+D-SACK。后续回归至少应保持：
+
+```bash
+make -C test test-tcp-sack
+./test/build/test_tcp_sack
+make -C pro-stack
+```
+
+真实链路验证还应覆盖 ACK/SACK 重排、多个 hole、TX ring 暂时失败、RTO 后
+SACK reneging、FIN 与 payload flight 边界、Timestamp option 挤压 SACK 容量，
+以及 D-SACK 在累计 ACK 左侧和累计 ACK 之上的两种编码。

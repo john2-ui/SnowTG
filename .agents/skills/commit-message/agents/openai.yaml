@@ -1,0 +1,4 @@
+interface:
+  display_name: "Commit Message"
+  short_description: "按仓库规范生成中文 Conventional Commit 提交说明"
+  default_prompt: "使用 $commit-message 根据当前已暂存改动生成符合本仓库规范的提交说明。"
