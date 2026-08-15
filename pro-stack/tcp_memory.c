@@ -19,20 +19,21 @@ struct tcp_payload_block {
 
 /** Stable mempool name stems; the owner lcore suffix makes them unique. */
 static const char *const tcp_memory_names[TCP_MEMORY_KIND_MAX] = {
-    "tcp_tx_chunk", "tcp_rx_blob", "tcp_ofo_seg", "tcp_fragment", "tcp_payload",
+    "tcp_tx_chunk", "tcp_rx_blob", "tcp_ofo_seg", "tcp_fragment",
+    "tcp_sack_range", "tcp_payload",
 };
 
 /** Per-kind object budgets configured for one owner worker. */
 static const uint32_t tcp_memory_counts[TCP_MEMORY_KIND_MAX] = {
     TCP_MEMORY_TX_CHUNKS, TCP_MEMORY_RX_BLOBS,       TCP_MEMORY_OFO_SEGS,
-    TCP_MEMORY_FRAGMENTS, TCP_MEMORY_PAYLOAD_BLOCKS,
+    TCP_MEMORY_FRAGMENTS, TCP_MEMORY_SACK_RANGES, TCP_MEMORY_PAYLOAD_BLOCKS,
 };
 
 /** Concrete allocation sizes associated with each @ref tcp_memory_kind. */
 static const unsigned int tcp_memory_sizes[TCP_MEMORY_KIND_MAX] = {
     sizeof(struct tcp_tx_chunk),      sizeof(struct tcp_rx_blob),
     sizeof(struct tcp_ofo_seg),       sizeof(struct tcp_fragment),
-    sizeof(struct tcp_payload_block),
+    sizeof(struct tcp_sack_range), sizeof(struct tcp_payload_block),
 };
 
 /** Update one pool's high-water mark immediately after a successful get. */
@@ -205,6 +206,18 @@ tcp_memory_fragment_alloc(struct tcp_owner_memory *memory) {
 void tcp_memory_fragment_free(struct tcp_owner_memory *memory,
                               struct tcp_fragment *fragment) {
         tcp_memory_put(memory, TCP_MEMORY_FRAGMENT, fragment);
+}
+
+/** @copydoc tcp_memory_sack_range_alloc */
+struct tcp_sack_range *
+tcp_memory_sack_range_alloc(struct tcp_owner_memory *memory) {
+        return tcp_memory_get(memory, TCP_MEMORY_SACK_RANGE);
+}
+
+/** @copydoc tcp_memory_sack_range_free */
+void tcp_memory_sack_range_free(struct tcp_owner_memory *memory,
+                                struct tcp_sack_range *range) {
+        tcp_memory_put(memory, TCP_MEMORY_SACK_RANGE, range);
 }
 
 /** @copydoc tcp_memory_payload_alloc */

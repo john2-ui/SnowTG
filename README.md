@@ -333,33 +333,20 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 
 
 
-## 四、效率目标（用高效方案替换现状）
+## 四、效率目标（用高效方案替换现状）（_表示已完成）
 
 下列现状可跑通演示，**不是**长期架构；实现完备 TCP 时应一并替换。
 
 
-| 现状（低效）                                                                                    | 目标（高效）                                                                                                   |
-| ----------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| fd、UDP bind、TCP listener/4-tuple 与 ARP 已使用 `rte_hash`；`g_sock_list` 保留作生命周期索引             | TX 使用 owner-local dirty socket 队列                                                                        |
-| worker 每轮遍历全部 socket 调 `tx_flush`                                                         | 仅冲洗有待发数据的 socket；ARP 等待由邻居学习事件唤醒                                                                         |
-| TCP OFO 使用 RB-tree（按 seq）+ 双向链表，插入定位 O(log n)、从 `recv_ack` drain O(1)，并限制节点、每 TCB 字节与全局字节 | 增加可观测性指标；依据压力和乱序距离自适应调节上限                                                                                |
-| `tcp_send` → owner-local ACK-retained chunk 链（仅未确认数据占用内存）                                 | （可选）零拷贝 / mbuf 引用计数                                                                                      |
-| ARP 解析：按需 probe、缓存老化、容量淘汰与退避已实现                                                           | 全网扫描仅保留为可选、批量限速的调试手段                                                                                     |
-| 单 RX/TX queue、单 packet worker                                                             | 多 queue + 硬件 RSS：同一四元组固定归属一个 worker；ARP/ICMP、计时器、TX 和 socket 生命周期按 worker 分片。单 RX queue 或自定义亲和时再使用软件 RSS |
+| 现状（低效）                                                                                    | 目标（高效）                                                                                                       |
+| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| fd、UDP bind、TCP listener/4-tuple 与 ARP 已使用 `rte_hash`；`g_sock_list` 保留作生命周期索引             | ++TX 使用 owner-local dirty socket 队列++                                                                        |
+| worker 每轮遍历全部 socket 调 `tx_flush`                                                         | 仅冲洗有待发数据的 socket；ARP 等待由邻居学习事件唤醒                                                                             |
+| TCP OFO 使用 RB-tree（按 seq）+ 双向链表，插入定位 O(log n)、从 `recv_ack` drain O(1)，并限制节点、每 TCB 字节与全局字节 | 增加可观测性指标；依据压力和乱序距离自适应调节上限                                                                                    |
+| `tcp_send` → owner-local ACK-retained chunk 链（仅未确认数据占用内存）                                 | （可选）零拷贝 / mbuf 引用计数                                                                                          |
+| ARP 解析：按需 probe、缓存老化、容量淘汰与退避已实现                                                           | 全网扫描仅保留为可选、批量限速的调试手段                                                                                         |
+| 单 RX/TX queue、单 packet worker                                                             | ++多 queue + 硬件 RSS：同一四元组固定归属一个 worker；++ARP/ICMP、计时器、TX 和 socket 生命周期按 worker 分片。单 RX queue 或自定义亲和时再使用软件 RSS |
 
-
----
-
-
-
-## 五、如何扩展（加一个新协议）
-
-1. 写 `xxx.h` 定义私有状态（如有）和 `extern const struct sock_ops xxx_ops`。
-2. 写 `xxx.c` 实现 `ingress / tx_flush / send / recv / close`（可复用 `eth_ipv4_build`），定义 `xxx_ops`。
-3. 在 [socket.c](pro-stack/socket.c) 的 `sock_ops_lookup` 增加 `case IPPROTO_XXX: return &xxx_ops;`。
-4. `nsocket(..., IPPROTO_XXX)` 即可；`stack_runtime` 派发与 worker `tx_flush` 自动生效。
-
-加一个 TCP 新状态/迁移：在 [tcp.c](pro-stack/tcp.c) 的 `tcp_state_ops[]` 加一行并实现 handler，经 `tcp_stream_set_status` 切换即可。
 
 ---
 

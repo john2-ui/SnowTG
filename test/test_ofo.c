@@ -116,6 +116,12 @@ static void test_order_and_lower_bound(void) {
         CHECK(tcp_test_ofo_insert(&sk, 100, (const uint8_t *)a, 4, 0) == 0);
         CHECK(tcp_test_ofo_insert(&sk, 140, (const uint8_t *)c, 4, 0) == 0);
         CHECK(tcp_test_ofo_insert(&sk, 130, (const uint8_t *)d, 4, 0) == 0);
+        CHECK(sk.u.tcp.sack_recent_valid);
+        CHECK(sk.u.tcp.sack_recent.left == 130);
+        CHECK(sk.u.tcp.sack_recent.right == 134);
+        /* A retained duplicate still identifies its real OFO block. */
+        CHECK(tcp_test_ofo_insert(&sk, 130, (const uint8_t *)d, 4, 0) == 0);
+        CHECK(sk.u.tcp.sack_recent_valid);
         validate_indexes(&sk);
 
         expect_segment(sk.u.tcp.ofo, 100, a, 4, 0);
@@ -176,6 +182,7 @@ static void test_receive_window_and_capacity(void) {
         }
         CHECK(tcp_test_ofo_insert(&sk, TCP_OFO_MAX_SEGS * 2,
                                   (const uint8_t *)payload, 1, 0) == -1);
+        CHECK(!sk.u.tcp.sack_recent_valid);
         validate_indexes(&sk);
         tcp_test_ofo_purge(&sk);
 }

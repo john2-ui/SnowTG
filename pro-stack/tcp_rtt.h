@@ -15,6 +15,8 @@ bool tcp_rtt_on_ack(struct nsock *sk, uint32_t ack, bool ts_present,
                     uint32_t tsecr);
 /** Double the current data/FIN RTO and activate Karn suppression. */
 void tcp_rtt_on_timeout(struct nsock *sk);
+/** Activate Karn suppression for a fast retransmission without RTO backoff. */
+void tcp_rtt_on_retransmit(struct nsock *sk);
 /** Clear flight-local RTT state after all outstanding bytes are acknowledged.
  */
 void tcp_rtt_on_flight_acked(struct nsock *sk);

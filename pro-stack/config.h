@@ -118,6 +118,8 @@
 #define TCP_MEMORY_OFO_SEGS 4095U
 /** Per-owner capacity of queued SYN/ACK/FIN descriptor objects. */
 #define TCP_MEMORY_FRAGMENTS 4095U
+/** Per-owner capacity of lazily allocated sender SACK scoreboard ranges. */
+#define TCP_MEMORY_SACK_RANGES 8191U
 /** Shared per-owner payload backing blocks for RX, OFO, and TX chunks. */
 #define TCP_MEMORY_PAYLOAD_BLOCKS 8191U
 /** Pause traffic-gen admissions below this per-pool availability threshold. */

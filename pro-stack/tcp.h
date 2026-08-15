@@ -24,6 +24,8 @@
 
 #include "list.h"
 #include "rbtree.h"
+#include "tcp_cc.h"
+#include "tcp_sack.h"
 
 #include <rte_mbuf.h>
 #include <rte_tcp.h>
@@ -137,6 +139,17 @@ const uint8_t *tcp_test_sndbuf_peek(const struct nsock *sk, uint32_t seq,
                                     uint32_t *available);
 /** Test-only destruction of every chunk in a send buffer. */
 void tcp_test_sndbuf_free(struct nsock *sk);
+/** Feed parsed SACK blocks into the sender scoreboard test seam. */
+void tcp_test_sack_score_update(struct nsock *sk,
+                                const struct tcp_sack_block *blocks,
+                                uint8_t count);
+/** Select the first retransmission hole using the current test TCB state. */
+bool tcp_test_sack_schedule_retransmit(struct nsock *sk);
+/** Reset all sender-side SACK soft state in tests. */
+void tcp_test_sack_score_clear(struct nsock *sk);
+/** Exercise duplicate-ACK/SACK recovery entry without external I/O. */
+void tcp_test_process_peer_ack(struct nsock *sk, uint32_t ack,
+                               bool classic_duplicate);
 #endif
 
 /**
@@ -251,6 +264,33 @@ struct tcp_stream {
         bool rx_timestamp_present;
         uint32_t rx_tsval;
         uint32_t rx_tsecr;
+
+        /** RFC 2018 negotiation succeeds only when both SYNs carry kind 4. */
+        bool sack_local_offered;
+        bool sack_peer_permitted; /**< Peer SYN carried SACK-Permitted. */
+        bool sack_permitted; /**< Both endpoints actually offered SACK. */
+        /** Normalized OFO range containing the most recently received data. */
+        bool sack_recent_valid;
+        struct tcp_sack_block sack_recent; /**< Current first-block hint. */
+        /** Recently emitted first blocks, newest first, revalidated on emit. */
+        uint8_t sack_history_count;
+        struct tcp_sack_block sack_history[TCP_SACK_MAX_BLOCKS]; /**< MRU. */
+        /** One-shot RFC 2883 duplicate block for the next generated ACK. */
+        bool dsack_pending;
+        struct tcp_sack_block dsack_block; /**< Duplicate half-open range. */
+        /** SACK blocks decoded from the segment currently in ingress. */
+        uint8_t rx_sack_count;
+        struct tcp_sack_block rx_sacks[TCP_SACK_MAX_BLOCKS]; /**< Host order. */
+
+        /** RFC 6675 range scoreboard and loss-recovery state. */
+        struct tcp_sack_state sack;
+        /** Pluggable congestion-control state; Reno is the default. */
+        struct tcp_cc_state cc;
+        /** A SYN retransmission reduces the post-handshake initial window. */
+        bool syn_retransmitted;
+        /** Close requested while congestion/window limits leave unsent data. */
+        bool fin_deferred;
+
         /** RFC 6298 RTT estimators and current data/FIN RTO, in ms. */
         uint32_t srtt_ms;
         uint32_t rttvar_ms;

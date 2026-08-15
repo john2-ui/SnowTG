@@ -17,6 +17,7 @@ struct rte_mempool;
 struct tcp_fragment;
 struct tcp_ofo_seg;
 struct tcp_rx_blob;
+struct tcp_sack_range;
 struct tcp_tx_chunk;
 
 /** Kinds of fixed objects tracked independently by one TCP owner. */
@@ -25,6 +26,7 @@ enum tcp_memory_kind {
         TCP_MEMORY_RX_BLOB,
         TCP_MEMORY_OFO_SEG,
         TCP_MEMORY_FRAGMENT,
+        TCP_MEMORY_SACK_RANGE,
         TCP_MEMORY_PAYLOAD,
         TCP_MEMORY_KIND_MAX,
 };
@@ -85,6 +87,12 @@ struct tcp_fragment *tcp_memory_fragment_alloc(struct tcp_owner_memory *memory);
 /** Return a queued TCP control-fragment descriptor to its owner. */
 void tcp_memory_fragment_free(struct tcp_owner_memory *memory,
                               struct tcp_fragment *fragment);
+/** Acquire one sender SACK interval node from its owner-local pool. */
+struct tcp_sack_range *
+tcp_memory_sack_range_alloc(struct tcp_owner_memory *memory);
+/** Return one sender SACK interval node to its owner-local pool. */
+void tcp_memory_sack_range_free(struct tcp_owner_memory *memory,
+                                struct tcp_sack_range *range);
 /**
  * Acquire one fixed-size payload block and expose its byte storage.
  * @p storage is an opaque pool object that must later be returned unchanged.

@@ -38,7 +38,7 @@ void tcp_rtt_reset(struct nsock *sk) {
         sk->u.tcp.rtt_retransmitting = false;
 }
 
-/**b v
+/**
  * @brief Save one Timestamp RTT measurement probe for the current flight.
  * @param end_seq First sequence number beyond the transmitted payload.
  * @param tsval TSval encoded on that payload segment.
@@ -112,6 +112,17 @@ bool tcp_rtt_on_ack(struct nsock *sk, uint32_t ack, bool ts_present,
  */
 void tcp_rtt_on_timeout(struct nsock *sk) {
         sk->u.tcp.rto_ms = tcp_rtt_clamp((uint64_t)sk->u.tcp.rto_ms * 2);
+        sk->u.tcp.rtt_probe_valid = false;
+        sk->u.tcp.rtt_retransmitting = true;
+}
+
+/**
+ * @brief Activate Karn suppression for fast or SACK retransmission.
+ *
+ * Unlike @ref tcp_rtt_on_timeout, this path deliberately leaves the current
+ * RTO unchanged because no retransmission timer expired.
+ */
+void tcp_rtt_on_retransmit(struct nsock *sk) {
         sk->u.tcp.rtt_probe_valid = false;
         sk->u.tcp.rtt_retransmitting = true;
 }

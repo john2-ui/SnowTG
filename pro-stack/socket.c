@@ -892,6 +892,8 @@ struct nsock *nsock_alloc_mode(int fd, uint8_t protocol,
                 sk->u.tcp.snd_wnd_valid = false;
 
                 sk->u.tcp.snd_mss = TCP_DEFAULT_MSS;
+                tcp_sack_state_init(&sk->u.tcp, 0);
+                tcp_cc_use_reno(&sk->u.tcp, false);
 
                 rb_root_init(&sk->u.tcp.ofo_tree);
                 sk->u.tcp.ofo = NULL;
@@ -947,6 +949,7 @@ void nsock_free(struct nsock *sk) {
         /* Drop any pending retransmission/TIME_WAIT callback before free. */
         if (sk->protocol == IPPROTO_TCP) {
                 rte_timer_stop(&sk->u.tcp.timer);
+                tcp_sack_state_reset(&sk->u.tcp, sk->u.tcp.snd_una);
                 tcp_sndbuf_free(&sk->u.tcp.sndbuf);
         }
         if (sk->registry_flags & NSOCK_REG_TCP_CONN) {
