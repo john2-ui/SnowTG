@@ -1,9 +1,9 @@
 {
     "name": "http-baseline",
     "duration_sec": 120,
-    "max_concurrency": 10000,
+    "max_concurrency": 500,
     "target_cps": 100000,
-    "report_interval_sec": 10,
+    "report_interval_sec": 60,
     "classes": [
         {
             "name": "http_get",
@@ -16,7 +16,7 @@
             "http": {
                 "method": "GET",
                 "path": "/",
-                "keepalive": false
+                "keepalive": true
             }
         }
     ]

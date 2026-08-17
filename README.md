@@ -213,7 +213,7 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
   `max_concurrency / active_shards` 自动计算 per-owner `NSOCK_ID_MAX` 容量，
   默认保留两倍关闭中 socket 余量，并支持 `--socket-id-max N` 增大容量；
   owner 槽表、ready 资源、协议 registry 和 flow map 使用同一容量。
-- [ ] **把 app-visible fd 和缓冲预算配置化**：继续独立调整
+- [x] **把 app-visible fd 和缓冲预算配置化**：继续独立调整
   `NSOCK_FD_MAX`，并为 TCP 发送/接收缓冲设定每连接与全局内存预算；
   真实 1k～1 万并发验收仍需在 NIC 上完成，不能只依据默认容量。
 
@@ -300,7 +300,7 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 - [ ] **确定 traffic-gen 集成方式**：明确独立二进制、`ENABLE_TRAFFIC_GEN`
   挂入现有入口，或作为 owner worker 内 reactor task 的取舍；Phase A 可保留
   app-lcore 兼容路径，但必须标注其只适合小规模过渡。
-- [ ] **完成 Phase A traffic-gen**：剧本加载、CPS token bucket、并发水位、
+- [x] **完成 Phase A traffic-gen**：剧本加载、CPS token bucket、并发水位、
   flow/transaction 对象池、HTTP/1.1 GET 与 UDP DNS 插件、keep-alive 连接池和
   短连接兼容路径。
 - [x] **完成可观测性与验收**：按 lcore 统计 CPS、并发、成功率、错误分类及
