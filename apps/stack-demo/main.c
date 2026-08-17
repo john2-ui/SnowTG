@@ -6,6 +6,7 @@
 #endif
 
 #include "../../pro-stack/arp.h"
+#include "../../pro-stack/ipv4_reassembly.h"
 #include "../../pro-stack/net_context.h"
 #include "../../pro-stack/port.h"
 #include "../../pro-stack/ring.h"
@@ -22,11 +23,47 @@
 #include <rte_pdump.h>
 #endif
 
+#include <errno.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <string.h>
+
 static const uint32_t demo_local_ip = MAKE_IPV4_ADDR(192, 168, 21, 2);
 
+static int demo_parse_mtu(int argc, char **argv, uint16_t *mtu_out) {
+        uint16_t mtu = 0;
+        bool seen = false;
+
+        if (mtu_out == NULL)
+                return -1;
+        for (int i = 1; i < argc; i++) {
+                char *end = NULL;
+                unsigned long value;
+
+                if (strcmp(argv[i], "--mtu") != 0 || seen || ++i == argc)
+                        return -1;
+                errno = 0;
+                value = strtoul(argv[i], &end, 10);
+                if (errno != 0 || end == argv[i] || *end != '\0' ||
+                    value < IPV4_MIN_MTU || value > UINT16_MAX)
+                        return -1;
+                mtu = (uint16_t)value;
+                seen = true;
+        }
+        *mtu_out = mtu;
+        return 0;
+}
+
 int main(int argc, char *argv[]) {
-        if (rte_eal_init(argc, argv) < 0)
+        int eal_args = rte_eal_init(argc, argv);
+        uint16_t requested_mtu;
+
+        if (eal_args < 0)
                 rte_exit(EXIT_FAILURE, "rte_eal_init() failed\n");
+        argc -= eal_args;
+        argv += eal_args;
+        if (demo_parse_mtu(argc, argv, &requested_mtu) != 0)
+                rte_exit(EXIT_FAILURE, "usage: stack-demo [--mtu BYTES]\n");
         if (socket_registry_init() != 0)
                 rte_exit(EXIT_FAILURE, "socket registry init failed\n");
 #if ENABLE_PDUMP
@@ -41,9 +78,12 @@ int main(int argc, char *argv[]) {
                 rte_exit(EXIT_FAILURE, "rte_pktmbuf_pool_create() failed\n");
 
         net_context_set_mempool(mp);
-        port_init(0, mp);
-        net_context_init(0, demo_local_ip);
+        struct port_topology topology = port_init(0, mp, requested_mtu);
+        net_context_init(0, demo_local_ip, topology.ipv4_mtu);
         rte_timer_subsystem_init();
+        struct ipv4_reassembly reassembly = {0};
+        if (ipv4_reassembly_init(&reassembly) != 0)
+                rte_exit(EXIT_FAILURE, "IPv4 reassembly init failed\n");
 
         unsigned int main_lcore = rte_lcore_id();
         unsigned int worker_lcore = rte_get_next_lcore(main_lcore, 1, 0);
@@ -90,10 +130,19 @@ int main(int argc, char *argv[]) {
                 struct rte_mbuf *rx[BURST_SIZE];
                 unsigned int nb_rx =
                     rte_eth_rx_burst(g_net.port_id, 0, rx, BURST_SIZE);
+                unsigned int ready = 0;
+                uint64_t now_cycles = rte_get_timer_cycles();
+                for (unsigned int i = 0; i < nb_rx; i++) {
+                        struct rte_mbuf *mbuf = ipv4_reassembly_process(
+                            &reassembly, rx[i], now_cycles);
+                        if (mbuf != NULL)
+                                rx[ready++] = mbuf;
+                }
                 unsigned int enq = rte_ring_sp_enqueue_burst(
-                    ring->in, (void **)rx, nb_rx, NULL);
-                for (unsigned int i = enq; i < nb_rx; i++)
+                    ring->in, (void **)rx, ready, NULL);
+                for (unsigned int i = enq; i < ready; i++)
                         rte_pktmbuf_free(rx[i]);
+                ipv4_reassembly_maintain(&reassembly, now_cycles);
 
                 struct rte_mbuf *tx[BURST_SIZE];
                 unsigned int nb_tx = rte_ring_sc_dequeue_burst(

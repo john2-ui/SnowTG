@@ -80,6 +80,7 @@ void stack_runtime_metrics_take(struct stack_runtime_metrics *out) {
         out->dirty_tx_arp_waits = tx.arp_waits;
         out->dirty_tx_arp_wakeups = tx.arp_wakeups;
         out->dirty_tx_budget_exhausted = tx.dirty_budget_exhausted;
+        out->udp_tx_queue_drops = tx.udp_tx_queue_drops;
         out->dirty_tx_high_water = tx.dirty_high_water;
         out->dirty_tx_depth = tx.dirty_depth;
         memset(&worker->metrics, 0, sizeof(worker->metrics));

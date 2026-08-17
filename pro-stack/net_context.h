@@ -18,6 +18,7 @@
  */
 struct net_context {
         uint16_t port_id;  /**< DPDK ethernet port id. */
+        uint16_t ipv4_mtu; /**< Effective L3 MTU used by IPv4 transports. */
         uint32_t local_ip; /**< Local IPv4, network order. */
         uint8_t local_mac[RTE_ETHER_ADDR_LEN]; /**< Local Ethernet address. */
         struct rte_mempool *mp; /**< Process-wide mbuf pool for TX/RX. */
@@ -34,8 +35,9 @@ extern const uint8_t g_broadcast_mac[RTE_ETHER_ADDR_LEN];
  *
  * @param port_id  DPDK port to operate on.
  * @param local_ip Local IPv4 address in network byte order.
+ * @param ipv4_mtu Effective L3 MTU reported by port initialization.
  */
-void net_context_init(uint16_t port_id, uint32_t local_ip);
+void net_context_init(uint16_t port_id, uint32_t local_ip, uint16_t ipv4_mtu);
 
 /**
  * @brief Attach the global mbuf pool after EAL/mempool creation.

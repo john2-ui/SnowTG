@@ -22,6 +22,8 @@ int main(void) {
             "--no-huge",
             "--no-pci",
             "--vdev=net_null0",
+            "--vdev=net_null1",
+            "--vdev=net_null2",
             "-l",
             "0",
             "--file-prefix=port-topology-test",
@@ -29,23 +31,39 @@ int main(void) {
         };
         struct rte_mempool *mp;
         struct port_topology topology;
+        uint16_t default_mtu;
 
         CHECK(setenv("PORT_TEST_FORCE_SOFTWARE_RSS", "1", 1) == 0);
-        CHECK(rte_eal_init(7, eal_argv) >= 0);
+        CHECK(rte_eal_init(9, eal_argv) >= 0);
         mp =
             rte_pktmbuf_pool_create("port_topology_mp", 1023, 0, 0,
                                     RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
         CHECK(mp != NULL);
 
-        topology = port_init_queues(0, mp, 2);
+        topology = port_init_queues(0, mp, 2, 1200);
         CHECK(topology.rx_mode == PORT_RX_MODE_SOFTWARE_DISPATCH);
         CHECK(topology.rx_queue_count == 1);
         CHECK(topology.tx_queue_count >= 1);
         CHECK(topology.tx_queue_count <= 2);
         CHECK(topology.worker_count == 2);
+        CHECK(topology.ipv4_mtu == 1200);
+
+        CHECK(rte_eth_dev_get_mtu(1, &default_mtu) == 0);
+        CHECK(setenv("PORT_TEST_FORCE_MTU_SET_FAILURE", "1", 1) == 0);
+        topology = port_init(1, mp, 1200);
+        CHECK(topology.ipv4_mtu == default_mtu);
+        CHECK(unsetenv("PORT_TEST_FORCE_MTU_SET_FAILURE") == 0);
+
+        CHECK(rte_eth_dev_get_mtu(2, &default_mtu) == 0);
+        topology = port_init(2, mp, 0);
+        CHECK(topology.ipv4_mtu == default_mtu);
 
         (void)rte_eth_dev_stop(0);
         (void)rte_eth_dev_close(0);
+        (void)rte_eth_dev_stop(1);
+        (void)rte_eth_dev_close(1);
+        (void)rte_eth_dev_stop(2);
+        (void)rte_eth_dev_close(2);
         rte_mempool_free(mp);
         CHECK(rte_eal_cleanup() == 0);
         return 0;

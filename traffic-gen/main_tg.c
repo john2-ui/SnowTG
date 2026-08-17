@@ -20,6 +20,7 @@
 
 #include "../pro-stack/arp.h"
 #include "../pro-stack/config.h"
+#include "../pro-stack/ipv4_reassembly.h"
 #include "../pro-stack/log.h"
 #include "../pro-stack/net_context.h"
 #include "../pro-stack/port.h"
@@ -61,17 +62,20 @@ static const uint32_t tg_local_ip = MAKE_IPV4_ADDR(192, 168, 21, 2);
 static int tg_parse_app_args(int argc, char *argv[], unsigned int *workers_out,
                              const char **scenario_out,
                              uint32_t *socket_id_max_out,
-                             const char **stats_csv_out) {
+                             const char **stats_csv_out, uint16_t *mtu_out) {
         bool workers_seen = false;
         bool socket_id_max_seen = false;
         bool stats_csv_seen = false;
+        bool mtu_seen = false;
         const char *scenario_path = NULL;
         const char *stats_csv_path = NULL;
         unsigned int workers = 1;
         uint32_t socket_id_max = 0;
+        uint16_t requested_mtu = 0;
 
         if (workers_out == NULL || scenario_out == NULL ||
-            socket_id_max_out == NULL || stats_csv_out == NULL) {
+            socket_id_max_out == NULL || stats_csv_out == NULL ||
+            mtu_out == NULL) {
                 errno = EINVAL;
                 return -1;
         }
@@ -125,6 +129,25 @@ static int tg_parse_app_args(int argc, char *argv[], unsigned int *workers_out,
                         stats_csv_seen = true;
                         continue;
                 }
+                if (strcmp(argv[i], "--mtu") == 0) {
+                        char *end = NULL;
+                        unsigned long value;
+
+                        if (mtu_seen || ++i == argc) {
+                                errno = EINVAL;
+                                return -1;
+                        }
+                        errno = 0;
+                        value = strtoul(argv[i], &end, 10);
+                        if (errno != 0 || end == argv[i] || *end != '\0' ||
+                            value < IPV4_MIN_MTU || value > UINT16_MAX) {
+                                errno = EINVAL;
+                                return -1;
+                        }
+                        requested_mtu = (uint16_t)value;
+                        mtu_seen = true;
+                        continue;
+                }
                 if (argv[i][0] == '-' || scenario_path != NULL) {
                         errno = EINVAL;
                         return -1;
@@ -137,6 +160,7 @@ static int tg_parse_app_args(int argc, char *argv[], unsigned int *workers_out,
             scenario_path == NULL ? TG_DEFAULT_SCENARIO_PATH : scenario_path;
         *socket_id_max_out = socket_id_max;
         *stats_csv_out = stats_csv_path;
+        *mtu_out = requested_mtu;
         return 0;
 }
 
@@ -254,6 +278,7 @@ static void tg_capture_stats_snapshot(struct tg_shard *shard,
         snapshot.reactor_burst_high_water = reactor_burst_high_water;
         snapshot.rx_ring_drops = atomic_exchange(&shard->rx_ring_drops, 0);
         snapshot.tx_nic_drops = atomic_exchange(&shard->tx_nic_drops, 0);
+        snapshot.udp_tx_queue_drops = runtime.udp_tx_queue_drops;
         snapshot.rx_owner_hits = atomic_exchange(&shard->rx_owner_hits, 0);
         snapshot.rx_software_hashes =
             atomic_exchange(&shard->rx_software_hashes, 0);
@@ -393,16 +418,23 @@ static void tg_replicate_arp(struct tg_worker *workers,
  */
 static void tg_dispatch_rx_burst(struct tg_worker *workers,
                                  unsigned int worker_count,
-                                 struct rte_mempool *mp, uint16_t rx_queue,
-                                 struct rte_mbuf **rx, unsigned int nb_rx) {
+                                 struct rte_mempool *mp,
+                                 struct ipv4_reassembly *reassembly,
+                                 uint16_t rx_queue, struct rte_mbuf **rx,
+                                 unsigned int nb_rx) {
         struct rte_mbuf *batches[RTE_MAX_LCORE][BURST_SIZE];
         unsigned int batch_counts[RTE_MAX_LCORE] = {0};
 
         for (unsigned int packet = 0; packet < nb_rx; packet++) {
                 struct rx_dispatch_result result;
                 unsigned int target;
+                struct rte_mbuf *mbuf = ipv4_reassembly_process(
+                    reassembly, rx[packet], rte_get_timer_cycles());
 
-                rx_dispatch_classify(rx[packet], rx_queue, &result);
+                if (mbuf == NULL)
+                        continue;
+
+                rx_dispatch_classify(mbuf, rx_queue, &result);
                 target = result.worker_index;
                 if (target >= worker_count) {
                         target = 0;
@@ -410,7 +442,7 @@ static void tg_dispatch_rx_burst(struct tg_worker *workers,
                 }
                 if (result.action == RX_DISPATCH_FANOUT)
                         tg_replicate_arp(workers, worker_count, target, mp,
-                                         rx[packet]);
+                                         mbuf);
                 if (result.owner_hit)
                         atomic_fetch_add(&workers[target].shard.rx_owner_hits,
                                          1);
@@ -420,7 +452,7 @@ static void tg_dispatch_rx_burst(struct tg_worker *workers,
                 if (result.parse_fallback)
                         atomic_fetch_add(
                             &workers[target].shard.rx_parse_fallbacks, 1);
-                batches[target][batch_counts[target]++] = rx[packet];
+                batches[target][batch_counts[target]++] = mbuf;
         }
 
         for (unsigned int index = 0; index < worker_count; index++) {
@@ -733,12 +765,14 @@ int main(int argc, char *argv[]) {
         unsigned int active_shards;
         uint32_t socket_id_max_override;
         uint32_t socket_id_capacity = 0;
+        uint16_t requested_mtu;
         struct tg_plan plan = {0};
         struct tg_worker *workers;
         struct tg_runtime_control runtime = {0};
         struct tg_stats_csv stats_csv = {0};
         struct rte_mempool *mp;
         struct port_topology port_topology;
+        struct ipv4_reassembly reassembly = {0};
 
         /* Stage 1: Initialize DPDK and separate EAL arguments from app args. */
         eal_args = rte_eal_init(argc, argv);
@@ -749,10 +783,12 @@ int main(int argc, char *argv[]) {
 
         /* Stage 2: Parse application options and locate the scenario file. */
         if (tg_parse_app_args(argc, argv, &worker_count, &scenario_path,
-                              &socket_id_max_override, &stats_csv_path) != 0)
+                              &socket_id_max_override, &stats_csv_path,
+                              &requested_mtu) != 0)
                 rte_exit(EXIT_FAILURE, "usage: traffic-gen [--workers N] "
                                        "[--socket-id-max N] "
-                                       "[--stats-csv PATH] [scenario.json]\n");
+                                       "[--stats-csv PATH] [--mtu BYTES] "
+                                       "[scenario.json]\n");
 
         /* Stage 3: Load the scenario and validate its shard constraints. */
         if (worker_count > RTE_MAX_LCORE)
@@ -798,9 +834,12 @@ int main(int argc, char *argv[]) {
                 rte_exit(EXIT_FAILURE, "rte_pktmbuf_pool_create() failed\n");
 
         net_context_set_mempool(mp);
-        port_topology = port_init_queues(0, mp, (uint16_t)worker_count);
-        net_context_init(0, tg_local_ip);
+        port_topology =
+            port_init_queues(0, mp, (uint16_t)worker_count, requested_mtu);
+        net_context_init(0, tg_local_ip, port_topology.ipv4_mtu);
         rte_timer_subsystem_init();
+        if (ipv4_reassembly_init(&reassembly) != 0)
+                rte_exit(EXIT_FAILURE, "IPv4 reassembly init failed\n");
 
         /* Stage 5: Allocate worker contexts and initialize shared runtime
          * state. */
@@ -925,8 +964,10 @@ int main(int argc, char *argv[]) {
 
                         if (nb_rx != 0)
                                 tg_dispatch_rx_burst(workers, worker_count, mp,
-                                                     rx_queue, rx, nb_rx);
+                                                     &reassembly, rx_queue, rx,
+                                                     nb_rx);
                 }
+                ipv4_reassembly_maintain(&reassembly, rte_get_timer_cycles());
 
                 /* Drain each worker's TX ring and account for NIC drops. */
                 for (unsigned int index = 0; index < worker_count; index++) {
@@ -970,6 +1011,7 @@ int main(int argc, char *argv[]) {
                 tg_plan_fini(&workers[index].shard.plan);
         }
         socket_owner_fini();
+        ipv4_reassembly_fini(&reassembly);
         arp_table_fini();
         ring_fini();
         rx_dispatch_reset();

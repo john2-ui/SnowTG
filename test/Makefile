@@ -32,6 +32,8 @@ TCP_CC_SRCS := ../pro-stack/tcp_cc.c ../pro-stack/tcp_cc/newreno.c \
 RX_DISPATCH_TEST := $(BUILD_DIR)/test_rx_dispatch
 PORT_TOPOLOGY_TEST := $(BUILD_DIR)/test_port_topology
 FLOW_UDP_TEST := $(BUILD_DIR)/test_flow_udp
+IPV4_REASSEMBLY_TEST := $(BUILD_DIR)/test_ipv4_reassembly
+STATS_CSV_TEST := $(BUILD_DIR)/test_stats_csv
 CONN_POOL_TEST := $(BUILD_DIR)/test_conn_pool
 LLHTTP_DIR := ../third_party/llhttp
 HTTP_CLIENT_CFLAGS := $(TEST_CFLAGS) -I../traffic-gen/core \
@@ -67,7 +69,8 @@ SCENARIO_SCHEDULER_OBJS := $(BUILD_DIR)/test_scenario_scheduler.o \
 
 .PHONY: all test test-arp test-owner-io test-http-client test-dns-client \
 	test-scenario-scheduler \
-	test-rx-dispatch test-port-topology test-flow-udp test-conn-pool \
+	test-rx-dispatch test-port-topology test-flow-udp test-ipv4-reassembly \
+	test-stats-csv test-conn-pool \
 	test-tcp-ephemeral test-tcp-sack test-tcp-cc clean
 
 all: test
@@ -76,7 +79,7 @@ all: test
 test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(SACK_TEST) $(TCP_CC_TEST) $(EPHEMERAL_TEST) $(OWNER_IO_TEST) \
 	$(HTTP_CLIENT_TEST) $(DNS_CLIENT_TEST) $(SCENARIO_SCHEDULER_TEST) $(ARP_TEST) \
 	$(RX_DISPATCH_TEST) $(PORT_TOPOLOGY_TEST) $(FLOW_UDP_TEST) \
-	$(CONN_POOL_TEST)
+	$(IPV4_REASSEMBLY_TEST) $(STATS_CSV_TEST) $(CONN_POOL_TEST)
 	$(RBTREE_TEST)
 	$(OFO_TEST)
 	$(PAWS_TEST)
@@ -91,6 +94,8 @@ test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(SACK_TEST) $(TCP_CC_TEST) $(EPHE
 	$(RX_DISPATCH_TEST)
 	$(PORT_TOPOLOGY_TEST)
 	$(FLOW_UDP_TEST) --no-huge --no-pci --file-prefix flow-udp-test
+	$(IPV4_REASSEMBLY_TEST) --no-huge --no-pci --file-prefix ipv4-reassembly-test
+	$(STATS_CSV_TEST)
 	$(CONN_POOL_TEST)
 
 test-arp: $(ARP_TEST)
@@ -114,6 +119,10 @@ test-rx-dispatch: $(RX_DISPATCH_TEST)
 test-port-topology: $(PORT_TOPOLOGY_TEST)
 
 test-flow-udp: $(FLOW_UDP_TEST)
+
+test-ipv4-reassembly: $(IPV4_REASSEMBLY_TEST)
+
+test-stats-csv: $(STATS_CSV_TEST)
 
 test-conn-pool: $(CONN_POOL_TEST)
 
@@ -188,6 +197,18 @@ $(FLOW_UDP_TEST): test_flow_udp.c ../traffic-gen/core/conn_pool.c \
 		../traffic-gen/core/flow.c \
 		../traffic-gen/core/flow_pool.c ../traffic-gen/core/txn.c \
 		../pro-stack/build/libpro-stack.a -o $@ $(DPDK_LIBS)
+
+$(IPV4_REASSEMBLY_TEST): test_ipv4_reassembly.c \
+		../pro-stack/ipv4_reassembly.h ../pro-stack/udp.h \
+		../pro-stack/build/libpro-stack.a | $(BUILD_DIR)
+	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) -I../pro-stack \
+		test_ipv4_reassembly.c ../pro-stack/build/libpro-stack.a \
+		-o $@ $(DPDK_LIBS)
+
+$(STATS_CSV_TEST): test_stats_csv.c ../traffic-gen/core/stats_csv.c \
+		../traffic-gen/core/stats_csv.h ../traffic-gen/core/stats.h | $(BUILD_DIR)
+	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) -I../traffic-gen/core \
+		test_stats_csv.c ../traffic-gen/core/stats_csv.c -o $@ $(DPDK_LIBS)
 
 $(CONN_POOL_TEST): test_conn_pool.c ../traffic-gen/core/conn_pool.c \
 		../traffic-gen/core/conn_pool.h ../traffic-gen/core/flow.h | \

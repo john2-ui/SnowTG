@@ -16,6 +16,14 @@ struct rte_mbuf *eth_ipv4_build(struct rte_mempool *mp, const uint8_t *dst_mac,
         const size_t eth_len = sizeof(struct rte_ether_hdr);
         const size_t ip_len = sizeof(struct rte_ipv4_hdr);
         const size_t total_len = eth_len + ip_len + l4_len;
+        uint32_t data_room;
+
+        if (mp == NULL)
+                return NULL;
+        data_room = rte_pktmbuf_data_room_size(mp);
+        if (data_room <= RTE_PKTMBUF_HEADROOM ||
+            total_len > data_room - RTE_PKTMBUF_HEADROOM)
+                return NULL;
 
         struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mp);
         if (mbuf == NULL)

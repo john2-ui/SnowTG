@@ -8,6 +8,7 @@
 #include <rte_thash.h>
 
 #include <inttypes.h>
+#include <errno.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -122,7 +123,7 @@ static enum port_setup_failure
 port_setup(uint16_t port_id, struct rte_mempool *mp,
            const struct rte_eth_dev_info *dev_info, uint16_t rx_queue_count,
            uint16_t tx_queue_count, bool enable_rss, uint64_t rss_hf) {
-        struct rte_eth_conf port_conf = {.rxmode = {.mtu = RTE_ETHER_MTU}};
+        struct rte_eth_conf port_conf = {0};
 
         if (enable_rss) {
                 port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS;
@@ -192,8 +193,57 @@ static int port_rss_init_software(uint16_t worker_count) {
         return 0;
 }
 
+/** Apply the requested MTU and return the value actually active on the port. */
+static uint16_t port_resolve_ipv4_mtu(uint16_t port_id, struct rte_mempool *mp,
+                                      uint16_t requested_mtu) {
+        const uint32_t room = rte_pktmbuf_data_room_size(mp);
+        const uint32_t overhead =
+            RTE_PKTMBUF_HEADROOM + sizeof(struct rte_ether_hdr);
+        const uint32_t max_mtu = room > overhead ? room - overhead : 0;
+        uint16_t current_mtu;
+
+        if (requested_mtu != 0 &&
+            (requested_mtu < IPV4_MIN_MTU || requested_mtu > max_mtu))
+                rte_exit(EXIT_FAILURE,
+                         "requested MTU %u is outside single-mbuf range "
+                         "[%u,%u]\n",
+                         requested_mtu, IPV4_MIN_MTU, max_mtu);
+        if (rte_eth_dev_get_mtu(port_id, &current_mtu) != 0)
+                rte_exit(EXIT_FAILURE, "rte_eth_dev_get_mtu(%u) failed\n",
+                         port_id);
+
+        if (requested_mtu != 0 && requested_mtu != current_mtu) {
+                int rc;
+#ifdef PORT_TESTING
+                if (getenv("PORT_TEST_FORCE_MTU_SET_FAILURE") != NULL)
+                        rc = -ENOTSUP;
+                else
+#endif
+                        rc = rte_eth_dev_set_mtu(port_id, requested_mtu);
+                if (rc != 0) {
+                        LOG_WARN("port %u requested MTU %u rejected rc=%d; "
+                                 "using current MTU %u",
+                                 port_id, requested_mtu, rc, current_mtu);
+                }
+                if (rte_eth_dev_get_mtu(port_id, &current_mtu) != 0)
+                        rte_exit(EXIT_FAILURE,
+                                 "rte_eth_dev_get_mtu(%u) after set failed\n",
+                                 port_id);
+        }
+
+        if (current_mtu < IPV4_MIN_MTU || current_mtu > max_mtu)
+                rte_exit(EXIT_FAILURE,
+                         "effective MTU %u is outside single-mbuf range "
+                         "[%u,%u]\n",
+                         current_mtu, IPV4_MIN_MTU, max_mtu);
+        LOG_INFO("port %u MTU requested=%u effective=%u single_mbuf_max=%u",
+                 port_id, requested_mtu, current_mtu, max_mtu);
+        return current_mtu;
+}
+
 struct port_topology port_init_queues(uint16_t port_id, struct rte_mempool *mp,
-                                      uint16_t worker_count) {
+                                      uint16_t worker_count,
+                                      uint16_t requested_mtu) {
         struct port_topology topology = {0};
         uint16_t nb_sys_ports = rte_eth_dev_count_avail();
         enum port_setup_failure failure;
@@ -311,6 +361,7 @@ struct port_topology port_init_queues(uint16_t port_id, struct rte_mempool *mp,
                 }
         }
 
+        topology.ipv4_mtu = port_resolve_ipv4_mtu(port_id, mp, requested_mtu);
         g_topology = topology;
         LOG_INFO("port %u started (driver=%s rx_mode=%s rxq=%u txq=%u "
                  "workers=%u rss_hf=0x%" PRIx64 ")",
@@ -324,8 +375,9 @@ struct port_topology port_init_queues(uint16_t port_id, struct rte_mempool *mp,
         return topology;
 }
 
-void port_init(uint16_t port_id, struct rte_mempool *mp) {
-        (void)port_init_queues(port_id, mp, 1);
+struct port_topology port_init(uint16_t port_id, struct rte_mempool *mp,
+                               uint16_t requested_mtu) {
+        return port_init_queues(port_id, mp, 1, requested_mtu);
 }
 
 int port_flow_queue_for_ipv4(__attribute__((unused)) uint8_t protocol,

@@ -21,6 +21,7 @@
 #include <rte_udp.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 static unsigned int test_rx_calls;
@@ -40,6 +41,8 @@ static const struct tg_proto_ops test_proto = {
     .name = "flow-udp-test",
     .on_rx = test_proto_on_rx,
 };
+
+static struct nsock_handle create_local_udp(uint32_t local_ip);
 
 static void mark_test_peer(struct rte_mbuf *mbuf) {
         struct rte_ether_hdr *eth =
@@ -128,6 +131,93 @@ static void drain_ready_events(void) {
 
         while (owner_io_ready_burst(events, 32) != 0)
                 ;
+}
+
+static void assert_udp_packet(struct rte_mbuf *mbuf, const uint8_t *payload,
+                              uint16_t payload_len) {
+        const uint16_t l2_len = sizeof(struct rte_ether_hdr);
+        const uint16_t l3_len = sizeof(struct rte_ipv4_hdr);
+        struct rte_ether_hdr *eth =
+            rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
+        struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *)(eth + 1);
+        struct rte_udp_hdr *udp = (struct rte_udp_hdr *)(ip + 1);
+
+        assert(rte_pktmbuf_pkt_len(mbuf) ==
+               l2_len + l3_len + sizeof(*udp) + payload_len);
+        assert(rte_be_to_cpu_16(ip->total_length) ==
+               l3_len + sizeof(*udp) + payload_len);
+        assert(ip->fragment_offset == 0);
+        assert(rte_ipv4_cksum(ip) == 0);
+        assert(rte_be_to_cpu_16(udp->dgram_len) == sizeof(*udp) + payload_len);
+        assert(rte_ipv4_udptcp_cksum_mbuf_verify(mbuf, ip, l2_len + l3_len) ==
+               0);
+        if (payload_len != 0)
+                assert(memcmp(udp + 1, payload, payload_len) == 0);
+}
+
+static void test_local_udp_segmentation(uint32_t local_ip, uint32_t peer_ip,
+                                        uint16_t peer_port) {
+        enum { TEST_MTU = 100, PAYLOAD_LIMIT = TEST_MTU - 20 - 8 };
+        struct inout_ring *ring = ring_instance();
+        struct nsock_handle handle = create_local_udp(local_ip);
+        struct sockaddr_in peer = {
+            .sin_family = AF_INET,
+            .sin_port = peer_port,
+            .sin_addr.s_addr = peer_ip,
+        };
+        uint8_t payload[UDP_SENDTO_MAX_DATAGRAMS * PAYLOAD_LIMIT + 1];
+        struct rte_mbuf *packets[UDP_SENDTO_MAX_DATAGRAMS];
+        uint16_t saved_mtu = g_net.ipv4_mtu;
+
+        assert(ring != NULL);
+        for (size_t i = 0; i < sizeof(payload); i++)
+                payload[i] = (uint8_t)i;
+        g_net.ipv4_mtu = TEST_MTU;
+
+        assert(owner_io_sendto(handle, payload, PAYLOAD_LIMIT,
+                               (const struct sockaddr *)&peer,
+                               sizeof(peer)) == PAYLOAD_LIMIT);
+        assert(rte_ring_sc_dequeue(ring->out, (void **)&packets[0]) == 0);
+        assert(rte_ring_count(ring->out) == 0);
+        assert_udp_packet(packets[0], payload, PAYLOAD_LIMIT);
+        rte_pktmbuf_free(packets[0]);
+
+        assert(owner_io_sendto(handle, payload, PAYLOAD_LIMIT + 1,
+                               (const struct sockaddr *)&peer,
+                               sizeof(peer)) == PAYLOAD_LIMIT + 1);
+        assert(rte_ring_sc_dequeue_bulk(ring->out, (void **)packets, 2, NULL) ==
+               2);
+        assert_udp_packet(packets[0], payload, PAYLOAD_LIMIT);
+        assert_udp_packet(packets[1], payload + PAYLOAD_LIMIT, 1);
+        rte_pktmbuf_free_bulk(packets, 2);
+
+        assert(owner_io_sendto(handle, payload,
+                               UDP_SENDTO_MAX_DATAGRAMS * PAYLOAD_LIMIT,
+                               (const struct sockaddr *)&peer, sizeof(peer)) ==
+               UDP_SENDTO_MAX_DATAGRAMS * PAYLOAD_LIMIT);
+        assert(rte_ring_sc_dequeue_bulk(ring->out, (void **)packets,
+                                        UDP_SENDTO_MAX_DATAGRAMS,
+                                        NULL) == UDP_SENDTO_MAX_DATAGRAMS);
+        for (unsigned int i = 0; i < UDP_SENDTO_MAX_DATAGRAMS; i++)
+                assert_udp_packet(packets[i], payload + i * PAYLOAD_LIMIT,
+                                  PAYLOAD_LIMIT);
+        rte_pktmbuf_free_bulk(packets, UDP_SENDTO_MAX_DATAGRAMS);
+
+        errno = 0;
+        assert(owner_io_sendto(handle, payload, sizeof(payload),
+                               (const struct sockaddr *)&peer,
+                               sizeof(peer)) == -1);
+        assert(errno == EMSGSIZE);
+        assert(rte_ring_count(ring->out) == 0);
+
+        assert(owner_io_sendto(handle, NULL, 0, (const struct sockaddr *)&peer,
+                               sizeof(peer)) == 0);
+        assert(rte_ring_sc_dequeue(ring->out, (void **)&packets[0]) == 0);
+        assert_udp_packet(packets[0], NULL, 0);
+        rte_pktmbuf_free(packets[0]);
+
+        g_net.ipv4_mtu = saved_mtu;
+        assert(owner_io_close(handle) == 0);
 }
 
 static struct nsock_handle create_local_udp(uint32_t local_ip) {
@@ -273,22 +363,107 @@ static void test_local_udp_tx_ring_full(uint32_t local_ip, uint32_t peer_ip,
             .sin_port = peer_port,
             .sin_addr.s_addr = peer_ip,
         };
-        const uint8_t payload = 0x02;
+        enum { TEST_MTU = 100, PAYLOAD_LIMIT = TEST_MTU - 20 - 8 };
+        uint8_t payload[PAYLOAD_LIMIT + 1] = {0};
+        uint16_t saved_mtu = g_net.ipv4_mtu;
+        struct nsock_tx_metrics metrics;
+
         assert(ring != NULL);
         unsigned int capacity = rte_ring_get_capacity(ring->out);
-        for (unsigned int i = 0; i < capacity; i++) {
+        for (unsigned int i = 0; i < capacity - 1; i++) {
                 struct rte_mbuf *mbuf = rte_pktmbuf_alloc(g_net.mp);
                 assert(mbuf != NULL);
                 assert(rte_ring_sp_enqueue(ring->out, mbuf) == 0);
         }
 
-        errno = 0;
+        g_net.ipv4_mtu = TEST_MTU;
+        nsock_tx_metrics_take(&metrics);
         assert(owner_io_sendto(handle, &payload, sizeof(payload),
+                               (const struct sockaddr *)&peer,
+                               sizeof(peer)) == (ssize_t)sizeof(payload));
+        assert(rte_ring_count(ring->out) == capacity);
+        nsock_tx_metrics_take(&metrics);
+        assert(metrics.udp_tx_queue_drops == 1);
+        g_net.ipv4_mtu = saved_mtu;
+        assert(owner_io_close(handle) == 0);
+        drain_output_ring();
+}
+
+static void test_local_udp_allocation_atomic(uint32_t local_ip,
+                                             uint32_t peer_ip,
+                                             uint16_t peer_port) {
+        enum { TEST_MTU = 100, PAYLOAD_LIMIT = TEST_MTU - 20 - 8 };
+        struct inout_ring *ring = ring_instance();
+        struct nsock_handle handle = create_local_udp(local_ip);
+        struct sockaddr_in peer = {
+            .sin_family = AF_INET,
+            .sin_port = peer_port,
+            .sin_addr.s_addr = peer_ip,
+        };
+        uint8_t payload[PAYLOAD_LIMIT + 1] = {0};
+        uint16_t saved_mtu = g_net.ipv4_mtu;
+        unsigned int available = rte_mempool_avail_count(g_net.mp);
+        struct rte_mbuf **held = calloc(available - 1, sizeof(*held));
+
+        assert(ring != NULL && rte_ring_count(ring->out) == 0);
+        assert(held != NULL);
+        for (unsigned int i = 0; i < available - 1; i++) {
+                held[i] = rte_pktmbuf_alloc(g_net.mp);
+                assert(held[i] != NULL);
+        }
+        assert(rte_mempool_avail_count(g_net.mp) == 1);
+
+        g_net.ipv4_mtu = TEST_MTU;
+        errno = 0;
+        assert(owner_io_sendto(handle, payload, sizeof(payload),
                                (const struct sockaddr *)&peer,
                                sizeof(peer)) == -1);
         assert(errno == ENOBUFS);
+        assert(rte_ring_count(ring->out) == 0);
+        assert(rte_mempool_avail_count(g_net.mp) == 1);
+        g_net.ipv4_mtu = saved_mtu;
+
+        rte_pktmbuf_free_bulk(held, available - 1);
+        free(held);
         assert(owner_io_close(handle) == 0);
-        drain_output_ring();
+        assert(rte_mempool_avail_count(g_net.mp) == available);
+}
+
+static void test_ring_udp_atomic_batch(uint32_t local_ip, uint32_t peer_ip,
+                                       uint16_t peer_port) {
+        enum { TEST_MTU = 100, PAYLOAD_LIMIT = TEST_MTU - 20 - 8 };
+        struct nsock_handle handle;
+        struct nsock *sk;
+        struct sockaddr_in peer = {
+            .sin_family = AF_INET,
+            .sin_port = peer_port,
+            .sin_addr.s_addr = peer_ip,
+        };
+        uint8_t payload[PAYLOAD_LIMIT + 1] = {0};
+        uint16_t saved_mtu = g_net.ipv4_mtu;
+        unsigned int available_before;
+
+        assert(owner_io_socket_create(IPPROTO_UDP, &handle) == 0);
+        assert(owner_io_bind_ephemeral(handle, local_ip) == 0);
+        sk = socket_owner_resolve_local(handle);
+        assert(sk != NULL && sk->send_buf != NULL);
+        unsigned int capacity = rte_ring_get_capacity(sk->send_buf);
+        for (unsigned int i = 0; i < capacity - 1; i++) {
+                struct rte_mbuf *mbuf = rte_pktmbuf_alloc(g_net.mp);
+                assert(mbuf != NULL);
+                assert(rte_ring_mp_enqueue(sk->send_buf, mbuf) == 0);
+        }
+        available_before = rte_mempool_avail_count(g_net.mp);
+        g_net.ipv4_mtu = TEST_MTU;
+        errno = 0;
+        assert(owner_io_sendto(handle, payload, sizeof(payload),
+                               (const struct sockaddr *)&peer,
+                               sizeof(peer)) == -1);
+        assert(errno == EAGAIN);
+        assert(rte_ring_count(sk->send_buf) == capacity - 1);
+        assert(rte_mempool_avail_count(g_net.mp) == available_before);
+        g_net.ipv4_mtu = saved_mtu;
+        assert(owner_io_close(handle) == 0);
 }
 
 int main(int argc, char **argv) {
@@ -324,6 +499,7 @@ int main(int argc, char **argv) {
                                     RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
         assert(mp != NULL);
         g_net.mp = mp;
+        g_net.ipv4_mtu = RTE_ETHER_MTU;
         arp_table_learn(peer_ip, test_peer_mac);
 
         struct nsock_handle implicit_udp;
@@ -403,7 +579,13 @@ int main(int argc, char **argv) {
         drain_ready_events();
         test_local_udp_arp_retry(local_ip, peer_ip, peer_port, test_peer_mac);
         drain_ready_events();
+        test_local_udp_segmentation(local_ip, peer_ip, peer_port);
+        drain_ready_events();
+        test_local_udp_allocation_atomic(local_ip, peer_ip, peer_port);
+        drain_ready_events();
         test_local_udp_tx_ring_full(local_ip, peer_ip, peer_port);
+        drain_ready_events();
+        test_ring_udp_atomic_batch(local_ip, peer_ip, peer_port);
         drain_ready_events();
 
         tg_flow_pool_fini(&pool);

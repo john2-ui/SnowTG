@@ -91,6 +91,16 @@
 #define UDP_RX_QUEUE_LIMIT 64U
 /** Per-owner capacity of lazy owner-local UDP RX queue nodes. */
 #define UDP_MEMORY_RX_NODES 4095U
+/** Minimum IPv4 MTU required by RFC 791. */
+#define IPV4_MIN_MTU 68U
+/** Maximum ordinary UDP datagrams emitted by one large sendto call. */
+#define UDP_SENDTO_MAX_DATAGRAMS 8U
+/** Maximum simultaneous fragmented IPv4 datagrams retained for reassembly. */
+#define IPV4_REASSEMBLY_MAX_ENTRIES 1024U
+/** Lifetime of an incomplete IPv4 datagram. */
+#define IPV4_REASSEMBLY_TIMEOUT_MS 30000U
+/** Period between explicit reassembly-table expiry sweeps. */
+#define IPV4_REASSEMBLY_SWEEP_MS 1000U
 
 /**
  * How often timer-owning lcores call rte_timer_manage(), in milliseconds.

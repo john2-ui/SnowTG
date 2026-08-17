@@ -600,6 +600,13 @@ void nsock_tx_metrics_take(struct nsock_tx_metrics *out) {
         registry->dirty_budget_exhausted = 0;
 }
 
+void nsock_tx_record_udp_queue_drops(uint64_t count) {
+        struct socket_registry *registry = registry_current();
+
+        if (registry != NULL)
+                registry->tx_metrics.udp_tx_queue_drops += count;
+}
+
 unsigned int nsock_tx_dirty_drain(struct rte_mempool *mp, unsigned int budget) {
         struct socket_registry *registry = registry_current();
         unsigned int flushed = 0;

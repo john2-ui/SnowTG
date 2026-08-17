@@ -148,6 +148,7 @@ void tg_stats_on_flow_finished(struct tg_stats *stats,
         X(socket_releases)                                                     \
         X(rx_ring_drops)                                                       \
         X(tx_nic_drops)                                                        \
+        X(udp_tx_queue_drops)                                                  \
         X(rx_owner_hits)                                                       \
         X(rx_software_hashes)                                                  \
         X(rx_parse_fallbacks)                                                  \

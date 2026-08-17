@@ -6,8 +6,9 @@
  * Inbound:  udp_ingress -> find socket by (ip,port,proto) -> ring or local RX
  * Outbound: ring-backed UDP queues mbufs for udp_tx_flush; owner-local UDP
  *           resolves ARP and sends directly to the owner output ring.
- * App:      udp_sendto builds one datagram; udp_recvfrom pulls one datagram
- *           from the selected receive queue.
+ * App:      udp_sendto splits one application buffer into bounded independent
+ *           datagrams; udp_recvfrom pulls one datagram from the selected
+ *           receive queue.
  */
 #include "udp.h"
 
@@ -33,6 +34,37 @@
 
 #define UDP_SK_FMT "sock=%u gen=%u"
 #define UDP_SK_ARG(sk) (sk)->id, (sk)->generation
+
+static int udp_build_datagrams(struct nsock *sk,
+                               const struct sockaddr_in *daddr,
+                               const uint8_t *dst_mac, const void *buf,
+                               size_t len, struct rte_mbuf **packets,
+                               unsigned int *count_out);
+
+static int udp_datagram_shape(size_t len, size_t *payload_limit_out,
+                              unsigned int *count_out) {
+        const size_t headers =
+            sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_udp_hdr);
+        size_t payload_limit;
+        size_t count;
+
+        if (g_net.ipv4_mtu <= headers) {
+                errno = ENETDOWN;
+                return -1;
+        }
+        payload_limit = g_net.ipv4_mtu - headers;
+        count = len == 0 ? 1U
+                         : len / payload_limit + (len % payload_limit != 0);
+        if (count > UDP_SENDTO_MAX_DATAGRAMS) {
+                errno = EMSGSIZE;
+                return -1;
+        }
+        if (payload_limit_out != NULL)
+                *payload_limit_out = payload_limit;
+        if (count_out != NULL)
+                *count_out = (unsigned int)count;
+        return 0;
+}
 
 static struct rte_ipv4_hdr *udp_ipv4_header(struct rte_mbuf *mbuf) {
         struct rte_ether_hdr *eth =
@@ -127,17 +159,13 @@ static ssize_t udp_sendto_local(struct nsock *sk, const void *buf, size_t len,
                                 const struct sockaddr_in *daddr) {
         struct inout_ring *ring = ring_instance();
         const uint8_t *dst_mac;
-        struct rte_mbuf *mbuf;
+        struct rte_mbuf *packets[UDP_SENDTO_MAX_DATAGRAMS];
+        unsigned int count;
 
         if (ring == NULL || ring->out == NULL) {
                 errno = ENETDOWN;
                 return -1;
         }
-        if (len > UINT16_MAX - sizeof(struct rte_udp_hdr)) {
-                errno = EMSGSIZE;
-                return -1;
-        }
-
         /*
          * A cache miss only parks the socket for an application retry.  The
          * datagram itself is not built or retained until a MAC is available.
@@ -150,17 +178,19 @@ static ssize_t udp_sendto_local(struct nsock *sk, const void *buf, size_t len,
                 return -1;
         }
 
-        mbuf = udp_build_pkt(g_net.mp, dst_mac, sk->local_ip,
-                             daddr->sin_addr.s_addr, sk->local_port,
-                             daddr->sin_port, buf, (uint16_t)len);
-        if (mbuf == NULL) {
-                errno = ENOBUFS;
+        if (udp_build_datagrams(sk, daddr, dst_mac, buf, len, packets,
+                                &count) != 0)
                 return -1;
-        }
-        if (rte_ring_sp_enqueue(ring->out, mbuf) != 0) {
-                rte_pktmbuf_free(mbuf);
-                errno = ENOBUFS;
-                return -1;
+
+        unsigned int enqueued = rte_ring_sp_enqueue_burst(
+            ring->out, (void *const *)packets, count, NULL);
+        for (unsigned int i = enqueued; i < count; i++)
+                rte_pktmbuf_free(packets[i]);
+        if (enqueued != count) {
+                nsock_tx_record_udp_queue_drops(count - enqueued);
+                LOG_DEBUG("owner-local UDP queue drop " UDP_SK_FMT
+                          " enqueued=%u dropped=%u",
+                          UDP_SK_ARG(sk), enqueued, count - enqueued);
         }
         return (ssize_t)len;
 }
@@ -176,9 +206,13 @@ struct rte_mbuf *udp_build_pkt(struct rte_mempool *mp, const uint8_t *dst_mac,
         const size_t total_len = sizeof(struct rte_ether_hdr) +
                                  sizeof(struct rte_ipv4_hdr) +
                                  sizeof(struct rte_udp_hdr) + data_len;
+        uint32_t data_room;
 
-        if (mp == NULL || dst_mac == NULL ||
-            total_len > rte_pktmbuf_data_room_size(mp))
+        if (mp == NULL || dst_mac == NULL)
+                return NULL;
+        data_room = rte_pktmbuf_data_room_size(mp);
+        if (data_room <= RTE_PKTMBUF_HEADROOM ||
+            total_len > data_room - RTE_PKTMBUF_HEADROOM)
                 return NULL;
         if (data_len > UINT16_MAX - sizeof(struct rte_udp_hdr))
                 return NULL;
@@ -201,6 +235,45 @@ struct rte_mbuf *udp_build_pkt(struct rte_mempool *mp, const uint8_t *dst_mac,
         udp->dgram_cksum = 0;
         udp->dgram_cksum = rte_ipv4_udptcp_cksum(ip, udp);
         return mbuf;
+}
+
+static int udp_build_datagrams(struct nsock *sk,
+                               const struct sockaddr_in *daddr,
+                               const uint8_t *dst_mac, const void *buf,
+                               size_t len, struct rte_mbuf **packets,
+                               unsigned int *count_out) {
+        size_t payload_limit;
+        unsigned int count;
+        size_t offset = 0;
+
+        if (sk == NULL || daddr == NULL || dst_mac == NULL || packets == NULL ||
+            count_out == NULL || (buf == NULL && len != 0)) {
+                errno = EINVAL;
+                return -1;
+        }
+        if (udp_datagram_shape(len, &payload_limit, &count) != 0)
+                return -1;
+
+        for (unsigned int i = 0; i < count; i++) {
+                size_t remaining = len - offset;
+                size_t chunk =
+                    remaining < payload_limit ? remaining : payload_limit;
+                const uint8_t *data =
+                    chunk == 0 ? NULL : (const uint8_t *)buf + offset;
+
+                packets[i] = udp_build_pkt(
+                    g_net.mp, dst_mac, sk->local_ip, daddr->sin_addr.s_addr,
+                    sk->local_port, daddr->sin_port, data, (uint16_t)chunk);
+                if (packets[i] == NULL) {
+                        for (unsigned int j = 0; j < i; j++)
+                                rte_pktmbuf_free(packets[j]);
+                        errno = ENOBUFS;
+                        return -1;
+                }
+                offset += chunk;
+        }
+        *count_out = count;
+        return 0;
 }
 
 int udp_ingress(struct rte_mbuf *mbuf) {
@@ -358,8 +431,15 @@ ssize_t udp_sendto(struct nsock *sk, const void *buf, size_t len,
                 return -1;
         }
         if (dest_addr == NULL) {
+                errno = EINVAL;
                 LOG_ERROR("udp_sendto: " UDP_SK_FMT " missing dest",
                           UDP_SK_ARG(sk));
+                return -1;
+        }
+        if ((buf == NULL && len != 0) ||
+            udp_datagram_shape(len, NULL, NULL) != 0) {
+                if (buf == NULL && len != 0)
+                        errno = EINVAL;
                 return -1;
         }
 
@@ -377,11 +457,6 @@ ssize_t udp_sendto(struct nsock *sk, const void *buf, size_t len,
                 }
         }
 
-        if (len > UINT16_MAX - sizeof(struct rte_udp_hdr)) {
-                errno = EMSGSIZE;
-                return -1;
-        }
-
         const struct sockaddr_in *daddr = (const struct sockaddr_in *)dest_addr;
         if (sk->io_mode == NSOCK_IO_OWNER_LOCAL)
                 return udp_sendto_local(sk, buf, len, daddr);
@@ -391,22 +466,17 @@ ssize_t udp_sendto(struct nsock *sk, const void *buf, size_t len,
          * with a broadcast destination marks this mbuf as unresolved without
          * reading the owner-local ARP cache from the application lcore.
          */
-        const uint8_t *dst_mac = g_broadcast_mac;
-        /* TODO: fragment payloads larger than the path MTU (IP fragmentation)
-         * and reassemble fragmented datagrams on receive. Today an oversized
-         * send is encoded as a single frame and there is no reassembly path. */
-
-        struct rte_mbuf *mbuf = udp_build_pkt(
-            g_net.mp, dst_mac, sk->local_ip, daddr->sin_addr.s_addr,
-            sk->local_port, daddr->sin_port, buf, (uint16_t)len);
-        if (mbuf == NULL) {
-                errno = ENOBUFS;
+        struct rte_mbuf *packets[UDP_SENDTO_MAX_DATAGRAMS];
+        unsigned int count;
+        if (udp_build_datagrams(sk, daddr, g_broadcast_mac, buf, len, packets,
+                                &count) != 0)
                 return -1;
-        }
 
-        if (rte_ring_mp_enqueue(sk->send_buf, mbuf) != 0) {
+        if (rte_ring_mp_enqueue_bulk(sk->send_buf, (void *const *)packets,
+                                     count, NULL) != count) {
                 LOG_ERROR("send_buf full for " UDP_SK_FMT, UDP_SK_ARG(sk));
-                rte_pktmbuf_free(mbuf);
+                for (unsigned int i = 0; i < count; i++)
+                        rte_pktmbuf_free(packets[i]);
                 errno = EAGAIN;
                 return -1;
         }
@@ -462,7 +532,7 @@ ssize_t udp_recvfrom(struct nsock *sk, void *buf, size_t len,
         }
 
         const uint8_t *pkt = rte_pktmbuf_mtod(mbuf, const uint8_t *);
-        size_t pkt_len = rte_pktmbuf_data_len(mbuf);
+        size_t pkt_len = rte_pktmbuf_pkt_len(mbuf);
         size_t udp_offset = (size_t)((const uint8_t *)udp - pkt);
         size_t udp_total = rte_be_to_cpu_16(udp->dgram_len);
         size_t payload_len;
@@ -472,8 +542,7 @@ ssize_t udp_recvfrom(struct nsock *sk, void *buf, size_t len,
          * truncated or overstated dgram_len must not be readable past pkt_len,
          * especially across short-read retries that keep the original image.
          */
-        if (udp_total < sizeof(struct rte_udp_hdr) ||
-            udp_offset > pkt_len ||
+        if (udp_total < sizeof(struct rte_udp_hdr) || udp_offset > pkt_len ||
             udp_total > pkt_len - udp_offset) {
                 udp_rx_current_release(sk);
                 errno = EPROTO;
@@ -494,7 +563,6 @@ ssize_t udp_recvfrom(struct nsock *sk, void *buf, size_t len,
                 return -1;
         }
 
-        const uint8_t *data = (const uint8_t *)(udp + 1);
         size_t remaining = payload_len - sk->u.udp.rx_current_off;
         size_t copied = len < remaining ? len : remaining;
 
@@ -503,7 +571,17 @@ ssize_t udp_recvfrom(struct nsock *sk, void *buf, size_t len,
                         errno = EFAULT;
                         return -1;
                 }
-                rte_memcpy(buf, data + sk->u.udp.rx_current_off, copied);
+                size_t data_offset =
+                    udp_offset + sizeof(*udp) + sk->u.udp.rx_current_off;
+                const void *source = rte_pktmbuf_read(
+                    mbuf, (uint32_t)data_offset, (uint32_t)copied, buf);
+                if (source == NULL) {
+                        udp_rx_current_release(sk);
+                        errno = EPROTO;
+                        return -1;
+                }
+                if (source != buf)
+                        rte_memcpy(buf, source, copied);
         }
         if (copied < remaining) {
                 sk->u.udp.rx_current_off += copied;

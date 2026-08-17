@@ -27,6 +27,7 @@ struct stack_runtime_metrics {
         uint64_t dirty_tx_arp_waits;
         uint64_t dirty_tx_arp_wakeups;
         uint64_t dirty_tx_budget_exhausted;
+        uint64_t udp_tx_queue_drops; /**< Owner-local UDP queue drops. */
         uint64_t turn_cycles;        /**< End-to-end worker-loop time. */
         uint64_t rx_cycles;          /**< ring->in dequeue plus ingress time. */
         uint64_t maintenance_cycles; /**< Timer and ARP maintenance time. */

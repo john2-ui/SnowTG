@@ -27,6 +27,7 @@ struct port_topology {
         uint16_t rx_queue_count;
         uint16_t tx_queue_count;
         uint16_t worker_count;
+        uint16_t ipv4_mtu;
         uint64_t rss_hf;
 };
 
@@ -37,8 +38,11 @@ struct port_topology {
  *
  * @param port_id DPDK port id to bring up.
  * @param mp      Mempool backing the receive queue.
+ * @param requested_mtu Requested IPv4 MTU, or zero to retain the port value.
+ * @return The actual queue topology and effective IPv4 MTU.
  */
-void port_init(uint16_t port_id, struct rte_mempool *mp);
+struct port_topology port_init(uint16_t port_id, struct rte_mempool *mp,
+                               uint16_t requested_mtu);
 
 /**
  * @brief Configure and start a port for @p worker_count packet workers.
@@ -54,11 +58,12 @@ void port_init(uint16_t port_id, struct rte_mempool *mp);
  * @param port_id DPDK port to bring up.
  * @param mp Mempool backing every receive queue.
  * @param worker_count Number of packet-worker flow buckets.
- * @return The actual RX/TX queue topology.
+ * @param requested_mtu Requested IPv4 MTU, or zero to retain the port value.
+ * @return The actual RX/TX queue topology and effective IPv4 MTU.
  */
-struct port_topology port_init_queues(uint16_t port_id,
-                                      struct rte_mempool *mp,
-                                      uint16_t worker_count);
+struct port_topology port_init_queues(uint16_t port_id, struct rte_mempool *mp,
+                                      uint16_t worker_count,
+                                      uint16_t requested_mtu);
 /**
  * Return the configured flow worker for an IPv4 four-tuple, or -1 when flow
  * prediction is unavailable. Arguments use wire byte order.

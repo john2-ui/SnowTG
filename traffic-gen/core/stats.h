@@ -126,6 +126,7 @@ struct tg_stats_snapshot {
         /** Datapath drops and RX dispatch fallback counters. */
         uint64_t rx_ring_drops;
         uint64_t tx_nic_drops;
+        uint64_t udp_tx_queue_drops;
         uint64_t rx_owner_hits;
         uint64_t rx_software_hashes;
         uint64_t rx_parse_fallbacks;

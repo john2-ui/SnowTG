@@ -184,6 +184,7 @@ struct nsock_tx_metrics {
         uint64_t flush_calls;
         uint64_t arp_waits;
         uint64_t arp_wakeups;
+        uint64_t udp_tx_queue_drops;
         uint64_t dirty_budget_exhausted;
         uint32_t dirty_depth;
         uint32_t dirty_high_water;
@@ -207,6 +208,8 @@ void nsock_tx_arp_wait(struct nsock *sk, uint32_t remote_ip);
 void nsock_tx_arp_resolved(uint32_t remote_ip);
 /** Snapshot and clear per-owner dirty-TX counters. */
 void nsock_tx_metrics_take(struct nsock_tx_metrics *out);
+/** Account owner-local UDP datagrams dropped before reaching the NIC ring. */
+void nsock_tx_record_udp_queue_drops(uint64_t count);
 
 /**
  * @brief Bind a socket to a local endpoint and reserve it in its protocol map.
