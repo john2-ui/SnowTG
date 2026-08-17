@@ -3,6 +3,9 @@
 
 .DEFAULT_GOAL := all
 
+BUILD_DIR ?= build
+SANITIZERS ?=
+
 # TCP INFO and TRACE logs are disabled by default for traffic generation.
 # Enable the required category explicitly while debugging, for example:
 #   make LOG_LEVEL=LOG_LVL_TRACE TCP_LOG_INFO_ENABLED=1 \
@@ -20,8 +23,9 @@ STACK_SRCS := net_context.c ring.c arp.c udp.c icmp.c port.c rx_dispatch.c ipv4_
 	socket_owner.c pkt_frame.c tcp.c tcp_options.c tcp_rtt.c tcp_sack.c tcp_cc.c \
 	tcp_cc/newreno.c tcp_cc/cubic.c rbtree.c \
 	owner_io.c stack_runtime.c tcp_memory.c udp_memory.c
-STACK_OBJS := $(patsubst %.c,build/lib/%.o,$(STACK_SRCS))
+STACK_OBJS := $(patsubst %.c,$(BUILD_DIR)/lib/%.o,$(STACK_SRCS))
 STACK_DEPS := $(STACK_OBJS:.o=.d)
+STACK_LIB := $(BUILD_DIR)/libpro-stack.a
 
 -include $(STACK_DEPS)
 
@@ -30,7 +34,7 @@ ifeq ($(shell pkg-config --exists libdpdk && echo 0),0)
 
 all: library
 .PHONY: library
-library: build/libpro-stack.a
+library: $(STACK_LIB)
 
 PKGCONF=pkg-config --define-prefix
 
@@ -42,26 +46,30 @@ CFLAGS += -DTCP_LOG_PACKETS=$(TCP_LOG_PACKETS)
 CFLAGS += -DTCP_LOG_INFO_ENABLED=$(TCP_LOG_INFO_ENABLED)
 CFLAGS += -DTCP_LOG_DEBUG_ENABLED=$(TCP_LOG_DEBUG_ENABLED)
 CFLAGS += -DTCP_LOG_TRACE_ENABLED=$(TCP_LOG_TRACE_ENABLED)
+ifneq ($(strip $(SANITIZERS)),)
+CFLAGS += -O1 -g3 -fno-omit-frame-pointer -fno-optimize-sibling-calls
+CFLAGS += -fsanitize=$(SANITIZERS)
+endif
 LDFLAGS_STATIC = $(shell $(PKGCONF) --static --libs libdpdk)
 
-build/libpro-stack.a: $(STACK_OBJS) | build
+$(STACK_LIB): $(STACK_OBJS) | $(BUILD_DIR)
 	ar rcs $@ $(STACK_OBJS)
 
-build/lib/%.o: %.c Makefile $(PC_FILE) | build/lib
+$(BUILD_DIR)/lib/%.o: %.c Makefile $(PC_FILE) | $(BUILD_DIR)/lib
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
-build:
+$(BUILD_DIR):
 	@mkdir -p $@
 
-build/lib:
+$(BUILD_DIR)/lib:
 	@mkdir -p $@
 
 .PHONY: clean
 clean:
-	rm -f build/libpro-stack.a
-	rm -rf build/lib
-	test -d build && rmdir -p build || true
+	rm -f $(STACK_LIB)
+	rm -rf $(BUILD_DIR)/lib
+	test -d $(BUILD_DIR) && rmdir -p $(BUILD_DIR) || true
 
 else # Build using legacy build system
 
@@ -86,6 +94,11 @@ CFLAGS += -DTCP_LOG_PACKETS=$(TCP_LOG_PACKETS)
 CFLAGS += -DTCP_LOG_INFO_ENABLED=$(TCP_LOG_INFO_ENABLED)
 CFLAGS += -DTCP_LOG_DEBUG_ENABLED=$(TCP_LOG_DEBUG_ENABLED)
 CFLAGS += -DTCP_LOG_TRACE_ENABLED=$(TCP_LOG_TRACE_ENABLED)
+ifneq ($(strip $(SANITIZERS)),)
+CFLAGS += -O1 -g3 -fno-omit-frame-pointer -fno-optimize-sibling-calls
+CFLAGS += -fsanitize=$(SANITIZERS)
+LDFLAGS += -fsanitize=$(SANITIZERS)
+endif
 CFLAGS += $(WERROR_FLAGS)
 
 include $(RTE_SDK)/mk/rte.extapp.mk

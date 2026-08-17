@@ -374,7 +374,11 @@ make -C test
 make -C test test-owner-io
 ./test/build/test_owner_io --in-memory --no-huge
 
-# 7. 运行示例或 traffic-gen 时，按需先绑定 DPDK 驱动
+# 7. 在独立构建目录中用 ASan + UBSan 重建并运行完整测试
+./run-sanitizers.sh
+# 可选：CC=clang JOBS=8 ./run-sanitizers.sh
+
+# 8. 运行示例或 traffic-gen 时，按需先绑定 DPDK 驱动
 ./bind-dpdk.sh
 ./apps/stack-demo/build/stack-demo -l 0-2 ...
 ./traffic-gen/build/traffic-gen -l 0-1 ...

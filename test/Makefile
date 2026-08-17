@@ -1,6 +1,20 @@
 CC ?= cc
 
 CFLAGS ?= -O2 -g
+BUILD_DIR ?= build
+STACK_BUILD_DIR ?= $(BUILD_DIR)
+SANITIZERS ?=
+STACK_LIB := ../pro-stack/$(STACK_BUILD_DIR)/libpro-stack.a
+ifneq ($(strip $(SANITIZERS)),)
+CFLAGS += -O1 -g3 -fno-omit-frame-pointer -fno-optimize-sibling-calls
+CFLAGS += -fsanitize=$(SANITIZERS)
+SANITIZER_LDFLAGS := -fsanitize=$(SANITIZERS)
+# These tests compile tcp.c as a seam.  At low optimization, production-only
+# sections remain reachable, so use the instrumented stack archive to satisfy
+# their dependencies instead of relying on --gc-sections to discard them.
+TCP_SEAM_SUPPORT := $(STACK_LIB)
+TCP_SEAM_LDFLAGS := -Wl,--allow-multiple-definition
+endif
 TEST_CFLAGS := $(CFLAGS) -std=c11 -Wall -Wextra -Werror -Wpedantic
 OWNER_IO_CFLAGS := $(TEST_CFLAGS) -D_GNU_SOURCE
 RX_DISPATCH_CFLAGS := $(TEST_CFLAGS) -D_GNU_SOURCE
@@ -15,7 +29,6 @@ DPDK_PKGCONF := pkg-config --define-prefix
 DPDK_CFLAGS := $(shell $(DPDK_PKGCONF) --cflags libdpdk)
 DPDK_LIBS := $(shell $(DPDK_PKGCONF) --libs libdpdk)
 
-BUILD_DIR := build
 RBTREE_TEST := $(BUILD_DIR)/test_rbtree
 OFO_TEST := $(BUILD_DIR)/test_ofo
 PAWS_TEST := $(BUILD_DIR)/test_tcp_paws
@@ -131,11 +144,11 @@ $(RBTREE_TEST): test_rbtree.c ../pro-stack/rbtree.c ../pro-stack/rbtree.h | $(BU
 
 $(OFO_TEST): test_ofo.c ../pro-stack/tcp.c ../pro-stack/tcp.h \
 		../pro-stack/tcp_sack.c $(TCP_CC_SRCS) \
-		../pro-stack/rbtree.c ../pro-stack/rbtree.h | $(BUILD_DIR)
+		../pro-stack/rbtree.c ../pro-stack/rbtree.h $(TCP_SEAM_SUPPORT) | $(BUILD_DIR)
 	$(CC) $(OFO_CFLAGS) $(DPDK_CFLAGS) -DTCP_TESTING -ffunction-sections \
 		test_ofo.c ../pro-stack/tcp.c ../pro-stack/tcp_sack.c \
 		$(TCP_CC_SRCS) ../pro-stack/rbtree.c -o $@ \
-		-Wl,--gc-sections $(DPDK_LIBS) -pthread
+		-Wl,--gc-sections $(TCP_SEAM_LDFLAGS) $(TCP_SEAM_SUPPORT) $(DPDK_LIBS) -pthread
 
 $(PAWS_TEST): test_tcp_paws.c ../pro-stack/tcp_options.c \
 		../pro-stack/tcp_sack.c ../pro-stack/tcp_options.h \
@@ -146,11 +159,11 @@ $(PAWS_TEST): test_tcp_paws.c ../pro-stack/tcp_options.c \
 $(SACK_TEST): test_tcp_sack.c ../pro-stack/tcp.c ../pro-stack/tcp_options.c \
 		../pro-stack/tcp_sack.c $(TCP_CC_SRCS) ../pro-stack/tcp_rtt.c ../pro-stack/tcp.h \
 		../pro-stack/tcp_options.h ../pro-stack/rbtree.c | \
-		$(BUILD_DIR)
+		$(TCP_SEAM_SUPPORT) $(BUILD_DIR)
 	$(CC) $(OFO_CFLAGS) $(DPDK_CFLAGS) -DTCP_TESTING -ffunction-sections \
 		test_tcp_sack.c ../pro-stack/tcp.c ../pro-stack/tcp_options.c \
 		../pro-stack/tcp_sack.c $(TCP_CC_SRCS) ../pro-stack/tcp_rtt.c ../pro-stack/rbtree.c \
-		-o $@ -Wl,--gc-sections $(DPDK_LIBS) -pthread
+		-o $@ -Wl,--gc-sections $(TCP_SEAM_LDFLAGS) $(TCP_SEAM_SUPPORT) $(DPDK_LIBS) -pthread
 
 $(TCP_CC_TEST): test_tcp_cc.c $(TCP_CC_SRCS) ../pro-stack/tcp_cc.h \
 		../pro-stack/tcp_cc/newreno.h ../pro-stack/tcp_cc/cubic.h | $(BUILD_DIR)
@@ -160,15 +173,15 @@ $(TCP_CC_TEST): test_tcp_cc.c $(TCP_CC_SRCS) ../pro-stack/tcp_cc.h \
 $(EPHEMERAL_TEST): test_tcp_ephemeral.c ../pro-stack/tcp.c \
 		../pro-stack/tcp_sack.c $(TCP_CC_SRCS) ../pro-stack/tcp.h \
 		../pro-stack/rbtree.c ../pro-stack/rbtree.h | \
-		$(BUILD_DIR)
+		$(TCP_SEAM_SUPPORT) $(BUILD_DIR)
 	$(CC) $(OFO_CFLAGS) $(DPDK_CFLAGS) -DTCP_TESTING -ffunction-sections \
 		test_tcp_ephemeral.c ../pro-stack/tcp.c ../pro-stack/tcp_sack.c \
 		$(TCP_CC_SRCS) ../pro-stack/rbtree.c -o $@ \
-		-Wl,--gc-sections $(DPDK_LIBS) -pthread
+		-Wl,--gc-sections $(TCP_SEAM_LDFLAGS) $(TCP_SEAM_SUPPORT) $(DPDK_LIBS) -pthread
 
-$(OWNER_IO_TEST): test_owner_io.c ../pro-stack/build/libpro-stack.a | $(BUILD_DIR)
+$(OWNER_IO_TEST): test_owner_io.c $(STACK_LIB) | $(BUILD_DIR)
 	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) -I../pro-stack test_owner_io.c \
-		../pro-stack/build/libpro-stack.a -o $@ $(DPDK_LIBS)
+		$(STACK_LIB) -o $@ $(DPDK_LIBS) $(SANITIZER_LDFLAGS)
 
 $(ARP_TEST): test_arp.c ../pro-stack/arp.c ../pro-stack/arp.h \
 		../pro-stack/net_context.c ../pro-stack/net_context.h | $(BUILD_DIR)
@@ -190,20 +203,20 @@ $(FLOW_UDP_TEST): test_flow_udp.c ../traffic-gen/core/conn_pool.c \
 		../traffic-gen/core/flow.c \
 		../traffic-gen/core/flow_pool.c ../traffic-gen/core/txn.c \
 		../pro-stack/arp.h ../pro-stack/config.h ../pro-stack/ring.h \
-		../pro-stack/udp.h ../pro-stack/build/libpro-stack.a | $(BUILD_DIR)
+		../pro-stack/udp.h $(STACK_LIB) | $(BUILD_DIR)
 	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) \
 		-I../pro-stack -I../traffic-gen/core -I../traffic-gen/proto \
 		test_flow_udp.c ../traffic-gen/core/conn_pool.c \
 		../traffic-gen/core/flow.c \
 		../traffic-gen/core/flow_pool.c ../traffic-gen/core/txn.c \
-		../pro-stack/build/libpro-stack.a -o $@ $(DPDK_LIBS)
+		$(STACK_LIB) -o $@ $(DPDK_LIBS) $(SANITIZER_LDFLAGS)
 
 $(IPV4_REASSEMBLY_TEST): test_ipv4_reassembly.c \
 		../pro-stack/ipv4_reassembly.h ../pro-stack/udp.h \
-		../pro-stack/build/libpro-stack.a | $(BUILD_DIR)
+		$(STACK_LIB) | $(BUILD_DIR)
 	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) -I../pro-stack \
-		test_ipv4_reassembly.c ../pro-stack/build/libpro-stack.a \
-		-o $@ $(DPDK_LIBS)
+		test_ipv4_reassembly.c $(STACK_LIB) \
+		-o $@ $(DPDK_LIBS) $(SANITIZER_LDFLAGS)
 
 $(STATS_CSV_TEST): test_stats_csv.c ../traffic-gen/core/stats_csv.c \
 		../traffic-gen/core/stats_csv.h ../traffic-gen/core/stats.h | $(BUILD_DIR)
@@ -218,13 +231,13 @@ $(CONN_POOL_TEST): test_conn_pool.c ../traffic-gen/core/conn_pool.c \
 		../traffic-gen/core/conn_pool.c -o $@
 
 $(HTTP_CLIENT_TEST): $(HTTP_CLIENT_OBJS)
-	$(CC) $(HTTP_CLIENT_OBJS) -o $@
+	$(CC) $(HTTP_CLIENT_OBJS) -o $@ $(SANITIZER_LDFLAGS)
 
 $(DNS_CLIENT_TEST): $(DNS_CLIENT_OBJS)
-	$(CC) $(DNS_CLIENT_OBJS) -o $@
+	$(CC) $(DNS_CLIENT_OBJS) -o $@ $(SANITIZER_LDFLAGS)
 
 $(SCENARIO_SCHEDULER_TEST): $(SCENARIO_SCHEDULER_OBJS)
-	$(CC) $(SCENARIO_SCHEDULER_OBJS) -o $@
+	$(CC) $(SCENARIO_SCHEDULER_OBJS) -o $@ $(SANITIZER_LDFLAGS)
 
 $(BUILD_DIR)/test_http_client.o: test_http_client.c \
 		../traffic-gen/core/txn.h \
@@ -317,8 +330,9 @@ $(BUILD_DIR)/llhttp_http.o: $(LLHTTP_DIR)/src/http.c \
 		$(LLHTTP_DIR)/include/llhttp.h | $(BUILD_DIR)
 	$(CC) $(LLHTTP_CFLAGS) -c $< -o $@
 
-../pro-stack/build/libpro-stack.a:
-	$(MAKE) -C ../pro-stack library
+$(STACK_LIB):
+	$(MAKE) -C ../pro-stack library BUILD_DIR=$(STACK_BUILD_DIR) \
+		SANITIZERS=$(SANITIZERS)
 
 $(BUILD_DIR):
 	mkdir -p $@

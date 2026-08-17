@@ -7,6 +7,10 @@
 
 # @brief Output binary name.
 APP := traffic-gen
+BUILD_DIR ?= build
+STACK_BUILD_DIR ?= $(BUILD_DIR)
+SANITIZERS ?=
+STACK_LIB := ../pro-stack/$(STACK_BUILD_DIR)/libpro-stack.a
 # @brief Default console level; override for protocol diagnostics.
 LOG_LEVEL ?= LOG_LVL_WARN
 # @brief Location of the vendored llhttp parser source tree.
@@ -44,19 +48,25 @@ CFLAGS += -DALLOW_EXPERIMENTAL_API
 CFLAGS += -DLOG_LEVEL=$(LOG_LEVEL)
 # @brief Static DPDK link flags resolved through pkg-config.
 LDFLAGS := $(shell $(PKGCONF) --static --libs libdpdk)
+ifneq ($(strip $(SANITIZERS)),)
+CFLAGS += -O1 -g3 -fno-omit-frame-pointer -fno-optimize-sibling-calls
+CFLAGS += -fsanitize=$(SANITIZERS)
+LDFLAGS += -fsanitize=$(SANITIZERS)
+endif
 
 .PHONY: all clean
-all: build/$(APP)
+all: $(BUILD_DIR)/$(APP)
 
-../pro-stack/build/libpro-stack.a:
-	$(MAKE) -C ../pro-stack library LOG_LEVEL=$(LOG_LEVEL)
+$(STACK_LIB):
+	$(MAKE) -C ../pro-stack library LOG_LEVEL=$(LOG_LEVEL) \
+		BUILD_DIR=$(STACK_BUILD_DIR) SANITIZERS=$(SANITIZERS)
 
-build/$(APP): $(SRCS) Makefile ../pro-stack/build/libpro-stack.a | build
-	$(CC) $(CFLAGS) $(SRCS) ../pro-stack/build/libpro-stack.a -o $@ $(LDFLAGS)
+$(BUILD_DIR)/$(APP): $(SRCS) Makefile $(STACK_LIB) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(SRCS) $(STACK_LIB) -o $@ $(LDFLAGS)
 
-build:
+$(BUILD_DIR):
 	mkdir -p $@
 
 clean:
-	rm -f build/$(APP)
-	rmdir build 2>/dev/null || true
+	rm -f $(BUILD_DIR)/$(APP)
+	rmdir $(BUILD_DIR) 2>/dev/null || true
