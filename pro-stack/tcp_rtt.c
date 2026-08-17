@@ -104,6 +104,20 @@ bool tcp_rtt_on_ack(struct nsock *sk, uint32_t ack, bool ts_present,
         return true;
 }
 
+/** @copydoc tcp_rtt_sample_ack */
+bool tcp_rtt_sample_ack(const struct nsock *sk, bool ts_present,
+                        uint32_t tsecr, uint32_t now_ms,
+                        uint32_t *sample_ms) {
+        uint32_t sample;
+
+        if (sk == NULL || sample_ms == NULL || !sk->u.tcp.timestamps_ok ||
+            !ts_present || sk->u.tcp.rtt_retransmitting)
+                return false;
+        sample = now_ms - tsecr; /* modulo-2^32 Timestamp clock */
+        *sample_ms = sample != 0 ? sample : 1U;
+        return true;
+}
+
 /**
  * @brief Apply RFC 6298 retransmission backoff and suppress ambiguous samples.
  *

@@ -893,7 +893,7 @@ struct nsock *nsock_alloc_mode(int fd, uint8_t protocol,
 
                 sk->u.tcp.snd_mss = TCP_DEFAULT_MSS;
                 tcp_sack_state_init(&sk->u.tcp, 0);
-                tcp_cc_use_reno(&sk->u.tcp, false);
+                tcp_cc_init_default(&sk->u.tcp, false);
 
                 rb_root_init(&sk->u.tcp.ofo_tree);
                 sk->u.tcp.ofo = NULL;

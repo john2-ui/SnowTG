@@ -520,6 +520,21 @@ void tcp_sack_enter_recovery(struct tcp_stream *tp,
                             tp->snd_una, end);
 }
 
+/** @copydoc tcp_sack_schedule_newreno_partial */
+bool tcp_sack_schedule_newreno_partial(struct tcp_stream *tp,
+                                       uint32_t flight_end) {
+        uint32_t smss = tp->snd_mss != 0 ? tp->snd_mss : TCP_DEFAULT_MSS;
+        uint32_t end;
+
+        if (tp->sack.mode != TCP_RECOVERY_NEWRENO ||
+            !seq_lt(tp->snd_una, flight_end))
+                return false;
+        end = seq_min(tp->snd_una + smss, flight_end);
+        memset(&tp->sack.pending, 0, sizeof(tp->sack.pending));
+        return candidate_set(tp, TCP_RECOVERY_TX_RETRANSMIT, 1, false,
+                             tp->snd_una, end);
+}
+
 /** @copydoc tcp_sack_on_rto */
 void tcp_sack_on_rto(struct tcp_stream *tp, uint32_t flight_end) {
         range_list_clear(tp, &tp->sack.sacked);

@@ -128,6 +128,18 @@
 #define TCP_MEMORY_HIGH_WATER 128U
 /** Default MSS used when slicing sndbuf for TX (no option negotiation yet). */
 #define TCP_DEFAULT_MSS 1460
+
+/** Congestion-control algorithm identifiers used by TCP_CC_DEFAULT_ALGO. */
+#define TCP_CC_ALGO_NEWRENO 1U
+#define TCP_CC_ALGO_CUBIC 2U
+/** Congestion-control algorithm selected for every newly initialized TCB. */
+#ifndef TCP_CC_DEFAULT_ALGO
+#define TCP_CC_DEFAULT_ALGO TCP_CC_ALGO_CUBIC
+#endif
+#if TCP_CC_DEFAULT_ALGO != TCP_CC_ALGO_NEWRENO &&                           \
+    TCP_CC_DEFAULT_ALGO != TCP_CC_ALGO_CUBIC
+#error "TCP_CC_DEFAULT_ALGO must select NewReno or CUBIC"
+#endif
 /** RFC 6298 initial data/FIN RTO before a valid RTT sample (ms). */
 #define TCP_RTO_INITIAL_MS 1000
 /** RFC 6298 lower bound for the calculated data/FIN RTO (ms). */

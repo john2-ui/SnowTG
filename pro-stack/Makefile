@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2010-2014 Intel Corporation
 
+.DEFAULT_GOAL := all
+
 # TCP INFO and TRACE logs are disabled by default for traffic generation.
 # Enable the required category explicitly while debugging, for example:
 #   make LOG_LEVEL=LOG_LVL_TRACE TCP_LOG_INFO_ENABLED=1 \
@@ -15,7 +17,8 @@ TCP_LOG_DEBUG_ENABLED ?= 0
 TCP_LOG_TRACE_ENABLED ?= 0
 
 STACK_SRCS := net_context.c ring.c arp.c udp.c icmp.c port.c rx_dispatch.c socket.c \
-	socket_owner.c pkt_frame.c tcp.c tcp_options.c tcp_rtt.c tcp_sack.c tcp_cc.c rbtree.c \
+	socket_owner.c pkt_frame.c tcp.c tcp_options.c tcp_rtt.c tcp_sack.c tcp_cc.c \
+	tcp_cc/newreno.c tcp_cc/cubic.c rbtree.c \
 	owner_io.c stack_runtime.c tcp_memory.c udp_memory.c
 STACK_OBJS := $(patsubst %.c,build/lib/%.o,$(STACK_SRCS))
 STACK_DEPS := $(STACK_OBJS:.o=.d)
@@ -45,6 +48,7 @@ build/libpro-stack.a: $(STACK_OBJS) | build
 	ar rcs $@ $(STACK_OBJS)
 
 build/lib/%.o: %.c Makefile $(PC_FILE) | build/lib
+	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
 build:

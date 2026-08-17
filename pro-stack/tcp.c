@@ -1300,7 +1300,7 @@ struct nsock *tcp_stream_create(uint32_t remote_ip, uint32_t local_ip,
         tcp_options_reset_state(sk);
         tcp_rtt_reset(sk);
         sk->u.tcp.syn_retransmitted = false;
-        tcp_cc_use_reno(&sk->u.tcp, false);
+        tcp_cc_init_default(&sk->u.tcp, false);
 
         LOG_TCP_INFO(TCP_SK_FMT " event=stream-create isn=%u "
                                 "fd_deferred=1",
@@ -1852,6 +1852,9 @@ static void tcp_process_peer_ack_ex(struct nsock *sk, uint32_t ack,
         uint32_t acked = 0;
         bool progressed = ack != sk->u.tcp.snd_una;
         bool rtt_sampled = false;
+        uint32_t now_ms = tcp_options_now_ms();
+        uint32_t raw_rtt_ms = 0;
+        bool raw_rtt_valid = false;
         enum tcp_recovery_mode old_mode = sk->u.tcp.sack.mode;
 
         if (progressed) {
@@ -1862,6 +1865,9 @@ static void tcp_process_peer_ack_ex(struct nsock *sk, uint32_t ack,
                 sk->u.tcp.snd_una = ack;
 
                 /* ACK progress only: duplicate ACKs never create RTT samples. */
+                raw_rtt_valid = tcp_rtt_sample_ack(
+                    sk, sk->u.tcp.rx_timestamp_present,
+                    sk->u.tcp.rx_tsecr, now_ms, &raw_rtt_ms);
                 rtt_sampled = tcp_rtt_on_ack(
                     sk, ack, sk->u.tcp.rx_timestamp_present,
                     sk->u.tcp.rx_tsecr);
@@ -1875,13 +1881,21 @@ static void tcp_process_peer_ack_ex(struct nsock *sk, uint32_t ack,
         if (sack_result.dsack_valid)
                 tcp_cc_on_dsack(&sk->u.tcp, &sack_result.dsack,
                                 sack_result.dsack_covers_retransmission);
-        if (sack_result.recovery_exited) {
-                tcp_cc_on_recovery_exit(&sk->u.tcp);
-        } else if (old_mode == TCP_RECOVERY_CLASSIC_RENO && progressed) {
-                sk->u.tcp.sack.mode = TCP_RECOVERY_NORMAL;
-                sk->u.tcp.sack.dup_acks = 0;
-                tcp_sack_cancel_candidate(&sk->u.tcp);
-                tcp_cc_on_recovery_exit(&sk->u.tcp);
+        bool recovery_exited = sack_result.recovery_exited;
+        bool newreno_partial = false;
+        if (old_mode == TCP_RECOVERY_NEWRENO && progressed) {
+                if (!tcp_seq_lt(ack, sk->u.tcp.sack.recovery_point)) {
+                        sk->u.tcp.sack.mode = TCP_RECOVERY_NORMAL;
+                        sk->u.tcp.sack.dup_acks = 0;
+                        tcp_sack_cancel_candidate(&sk->u.tcp);
+                        recovery_exited = true;
+                } else {
+                        /* RFC 6582 keeps recovery active and immediately
+                         * retransmits the new lowest unacknowledged segment. */
+                        newreno_partial = true;
+                        (void)tcp_sack_schedule_newreno_partial(
+                            &sk->u.tcp, flight_end);
+                }
         }
 
         if (progressed)
@@ -1928,14 +1942,9 @@ static void tcp_process_peer_ack_ex(struct nsock *sk, uint32_t ack,
                                 tcp_cc_on_loss(&sk->u.tcp, &loss);
                                 tcp_sack_enter_recovery(
                                     &sk->u.tcp,
-                                    TCP_RECOVERY_CLASSIC_RENO, flight_end);
+                                    TCP_RECOVERY_NEWRENO, flight_end);
                                 entered_recovery = true;
                         }
-                } else if (sk->u.tcp.sack.mode ==
-                           TCP_RECOVERY_CLASSIC_RENO) {
-                        uint32_t smss = sk->u.tcp.snd_mss;
-                        if (UINT32_MAX - sk->u.tcp.cc.cwnd >= smss)
-                                sk->u.tcp.cc.cwnd += smss;
                 }
         }
 
@@ -1950,13 +1959,30 @@ static void tcp_process_peer_ack_ex(struct nsock *sk, uint32_t ack,
         }
 
         struct tcp_cc_ack_event cc_ack = {
+            .ack_seq = ack,
+            .snd_nxt = flight_end,
             .acked_bytes = acked,
             .newly_sacked_bytes = sack_result.newly_sacked_bytes,
             .flight_size = flight_size,
+            .now_ms = now_ms,
+            .rtt_sample_ms = raw_rtt_ms,
+            .rtt_sample_valid = raw_rtt_valid,
+            .cwnd_limited = sk->u.tcp.cc.cwnd_limited,
+            .duplicate_ack = !progressed &&
+                             (classic_dup_candidate ||
+                              sack_result.new_sack_information),
+            .entered_recovery = entered_recovery,
+            .partial_ack = newreno_partial,
+            .newreno_recovery =
+                old_mode == TCP_RECOVERY_NEWRENO ||
+                (entered_recovery &&
+                 sk->u.tcp.sack.mode == TCP_RECOVERY_NEWRENO),
             .in_recovery = old_mode != TCP_RECOVERY_NORMAL ||
                            entered_recovery,
         };
         tcp_cc_on_ack(&sk->u.tcp, &cc_ack);
+        if (recovery_exited)
+                tcp_cc_on_recovery_exit(&sk->u.tcp);
 
         if (progressed && sk->u.tcp.snd_una == sk->u.tcp.sent_seq) {
                 /* Nothing in flight (data and/or FIN ACKed): stop RTO.
@@ -2290,7 +2316,7 @@ static int tcp_state_syn_sent(struct nsock *sk, struct rte_tcp_hdr *hdr,
         tcp_update_snd_wnd(sk, ntohl(hdr->sent_seq), ntohl(hdr->recv_ack),
                            ntohs(hdr->rx_win), 0);
         tcp_rtt_reset(sk);
-        tcp_cc_use_reno(&sk->u.tcp, sk->u.tcp.syn_retransmitted);
+        tcp_cc_init_default(&sk->u.tcp, sk->u.tcp.syn_retransmitted);
         tcp_stream_set_status(sk, TCP_STATUS_ESTABLISHED);
 
         LOG_TCP_INFO("tcp handshake done (active) " TCP_ID_FMT " peer " IP_FMT
@@ -2384,7 +2410,7 @@ static int tcp_state_syn_recv(struct nsock *sk, struct rte_tcp_hdr *hdr,
                            ntohs(hdr->rx_win),
                            sk->u.tcp.wscale_ok ? sk->u.tcp.snd_wscale : 0);
         tcp_rtt_reset(sk);
-        tcp_cc_use_reno(&sk->u.tcp, sk->u.tcp.syn_retransmitted);
+        tcp_cc_init_default(&sk->u.tcp, sk->u.tcp.syn_retransmitted);
         tcp_stream_set_status(sk, TCP_STATUS_ESTABLISHED);
 
         /*
@@ -3315,14 +3341,14 @@ enum tcp_sndbuf_flush_result {
  * @param mp Mempool used to build the retransmission packet.
  * @return Sent, retry, ARP-wait, or idle scheduling result.
  *
- * RFC 6675 scheduling runs only when cwnd - Pipe permits another SMSS.  The
- * chosen sequence is looked up directly in ACK-retained sndbuf.  HighRxt,
- * Pipe, rescue state, and Karn suppression are committed only after the mbuf
- * is successfully enqueued to the output ring; transient failures therefore
- * preserve exactly the same candidate for the next flush.
+ * RFC 6675 schedules candidates using cwnd - Pipe; NewReno partial ACK and RTO
+ * recovery install an explicit lowest-hole candidate.  Every mode reads the
+ * chosen sequence directly from ACK-retained sndbuf. HighRxt, Pipe, rescue
+ * state, and Karn suppression are committed only after successful TX-ring
+ * enqueue, so transient failures preserve the same candidate for retry.
  */
 static enum tcp_sndbuf_flush_result
-tcp_tx_flush_sack_retransmit(struct nsock *sk, struct rte_mempool *mp) {
+tcp_tx_flush_recovery_retransmit(struct nsock *sk, struct rte_mempool *mp) {
         enum tcp_sndbuf_flush_result result = TCP_SNDBUF_IDLE;
         uint32_t arp_wait_ip = 0;
 
@@ -3413,10 +3439,15 @@ tcp_tx_flush_sack_retransmit(struct nsock *sk, struct rte_mempool *mp) {
 
         tcp_sack_commit_candidate(&sk->u.tcp, seq + seglen);
         tcp_rtt_on_retransmit(sk);
-        tcp_cc_on_packet_sent(&sk->u.tcp, seglen, true,
-                              tcp_options_now_ms());
+        struct tcp_cc_tx_event cc_tx = {
+            .bytes = seglen,
+            .now_ms = tcp_options_now_ms(),
+            .retransmission = true,
+            .cwnd_limited = sk->u.tcp.cc.cwnd_limited,
+        };
+        tcp_cc_on_packet_sent(&sk->u.tcp, &cc_tx);
         LOG_TCP_PACKET(TCP_SK_FMT
-                       " event=tx-sack-retransmit seq=%u ack=%u len=%u "
+                       " event=tx-recovery-retransmit seq=%u ack=%u len=%u "
                        "snd_nxt=%u",
                        TCP_SK_ARG(sk), seq, f.recv_ack, seglen,
                        sk->u.tcp.sent_seq);
@@ -3565,8 +3596,19 @@ tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
         else
                 tcp_sack_note_new_data(&sk->u.tcp, sk->u.tcp.sent_seq);
         sk->u.tcp.sack.limited_transmit = false;
-        tcp_cc_on_packet_sent(&sk->u.tcp, seglen, false,
-                              tcp_options_now_ms());
+        uint32_t congestion_after =
+            UINT32_MAX - congestion_in_flight < seglen
+                ? UINT32_MAX
+                : congestion_in_flight + seglen;
+        struct tcp_cc_tx_event cc_tx = {
+            .bytes = seglen,
+            .now_ms = tcp_options_now_ms(),
+            .retransmission = false,
+            .cwnd_limited = tcp_seq_lt(sk->u.tcp.sent_seq, buf_end) &&
+                            cwnd <= sk->u.tcp.snd_wnd &&
+                            congestion_after >= cwnd,
+        };
+        tcp_cc_on_packet_sent(&sk->u.tcp, &cc_tx);
         /* Data stays in sndbuf until ACK. */
         if (was_idle) {
                 sk->u.tcp.retries = 0;
@@ -3691,13 +3733,14 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
                         tcp_fragment_free(f);
                 }
 
-                enum tcp_sndbuf_flush_result sack_result;
+                enum tcp_sndbuf_flush_result recovery_result;
                 do {
-                        sack_result = tcp_tx_flush_sack_retransmit(sk, mp);
-                } while (sack_result == TCP_SNDBUF_SENT);
-                if (sack_result == TCP_SNDBUF_ARP_WAIT)
+                        recovery_result =
+                            tcp_tx_flush_recovery_retransmit(sk, mp);
+                } while (recovery_result == TCP_SNDBUF_SENT);
+                if (recovery_result == TCP_SNDBUF_ARP_WAIT)
                         return SOCK_TX_FLUSH_ARP_WAIT;
-                if (sack_result == TCP_SNDBUF_RETRY)
+                if (recovery_result == TCP_SNDBUF_RETRY)
                         return SOCK_TX_FLUSH_RETRY;
 
                 enum tcp_sndbuf_flush_result sndbuf_result;
@@ -4123,7 +4166,7 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
         tcp_options_reset_state(sk);
         tcp_rtt_reset(sk);
         sk->u.tcp.syn_retransmitted = false;
-        tcp_cc_use_reno(&sk->u.tcp, false);
+        tcp_cc_init_default(&sk->u.tcp, false);
 
         if (nsock_tcp_conn_register(sk) != 0) {
                 LOG_ERROR("tcp_connect: duplicate 4-tuple");

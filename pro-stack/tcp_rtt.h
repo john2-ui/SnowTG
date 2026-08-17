@@ -13,6 +13,10 @@ void tcp_rtt_note_xmit(struct nsock *sk, uint32_t end_seq, uint32_t tsval);
 /** Update the estimator from a matching Timestamp echo on an advancing ACK. */
 bool tcp_rtt_on_ack(struct nsock *sk, uint32_t ack, bool ts_present,
                     uint32_t tsecr);
+/** Derive a raw per-ACK Timestamp RTT sample without changing RTO state. */
+bool tcp_rtt_sample_ack(const struct nsock *sk, bool ts_present,
+                        uint32_t tsecr, uint32_t now_ms,
+                        uint32_t *sample_ms);
 /** Double the current data/FIN RTO and activate Karn suppression. */
 void tcp_rtt_on_timeout(struct nsock *sk);
 /** Activate Karn suppression for a fast retransmission without RTO backoff. */

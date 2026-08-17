@@ -284,7 +284,7 @@ struct tcp_stream {
 
         /** RFC 6675 range scoreboard and loss-recovery state. */
         struct tcp_sack_state sack;
-        /** Pluggable congestion-control state; Reno is the default. */
+        /** Pluggable congestion-control state selected by config.h. */
         struct tcp_cc_state cc;
         /** A SYN retransmission reduces the post-handshake initial window. */
         bool syn_retransmitted;

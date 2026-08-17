@@ -5,7 +5,9 @@
 #include "../pro-stack/config.h"
 #include "../pro-stack/socket.h"
 #include "../pro-stack/tcp_cc.h"
+#include "../pro-stack/tcp_cc/newreno.h"
 #include "../pro-stack/tcp_options.h"
+#include "../pro-stack/tcp_rtt.h"
 
 #include <rte_byteorder.h>
 #include <rte_eal.h>
@@ -218,7 +220,7 @@ static void init_score_socket(struct nsock *sk, uint32_t una,
         sk->u.tcp.sndbuf.len = flight_len;
         tcp_sack_state_init(&sk->u.tcp, una);
         tcp_sack_note_new_data(&sk->u.tcp, una + flight_len);
-        tcp_cc_use_reno(&sk->u.tcp, false);
+        tcp_cc_set_ops(&sk->u.tcp, &tcp_newreno_ops, false);
 }
 
 static const struct tcp_sack_range *score_at(const struct nsock *sk,
@@ -348,18 +350,19 @@ static void test_dsack_and_recovery_algorithms(void) {
         tcp_test_sack_score_clear(&sk);
 }
 
-static void test_reno_vtable(void) {
+static void test_newreno_vtable(void) {
         struct nsock sk;
         struct tcp_cc_ack_event ack;
         struct tcp_cc_loss_event loss;
 
         memset(&sk, 0, sizeof(sk));
         sk.u.tcp.snd_mss = 1460;
-        tcp_cc_use_reno(&sk.u.tcp, false);
+        tcp_cc_set_ops(&sk.u.tcp, &tcp_newreno_ops, false);
         CHECK(sk.u.tcp.cc.cwnd == 3U * 1460U);
 
         memset(&ack, 0, sizeof(ack));
         ack.acked_bytes = 1460;
+        ack.cwnd_limited = true;
         tcp_cc_on_ack(&sk.u.tcp, &ack);
         CHECK(sk.u.tcp.cc.cwnd == 4U * 1460U);
 
@@ -374,6 +377,19 @@ static void test_reno_vtable(void) {
         loss.first_rto_for_seq = true;
         tcp_cc_on_rto(&sk.u.tcp, &loss);
         CHECK(sk.u.tcp.cc.cwnd == 1460U);
+}
+
+static void test_raw_timestamp_rtt_sample(void) {
+        struct nsock sk;
+        uint32_t sample = 0;
+
+        memset(&sk, 0, sizeof(sk));
+        sk.u.tcp.timestamps_ok = true;
+        CHECK(tcp_rtt_sample_ack(&sk, true, UINT32_MAX - 4U, 5U, &sample));
+        CHECK(sample == 10U);
+
+        sk.u.tcp.rtt_retransmitting = true;
+        CHECK(!tcp_rtt_sample_ack(&sk, true, 1U, 2U, &sample));
 }
 
 static void test_duplicate_ack_recovery_entry(void) {
@@ -393,6 +409,11 @@ static void test_duplicate_ack_recovery_entry(void) {
         CHECK(sk.u.tcp.sack.pending.kind == TCP_RECOVERY_TX_RETRANSMIT);
         CHECK(sk.u.tcp.sack.pending.seq == 1000);
         CHECK(sk.u.tcp.cc.cwnd == sk.u.tcp.cc.ssthresh);
+        uint32_t sack_recovery_cwnd = sk.u.tcp.cc.cwnd;
+        sk.u.tcp.rx_sack_count = 1;
+        sk.u.tcp.rx_sacks[0] = (struct tcp_sack_block){1800, 1900};
+        tcp_test_process_peer_ack(&sk, 1000, false);
+        CHECK(sk.u.tcp.cc.cwnd == sack_recovery_cwnd);
         tcp_test_sack_score_clear(&sk);
         pthread_mutex_destroy(&sk.mutex);
 
@@ -401,8 +422,20 @@ static void test_duplicate_ack_recovery_entry(void) {
         CHECK(pthread_mutex_init(&sk.mutex, NULL) == 0);
         for (unsigned int i = 0; i < TCP_SACK_DUP_THRESH; i++)
                 tcp_test_process_peer_ack(&sk, 1000, true);
-        CHECK(sk.u.tcp.sack.mode == TCP_RECOVERY_CLASSIC_RENO);
+        CHECK(sk.u.tcp.sack.mode == TCP_RECOVERY_NEWRENO);
         CHECK(sk.u.tcp.sack.pending.seq == 1000);
+
+        uint32_t recovery_cwnd = sk.u.tcp.cc.cwnd;
+        tcp_test_process_peer_ack(&sk, 1100, false);
+        CHECK(sk.u.tcp.sack.mode == TCP_RECOVERY_NEWRENO);
+        CHECK(sk.u.tcp.sack.pending.seq == 1100);
+        CHECK(sk.u.tcp.sack.pending.end == 1200);
+        CHECK(sk.u.tcp.cc.cwnd <= recovery_cwnd);
+
+        tcp_test_process_peer_ack(&sk, 2000, false);
+        CHECK(sk.u.tcp.sack.mode == TCP_RECOVERY_NORMAL);
+        CHECK(sk.u.tcp.sack.pending.kind == TCP_RECOVERY_TX_NONE);
+        CHECK(sk.u.tcp.cc.cwnd == sk.u.tcp.cc.ssthresh);
         tcp_test_sack_score_clear(&sk);
         pthread_mutex_destroy(&sk.mutex);
 }
@@ -470,7 +503,8 @@ int main(void) {
         test_sender_scoreboard();
         test_scoreboard_capacity_fallback();
         test_dsack_and_recovery_algorithms();
-        test_reno_vtable();
+        test_newreno_vtable();
+        test_raw_timestamp_rtt_sample();
         test_duplicate_ack_recovery_entry();
         test_dsack_emission();
         test_ofo_duplicate_dsack();

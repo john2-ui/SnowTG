@@ -43,7 +43,7 @@ enum tcp_recovery_mode {
         TCP_RECOVERY_NORMAL = 0, /**< No loss recovery is active. */
         TCP_RECOVERY_SACK,       /**< RFC 6675 SACK fast recovery. */
         TCP_RECOVERY_RTO,        /**< Recovery started by an RTO. */
-        TCP_RECOVERY_CLASSIC_RENO, /**< Non-SACK Reno fast recovery. */
+        TCP_RECOVERY_NEWRENO, /**< RFC 6582 non-SACK fast recovery. */
 };
 
 /** Type of work selected by RFC 6675 NextSeg. */
@@ -127,6 +127,9 @@ uint32_t tcp_sack_set_pipe(struct tcp_stream *tp, uint32_t flight_end);
 void tcp_sack_enter_recovery(struct tcp_stream *tp,
                              enum tcp_recovery_mode mode,
                              uint32_t flight_end);
+/** Schedule the lowest unacknowledged segment after a NewReno partial ACK. */
+bool tcp_sack_schedule_newreno_partial(struct tcp_stream *tp,
+                                       uint32_t flight_end);
 /** Clear renegable SACK state and start explicit-sequence RTO recovery. */
 void tcp_sack_on_rto(struct tcp_stream *tp, uint32_t flight_end);
 /**

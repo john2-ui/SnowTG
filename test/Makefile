@@ -20,12 +20,15 @@ RBTREE_TEST := $(BUILD_DIR)/test_rbtree
 OFO_TEST := $(BUILD_DIR)/test_ofo
 PAWS_TEST := $(BUILD_DIR)/test_tcp_paws
 SACK_TEST := $(BUILD_DIR)/test_tcp_sack
+TCP_CC_TEST := $(BUILD_DIR)/test_tcp_cc
 EPHEMERAL_TEST := $(BUILD_DIR)/test_tcp_ephemeral
 OWNER_IO_TEST := $(BUILD_DIR)/test_owner_io
 HTTP_CLIENT_TEST := $(BUILD_DIR)/test_http_client
 DNS_CLIENT_TEST := $(BUILD_DIR)/test_dns_client
 SCENARIO_SCHEDULER_TEST := $(BUILD_DIR)/test_scenario_scheduler
 ARP_TEST := $(BUILD_DIR)/test_arp
+TCP_CC_SRCS := ../pro-stack/tcp_cc.c ../pro-stack/tcp_cc/newreno.c \
+	../pro-stack/tcp_cc/cubic.c
 RX_DISPATCH_TEST := $(BUILD_DIR)/test_rx_dispatch
 PORT_TOPOLOGY_TEST := $(BUILD_DIR)/test_port_topology
 FLOW_UDP_TEST := $(BUILD_DIR)/test_flow_udp
@@ -65,12 +68,12 @@ SCENARIO_SCHEDULER_OBJS := $(BUILD_DIR)/test_scenario_scheduler.o \
 .PHONY: all test test-arp test-owner-io test-http-client test-dns-client \
 	test-scenario-scheduler \
 	test-rx-dispatch test-port-topology test-flow-udp test-conn-pool \
-	test-tcp-ephemeral test-tcp-sack clean
+	test-tcp-ephemeral test-tcp-sack test-tcp-cc clean
 
 all: test
 
 # Compilation and execution both must succeed for the test target to pass.
-test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(SACK_TEST) $(EPHEMERAL_TEST) $(OWNER_IO_TEST) \
+test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(SACK_TEST) $(TCP_CC_TEST) $(EPHEMERAL_TEST) $(OWNER_IO_TEST) \
 	$(HTTP_CLIENT_TEST) $(DNS_CLIENT_TEST) $(SCENARIO_SCHEDULER_TEST) $(ARP_TEST) \
 	$(RX_DISPATCH_TEST) $(PORT_TOPOLOGY_TEST) $(FLOW_UDP_TEST) \
 	$(CONN_POOL_TEST)
@@ -78,6 +81,7 @@ test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(SACK_TEST) $(EPHEMERAL_TEST) $(O
 	$(OFO_TEST)
 	$(PAWS_TEST)
 	$(SACK_TEST)
+	$(TCP_CC_TEST)
 	$(EPHEMERAL_TEST)
 	$(OWNER_IO_TEST) --no-huge --no-pci --file-prefix ownerio-test
 	$(HTTP_CLIENT_TEST)
@@ -103,6 +107,8 @@ test-tcp-ephemeral: $(EPHEMERAL_TEST)
 
 test-tcp-sack: $(SACK_TEST)
 
+test-tcp-cc: $(TCP_CC_TEST)
+
 test-rx-dispatch: $(RX_DISPATCH_TEST)
 
 test-port-topology: $(PORT_TOPOLOGY_TEST)
@@ -115,11 +121,11 @@ $(RBTREE_TEST): test_rbtree.c ../pro-stack/rbtree.c ../pro-stack/rbtree.h | $(BU
 	$(CC) $(TEST_CFLAGS) test_rbtree.c ../pro-stack/rbtree.c -o $@
 
 $(OFO_TEST): test_ofo.c ../pro-stack/tcp.c ../pro-stack/tcp.h \
-		../pro-stack/tcp_sack.c ../pro-stack/tcp_cc.c \
+		../pro-stack/tcp_sack.c $(TCP_CC_SRCS) \
 		../pro-stack/rbtree.c ../pro-stack/rbtree.h | $(BUILD_DIR)
 	$(CC) $(OFO_CFLAGS) $(DPDK_CFLAGS) -DTCP_TESTING -ffunction-sections \
 		test_ofo.c ../pro-stack/tcp.c ../pro-stack/tcp_sack.c \
-		../pro-stack/tcp_cc.c ../pro-stack/rbtree.c -o $@ \
+		$(TCP_CC_SRCS) ../pro-stack/rbtree.c -o $@ \
 		-Wl,--gc-sections $(DPDK_LIBS) -pthread
 
 $(PAWS_TEST): test_tcp_paws.c ../pro-stack/tcp_options.c \
@@ -129,21 +135,26 @@ $(PAWS_TEST): test_tcp_paws.c ../pro-stack/tcp_options.c \
 		../pro-stack/tcp_options.c ../pro-stack/tcp_sack.c -o $@ $(DPDK_LIBS)
 
 $(SACK_TEST): test_tcp_sack.c ../pro-stack/tcp.c ../pro-stack/tcp_options.c \
-		../pro-stack/tcp_sack.c ../pro-stack/tcp_cc.c ../pro-stack/tcp_rtt.c ../pro-stack/tcp.h \
+		../pro-stack/tcp_sack.c $(TCP_CC_SRCS) ../pro-stack/tcp_rtt.c ../pro-stack/tcp.h \
 		../pro-stack/tcp_options.h ../pro-stack/rbtree.c | \
 		$(BUILD_DIR)
 	$(CC) $(OFO_CFLAGS) $(DPDK_CFLAGS) -DTCP_TESTING -ffunction-sections \
 		test_tcp_sack.c ../pro-stack/tcp.c ../pro-stack/tcp_options.c \
-		../pro-stack/tcp_sack.c ../pro-stack/tcp_cc.c ../pro-stack/tcp_rtt.c ../pro-stack/rbtree.c \
+		../pro-stack/tcp_sack.c $(TCP_CC_SRCS) ../pro-stack/tcp_rtt.c ../pro-stack/rbtree.c \
 		-o $@ -Wl,--gc-sections $(DPDK_LIBS) -pthread
 
+$(TCP_CC_TEST): test_tcp_cc.c $(TCP_CC_SRCS) ../pro-stack/tcp_cc.h \
+		../pro-stack/tcp_cc/newreno.h ../pro-stack/tcp_cc/cubic.h | $(BUILD_DIR)
+	$(CC) $(OFO_CFLAGS) $(DPDK_CFLAGS) -DTCP_TESTING -I../pro-stack test_tcp_cc.c \
+		$(TCP_CC_SRCS) -o $@ $(DPDK_LIBS)
+
 $(EPHEMERAL_TEST): test_tcp_ephemeral.c ../pro-stack/tcp.c \
-		../pro-stack/tcp_sack.c ../pro-stack/tcp_cc.c ../pro-stack/tcp.h \
+		../pro-stack/tcp_sack.c $(TCP_CC_SRCS) ../pro-stack/tcp.h \
 		../pro-stack/rbtree.c ../pro-stack/rbtree.h | \
 		$(BUILD_DIR)
 	$(CC) $(OFO_CFLAGS) $(DPDK_CFLAGS) -DTCP_TESTING -ffunction-sections \
 		test_tcp_ephemeral.c ../pro-stack/tcp.c ../pro-stack/tcp_sack.c \
-		../pro-stack/tcp_cc.c ../pro-stack/rbtree.c -o $@ \
+		$(TCP_CC_SRCS) ../pro-stack/rbtree.c -o $@ \
 		-Wl,--gc-sections $(DPDK_LIBS) -pthread
 
 $(OWNER_IO_TEST): test_owner_io.c ../pro-stack/build/libpro-stack.a | $(BUILD_DIR)
