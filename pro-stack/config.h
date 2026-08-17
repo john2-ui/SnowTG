@@ -187,7 +187,23 @@
 #define TCP_RCVBUF_SIZE (256U * 1024U)
 /** Maximum OFO payload bytes retained by one TCP control block. */
 #define TCP_OFO_MAX_BYTES TCP_RCVBUF_SIZE
-/** Process-wide cap for copied OFO payload bytes across all TCP streams. */
-#define TCP_OFO_GLOBAL_MAX_BYTES (4U * 1024U * 1024U)
+/** Per-owner cap for copied OFO payload bytes across all owned TCP streams. */
+#define TCP_OFO_OWNER_MAX_BYTES (4U * 1024U * 1024U)
+/** Compatibility alias retained for existing out-of-tree configurations. */
+#define TCP_OFO_GLOBAL_MAX_BYTES TCP_OFO_OWNER_MAX_BYTES
+
+/** Owner OFO usage that enters pressure mode; exit uses the lower threshold. */
+#define TCP_OFO_PRESSURE_ENTER_PERCENT 75U
+#define TCP_OFO_PRESSURE_EXIT_PERCENT 50U
+/** Reordering-distance boundaries for pressure-mode admission tiers. */
+#define TCP_OFO_PRESSURE_NEAR_DISTANCE (16U * 1024U)
+#define TCP_OFO_PRESSURE_MEDIUM_DISTANCE (64U * 1024U)
+/** Pressure-mode per-TCB limits for near, medium, and far reordering. */
+#define TCP_OFO_PRESSURE_NEAR_MAX_SEGS 8U
+#define TCP_OFO_PRESSURE_MEDIUM_MAX_SEGS 16U
+#define TCP_OFO_PRESSURE_FAR_MAX_SEGS 24U
+#define TCP_OFO_PRESSURE_NEAR_MAX_BYTES (16U * 1024U)
+#define TCP_OFO_PRESSURE_MEDIUM_MAX_BYTES (32U * 1024U)
+#define TCP_OFO_PRESSURE_FAR_MAX_BYTES (48U * 1024U)
 
 #endif /* NETARCH_CONFIG_H */

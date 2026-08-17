@@ -305,6 +305,7 @@ int socket_owner_init_with_capacity(unsigned int lcore_id, uint32_t capacity) {
                 return -1;
         }
 
+        tcp_ofo_metrics_reset_owner(lcore_id);
         g_owner_ready[lcore_id] = true;
         LOG_OWNER_INFO("event=init lcore=%u command_capacity=%u "
                        "ready_capacity=%u slot_capacity=%u",

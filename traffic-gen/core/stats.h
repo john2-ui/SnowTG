@@ -114,6 +114,25 @@ struct tg_stats_snapshot {
         uint64_t reactor_cycles;
         uint64_t tx_flush_cycles;
 
+        /** TCP out-of-order queue gauges, maxima, and interval counters. */
+        uint64_t ofo_segments_current;
+        uint64_t ofo_segments_peak;
+        uint64_t ofo_bytes_current;
+        uint64_t ofo_bytes_peak;
+        uint64_t ofo_accepted_segments;
+        uint64_t ofo_accepted_bytes;
+        uint64_t ofo_released_segments;
+        uint64_t ofo_released_bytes;
+        uint64_t ofo_reorder_distance_max;
+        uint64_t ofo_drop_rcvbuf;
+        uint64_t ofo_drop_seg_limit;
+        uint64_t ofo_drop_byte_limit;
+        uint64_t ofo_drop_owner_limit;
+        uint64_t ofo_drop_alloc;
+        uint64_t ofo_drop_pressure;
+        uint64_t ofo_pressure_transitions;
+        uint64_t ofo_pressure_active;
+
         /** Reactor, scheduler, socket-release, and ring high-water metrics. */
         uint64_t reactor_turns;
         uint64_t reactor_events;

@@ -152,7 +152,18 @@ void tg_stats_on_flow_finished(struct tg_stats *stats,
         X(rx_owner_hits)                                                       \
         X(rx_software_hashes)                                                  \
         X(rx_parse_fallbacks)                                                  \
-        X(stats_queue_drops)
+        X(stats_queue_drops)                                                   \
+        X(ofo_accepted_segments)                                               \
+        X(ofo_accepted_bytes)                                                  \
+        X(ofo_released_segments)                                               \
+        X(ofo_released_bytes)                                                  \
+        X(ofo_drop_rcvbuf)                                                     \
+        X(ofo_drop_seg_limit)                                                  \
+        X(ofo_drop_byte_limit)                                                 \
+        X(ofo_drop_owner_limit)                                                \
+        X(ofo_drop_alloc)                                                      \
+        X(ofo_drop_pressure)                                                   \
+        X(ofo_pressure_transitions)
 
 /** Fields for which an aggregate should retain the largest observation. */
 #define TG_RUNTIME_MAX_FIELDS(X)                                               \
@@ -162,7 +173,16 @@ void tg_stats_on_flow_finished(struct tg_stats *stats,
         X(dirty_tx_high_water)                                                 \
         X(reactor_burst_high_water)                                            \
         X(ring_hwm_in)                                                         \
-        X(ring_hwm_out)
+        X(ring_hwm_out)                                                        \
+        X(ofo_segments_peak)                                                   \
+        X(ofo_bytes_peak)                                                      \
+        X(ofo_reorder_distance_max)
+
+/** Owner gauges: latest within a worker interval, summed across workers. */
+#define TG_RUNTIME_GAUGE_FIELDS(X)                                             \
+        X(ofo_segments_current)                                                \
+        X(ofo_bytes_current)                                                   \
+        X(ofo_pressure_active)
 
 /** @copydoc tg_stats_snapshot_from_stats */
 void tg_stats_snapshot_from_stats(struct tg_stats_snapshot *snapshot,
@@ -221,6 +241,9 @@ void tg_stats_snapshot_add_runtime(struct tg_stats_snapshot *total,
                 total->field = sample->field;
         TG_RUNTIME_MAX_FIELDS(TG_MAX_FIELD)
 #undef TG_MAX_FIELD
+#define TG_LATEST_FIELD(field) total->field = sample->field;
+        TG_RUNTIME_GAUGE_FIELDS(TG_LATEST_FIELD)
+#undef TG_LATEST_FIELD
 }
 
 /** @copydoc tg_stats_snapshot_copy_runtime */
@@ -232,6 +255,7 @@ void tg_stats_snapshot_copy_runtime(struct tg_stats_snapshot *snapshot,
 #define TG_COPY_FIELD(field) snapshot->field = total->field;
         TG_RUNTIME_SUM_FIELDS(TG_COPY_FIELD)
         TG_RUNTIME_MAX_FIELDS(TG_COPY_FIELD)
+        TG_RUNTIME_GAUGE_FIELDS(TG_COPY_FIELD)
 #undef TG_COPY_FIELD
 }
 
@@ -272,7 +296,15 @@ void tg_stats_snapshot_add(struct tg_stats_snapshot *aggregate,
         aggregate->complete_cycles += sample->complete_cycles;
         if (sample->complete_max_cycles > aggregate->complete_max_cycles)
                 aggregate->complete_max_cycles = sample->complete_max_cycles;
-        tg_stats_snapshot_add_runtime(aggregate, sample);
+#define TG_ADD_FIELD(field) aggregate->field += sample->field;
+        TG_RUNTIME_SUM_FIELDS(TG_ADD_FIELD)
+        TG_RUNTIME_GAUGE_FIELDS(TG_ADD_FIELD)
+#undef TG_ADD_FIELD
+#define TG_MAX_FIELD(field)                                                    \
+        if (sample->field > aggregate->field)                                  \
+                aggregate->field = sample->field;
+        TG_RUNTIME_MAX_FIELDS(TG_MAX_FIELD)
+#undef TG_MAX_FIELD
 }
 
 /** @copydoc tg_stats_channel_init */

@@ -63,7 +63,13 @@ int tg_stats_csv_open(struct tg_stats_csv *csv, const char *path,
                 "tx_nic_drops,udp_tx_queue_drops,rx_owner_hits,"
                 "rx_software_hashes,"
                 "rx_parse_fallbacks,stats_queue_drops,connections_created,"
-                "connections_reused\n") < 0) {
+                "connections_reused,ofo_segments_current,ofo_segments_peak,"
+                "ofo_bytes_current,ofo_bytes_peak,ofo_accepted_segments,"
+                "ofo_accepted_bytes,ofo_released_segments,ofo_released_bytes,"
+                "ofo_reorder_distance_max,ofo_drop_rcvbuf,"
+                "ofo_drop_seg_limit,ofo_drop_byte_limit,ofo_drop_owner_limit,"
+                "ofo_drop_alloc,ofo_drop_pressure,ofo_pressure_transitions,"
+                "ofo_pressure_active\n") < 0) {
                 (void)fclose(csv->file);
                 memset(csv, 0, sizeof(*csv));
                 return -1;
@@ -100,7 +106,11 @@ int tg_stats_csv_write(struct tg_stats_csv *csv,
             "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
             "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
             "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
-            "%" PRIu64 ",%" PRIu64 ",%" PRIu64 "\n",
+            "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
+            "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
+            "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
+            "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
+            "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 "\n",
             scope, tg_csv_phase(snapshot->phase),
             tg_csv_cycles_to_us(snapshot->timestamp_cycles, hz),
             snapshot->sequence, snapshot->worker_index, snapshot->lcore_id,
@@ -145,7 +155,17 @@ int tg_stats_csv_write(struct tg_stats_csv *csv,
             snapshot->tx_nic_drops, snapshot->udp_tx_queue_drops,
             snapshot->rx_owner_hits, snapshot->rx_software_hashes,
             snapshot->rx_parse_fallbacks, snapshot->stats_queue_drops,
-            snapshot->connections_created, snapshot->connections_reused);
+            snapshot->connections_created, snapshot->connections_reused,
+            snapshot->ofo_segments_current, snapshot->ofo_segments_peak,
+            snapshot->ofo_bytes_current, snapshot->ofo_bytes_peak,
+            snapshot->ofo_accepted_segments, snapshot->ofo_accepted_bytes,
+            snapshot->ofo_released_segments, snapshot->ofo_released_bytes,
+            snapshot->ofo_reorder_distance_max, snapshot->ofo_drop_rcvbuf,
+            snapshot->ofo_drop_seg_limit, snapshot->ofo_drop_byte_limit,
+            snapshot->ofo_drop_owner_limit, snapshot->ofo_drop_alloc,
+            snapshot->ofo_drop_pressure,
+            snapshot->ofo_pressure_transitions,
+            snapshot->ofo_pressure_active);
         if (result < 0)
                 csv->failed = true;
         return result < 0 ? -1 : 0;

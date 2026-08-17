@@ -416,6 +416,11 @@ static int test_failed_start_and_duration_stop(void) {
 static int test_stats(void) {
         struct tg_stats stats;
         struct tg_flow flow;
+        struct tg_stats_snapshot interval = {0};
+        struct tg_stats_snapshot copied = {0};
+        struct tg_stats_snapshot aggregate = {0};
+        struct tg_stats_snapshot first = {0};
+        struct tg_stats_snapshot second = {0};
 
         memset(&flow, 0, sizeof(flow));
         flow.txn.request_offset = 12;
@@ -432,6 +437,36 @@ static int test_stats(void) {
         ASSERT_TRUE(stats.http_rps_total == 1);
         tg_stats_on_resource_deferred(&stats);
         ASSERT_TRUE(stats.starts_deferred_resource == 1);
+
+        first.ofo_segments_current = 3;
+        first.ofo_segments_peak = 4;
+        first.ofo_accepted_segments = 5;
+        first.ofo_reorder_distance_max = 100;
+        first.ofo_pressure_active = 1;
+        second.ofo_segments_current = 2;
+        second.ofo_segments_peak = 7;
+        second.ofo_accepted_segments = 6;
+        second.ofo_reorder_distance_max = 80;
+        second.ofo_pressure_active = 0;
+        tg_stats_snapshot_add_runtime(&interval, &first);
+        tg_stats_snapshot_add_runtime(&interval, &second);
+        ASSERT_TRUE(interval.ofo_segments_current == 2);
+        ASSERT_TRUE(interval.ofo_segments_peak == 7);
+        ASSERT_TRUE(interval.ofo_accepted_segments == 11);
+        ASSERT_TRUE(interval.ofo_reorder_distance_max == 100);
+        ASSERT_TRUE(interval.ofo_pressure_active == 0);
+        tg_stats_snapshot_copy_runtime(&copied, &interval);
+        ASSERT_TRUE(copied.ofo_segments_current == 2);
+        ASSERT_TRUE(copied.ofo_accepted_segments == 11);
+
+        second.ofo_pressure_active = 1;
+        tg_stats_snapshot_add(&aggregate, &first);
+        tg_stats_snapshot_add(&aggregate, &second);
+        ASSERT_TRUE(aggregate.ofo_segments_current == 5);
+        ASSERT_TRUE(aggregate.ofo_segments_peak == 7);
+        ASSERT_TRUE(aggregate.ofo_accepted_segments == 11);
+        ASSERT_TRUE(aggregate.ofo_reorder_distance_max == 100);
+        ASSERT_TRUE(aggregate.ofo_pressure_active == 2);
         return 0;
 }
 

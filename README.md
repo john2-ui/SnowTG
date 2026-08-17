@@ -342,10 +342,19 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | fd、UDP bind、TCP listener/4-tuple 与 ARP 已使用 `rte_hash`；`g_sock_list` 保留作生命周期索引             | ++TX 使用 owner-local dirty socket 队列++                                                                        |
 | worker 每轮遍历全部 socket 调 `tx_flush`                                                         | 仅冲洗有待发数据的 socket；ARP 等待由邻居学习事件唤醒                                                                             |
-| TCP OFO 使用 RB-tree（按 seq）+ 双向链表，插入定位 O(log n)、从 `recv_ack` drain O(1)，并限制节点、每 TCB 字节与全局字节 | 增加可观测性指标；依据压力和乱序距离自适应调节上限                                                                                    |
+| TCP OFO 使用 RB-tree（按 seq）+ 双向链表，插入定位 O(log n)、从 `recv_ack` drain O(1)，并限制节点、每 TCB 字节与 owner 字节 | ++增加可观测性指标；依据压力和乱序距离自适应调节上限++                                                                                  |
 | `tcp_send` → owner-local ACK-retained chunk 链（仅未确认数据占用内存）                                 | （可选）零拷贝 / mbuf 引用计数                                                                                          |
 | ARP 解析：按需 probe、缓存老化、容量淘汰与退避已实现                                                           | 全网扫描仅保留为可选、批量限速的调试手段                                                                                         |
 | 单 RX/TX queue、单 packet worker                                                             | ++多 queue + 硬件 RSS：同一四元组固定归属一个 worker；++ARP/ICMP、计时器、TX 和 socket 生命周期按 worker 分片。单 RX queue 或自定义亲和时再使用软件 RSS |
+
+TCP OFO 在正常内存状态下仍保留每 TCB 32 节点、`TCP_OFO_MAX_BYTES` 字节的原有硬上限。任一 owner-local
+OFO descriptor/payload pool 可用量不高于 64，或 owner OFO 字节达到预算 75% 时进入压力状态；仅当两个
+pool 可用量均不低于 128 且 owner OFO 字节低于预算 50% 时退出。压力状态不驱逐已缓存数据，只按当前 TCB
+本轮最大乱序距离限制后续插入：不高于 16 KiB 时为 8 节点/16 KiB，不高于 64 KiB 时为 16 节点/32 KiB，
+更远时为 24 节点/48 KiB；OFO 完全 drain 后重置本轮距离。
+
+runtime 与 traffic-gen CSV 会报告 OFO 当前/峰值节点和字节、接受/释放量、最大乱序距离、各类 drop、
+压力状态及切换次数。累计计数跨 worker 求和，当前 gauge 取各 worker 最新值后求和，峰值与最大距离取最大值。
 
 
 ---

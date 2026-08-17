@@ -20,6 +20,8 @@
 #include "socket.h"
 #include "socket_owner_internal.h"
 #include "stack_runtime.h"
+#include "tcp_memory.h"
+#include "tcp_ofo.h"
 #include "tcp_options.h"
 #include "tcp_rtt.h"
 
@@ -36,6 +38,7 @@
 #include <rte_lcore.h>
 #include <rte_malloc.h>
 #include <rte_mbuf_core.h>
+#include <rte_mempool.h>
 #include <rte_random.h>
 #include <rte_ring.h>
 #include <rte_tcp.h>
@@ -217,231 +220,6 @@ static int tcp_segment_acceptable(const struct nsock *sk, uint32_t seq,
         return tcp_seq_lt(seq, rcv_nxt + rcv_wnd) &&
                tcp_seq_gt(seg_end, rcv_nxt);
 }
-/** Payload bytes retained by each owner worker's TCP OFO queues. */
-static uint64_t g_tcp_ofo_bytes[RTE_MAX_LCORE];
-
-/**
- * @brief Reserve bytes from the current owner's OFO memory budget.
- * @param bytes Payload bytes to reserve.
- * @return 0 when the budget was reserved, or -1 when it is exhausted.
- */
-static int tcp_ofo_global_reserve(uint32_t bytes) {
-        unsigned int lcore_id = rte_lcore_id();
-        uint64_t *used;
-
-        if (bytes == 0)
-                return 0;
-        if (lcore_id >= RTE_MAX_LCORE)
-                return -1;
-        used = &g_tcp_ofo_bytes[lcore_id];
-        if (*used > (uint64_t)TCP_OFO_GLOBAL_MAX_BYTES - bytes)
-                return -1;
-        *used += bytes;
-        return 0;
-}
-
-/**
- * @brief Return bytes to the current owner's OFO memory budget.
- * @param bytes Payload bytes no longer retained in an OFO queue.
- */
-static void tcp_ofo_global_release(uint32_t bytes) {
-        unsigned int lcore_id = rte_lcore_id();
-
-        if (bytes == 0 || lcore_id >= RTE_MAX_LCORE)
-                return;
-        if (bytes >= g_tcp_ofo_bytes[lcore_id])
-                g_tcp_ofo_bytes[lcore_id] = 0;
-        else
-                g_tcp_ofo_bytes[lcore_id] -= bytes;
-}
-
-/**
- * @brief Subtract received bytes without underflowing the receive accounting.
- * @param sk TCP socket whose receive buffer is adjusted.
- * @param bytes Number of bytes to remove.
- */
-static void tcp_rcvbuf_sub(struct nsock *sk, uint32_t bytes) {
-        if (bytes >= sk->u.tcp.rcvbuf_used)
-                sk->u.tcp.rcvbuf_used = 0;
-        else
-                sk->u.tcp.rcvbuf_used -= bytes;
-}
-
-/**
- * @brief Find the first OFO segment whose sequence is not before @p seq.
- * @param sk TCP socket whose OFO RB-tree is queried.
- * @param seq Target sequence number in host byte order.
- * @return The lower-bound segment, or NULL when every node precedes @p seq.
- *
- * TCP_RCVBUF_SIZE is bounded far below 2^31 bytes, so every OFO key remains
- * within less than 2^31 sequence-space distance from recv_ack.
- * tcp_seq_lt() is thus a valid strict ordering relation for this tree.
- */
-static struct tcp_ofo_seg *tcp_ofo_lower_bound(const struct nsock *sk,
-                                               uint32_t seq) {
-        struct rb_node *node = sk->u.tcp.ofo_tree.node;
-        struct tcp_ofo_seg *result = NULL;
-
-        while (node != NULL) {
-                struct tcp_ofo_seg *cur =
-                    rb_entry(node, struct tcp_ofo_seg, rb);
-
-                if (tcp_seq_lt(cur->seq, seq)) {
-                        node = node->right;
-                } else {
-                        result = cur;
-                        node = node->left;
-                }
-        }
-
-        return result;
-}
-
-/**
- * @brief Insert an already initialized OFO segment into its RB-tree index.
- * @param sk TCP socket owning the index.
- * @param seg Segment whose @c seq is the tree key.
- *
- * Callers must ensure no existing node uses the same sequence key.
- */
-static void tcp_ofo_tree_insert(struct nsock *sk, struct tcp_ofo_seg *seg) {
-        struct rb_node **link = &sk->u.tcp.ofo_tree.node;
-        struct rb_node *parent = NULL;
-
-        while (*link != NULL) {
-                struct tcp_ofo_seg *cur =
-                    rb_entry(*link, struct tcp_ofo_seg, rb);
-
-                parent = *link;
-                if (tcp_seq_lt(seg->seq, cur->seq))
-                        link = &(*link)->left;
-                else
-                        link = &(*link)->right;
-        }
-
-        rb_link_node(&seg->rb, parent, link);
-        rb_insert_color(&seg->rb, &sk->u.tcp.ofo_tree);
-}
-
-/**
- * @brief Insert an OFO segment into the sequence-ordered drain list.
- * @param sk TCP socket owning the list.
- * @param seg Segment to link.
- * @param before First segment with sequence not before @p seg, or NULL.
- */
-static void tcp_ofo_list_insert_before(struct nsock *sk,
-                                       struct tcp_ofo_seg *seg,
-                                       struct tcp_ofo_seg *before) {
-        if (before == NULL) {
-                seg->next = NULL;
-                seg->prev = sk->u.tcp.ofo_tail;
-
-                if (sk->u.tcp.ofo_tail != NULL)
-                        sk->u.tcp.ofo_tail->next = seg;
-                else
-                        sk->u.tcp.ofo = seg;
-                sk->u.tcp.ofo_tail = seg;
-                return;
-        }
-
-        seg->next = before;
-        seg->prev = before->prev;
-
-        if (before->prev != NULL)
-                before->prev->next = seg;
-        else
-                sk->u.tcp.ofo = seg;
-
-        before->prev = seg;
-}
-
-/**
- * @brief Remove a segment from both OFO indexes and release its OFO budget.
- * @param sk TCP socket owning the segment.
- * @param seg Segment to unlink; the caller retains responsibility for freeing.
- *
- * Delivered bytes deliberately remain in @c rcvbuf_used until an owner-side
- * RECV command copies them to the application buffer.
- */
-static void tcp_ofo_unlink(struct nsock *sk, struct tcp_ofo_seg *seg) {
-        rb_erase(&seg->rb, &sk->u.tcp.ofo_tree);
-
-        if (seg->prev != NULL)
-                seg->prev->next = seg->next;
-        else
-                sk->u.tcp.ofo = seg->next;
-
-        if (seg->next != NULL)
-                seg->next->prev = seg->prev;
-        else
-                sk->u.tcp.ofo_tail = seg->prev;
-
-        seg->prev = NULL;
-        seg->next = NULL;
-        sk->u.tcp.ofo_count--;
-        sk->u.tcp.ofo_bytes -= seg->len;
-        tcp_ofo_global_release(seg->len);
-}
-
-/**
- * @brief Drop an acknowledged prefix and reinsert the segment by its new key.
- * @param sk TCP socket owning the segment.
- * @param seg Head OFO segment to trim.
- * @param skip Number of leading payload bytes already acknowledged.
- */
-static void tcp_ofo_rekey_after_trim(struct nsock *sk, struct tcp_ofo_seg *seg,
-                                     uint32_t skip) {
-        rb_erase(&seg->rb, &sk->u.tcp.ofo_tree);
-
-        memmove(seg->data, seg->data + skip, seg->len - skip);
-        seg->seq += skip;
-        seg->len -= skip;
-
-        sk->u.tcp.ofo_bytes -= skip;
-        tcp_ofo_global_release(skip);
-        tcp_rcvbuf_sub(sk, skip);
-
-        tcp_ofo_tree_insert(sk, seg);
-}
-
-/** @brief Release an out-of-order segment and its payload copy.
- * @param s Segment to release; NULL is accepted.
- */
-static void tcp_ofo_seg_free(struct tcp_ofo_seg *s) {
-        struct tcp_owner_memory *memory;
-
-        if (s == NULL)
-                return;
-        tcp_payload_release(s->data, s->storage);
-        memory = tcp_memory_current();
-        if (memory != NULL)
-                tcp_memory_ofo_seg_free(memory, s);
-        else
-                rte_free(s);
-}
-
-/** @brief Discard every buffered out-of-order segment of a TCP socket.
- * @param sk Socket whose ofo queue is reset.
- */
-static void tcp_ofo_purge(struct nsock *sk) {
-        struct tcp_ofo_seg *s = sk->u.tcp.ofo;
-        while (s != NULL) {
-                struct tcp_ofo_seg *next = s->next;
-
-                tcp_ofo_unlink(sk, s);
-                tcp_ofo_seg_free(s);
-                s = next;
-        }
-
-        rb_root_init(&sk->u.tcp.ofo_tree);
-        sk->u.tcp.ofo = NULL;
-        sk->u.tcp.ofo_tail = NULL;
-        sk->u.tcp.ofo_count = 0;
-        sk->u.tcp.ofo_bytes = 0;
-        sk->u.tcp.sack_recent_valid = false;
-        sk->u.tcp.sack_history_count = 0;
-        sk->u.tcp.dsack_pending = false;
-}
 
 /**
  * @brief Record the first duplicate payload subrange in the current segment.
@@ -577,329 +355,37 @@ static int tcp_deliver_payload(struct nsock *sk, const uint8_t *data,
         return 0;
 }
 
-/**
- * @brief Link an already-trimmed segment into the sorted ofo list.
- * @p before is the first existing node with seq >= new seq (NULL = append).
- *
- * The RB-tree supplies O(log n) lookup while the doubly-linked list preserves
- * sequence-order traversal and O(1) drain from rcv_nxt. Per-stream and
- * per-owner limits bound retained descriptors and payload bytes.
- * @param sk Socket owning the ofo list.
- * @param seq Sequence number of the first payload byte.
- * @param data Payload bytes to copy.
- * @param len Number of payload bytes.
- * @param has_fin Whether FIN follows the payload.
- * @param before Node before which to insert, or NULL to append.
- * @return 0 on insertion, or -1 when allocation or capacity fails.
- */
-static int tcp_ofo_link(struct nsock *sk, uint32_t seq, const uint8_t *data,
-                        uint32_t len, int has_fin, struct tcp_ofo_seg *before) {
-        struct tcp_ofo_seg *seg;
-
-        if (len == 0 && !has_fin)
-                return 0;
-
-        /*
-         * A duplicate FIN-only segment can have the same seq as an existing
-         * node. The RB-tree requires unique keys; retaining the first copy is
-         * also the desired TCP behavior.
-         */
-        if (before != NULL && before->seq == seq)
-                return 0;
-
-        if (len > tcp_rcv_wnd(sk)) {
-                LOG_WARN("tcp ofo no rcvbuf space " TCP_ID_FMT
-                         ", drop seq=%u len=%u",
-                         TCP_ID_ARG(sk), seq, len);
-                return -1;
-        }
-
-        if (sk->u.tcp.ofo_count >= TCP_OFO_MAX_SEGS) {
-                LOG_WARN("tcp ofo full " TCP_ID_FMT ", drop seq=%u len=%u",
-                         TCP_ID_ARG(sk), seq, len);
-                return -1;
-        }
-
-        if (len > TCP_OFO_MAX_BYTES - sk->u.tcp.ofo_bytes) {
-                LOG_WARN("tcp ofo byte cap " TCP_ID_FMT ", drop seq=%u len=%u",
-                         TCP_ID_ARG(sk), seq, len);
-                return -1;
-        }
-
-        if (tcp_ofo_global_reserve(len) != 0) {
-                LOG_WARN("tcp ofo global cap " TCP_ID_FMT
-                         ", drop seq=%u len=%u",
-                         TCP_ID_ARG(sk), seq, len);
-                return -1;
-        }
-
-        if (len > TCP_MEMORY_CHUNK_SIZE) {
-                tcp_ofo_global_release(len);
-                return -1;
-        }
-        struct tcp_owner_memory *memory = tcp_memory_current();
-        seg = memory == NULL ? rte_zmalloc("tcp_ofo_seg", sizeof(*seg), 0)
-                             : tcp_memory_ofo_seg_alloc(memory);
-        if (seg == NULL) {
-                tcp_ofo_global_release(len);
-                return -1;
-        }
-        memset(seg, 0, sizeof(struct tcp_ofo_seg));
-        rb_node_init(&seg->rb);
-        seg->seq = seq;
-        seg->len = len;
-        seg->has_fin = has_fin ? 1 : 0;
-        if (len > 0) {
-                if ((memory != NULL &&
-                     tcp_memory_payload_alloc(memory, &seg->data,
-                                              &seg->storage) != 0) ||
-                    (memory == NULL && (seg->data = rte_malloc(
-                                            "tcp_ofo_data", len, 0)) == NULL)) {
-                        tcp_ofo_global_release(len);
-                        if (memory != NULL)
-                                tcp_memory_ofo_seg_free(memory, seg);
-                        else
-                                rte_free(seg);
-                        return -1;
-                }
-                rte_memcpy(seg->data, data, len);
-        }
-
-        tcp_ofo_tree_insert(sk, seg);
-        tcp_ofo_list_insert_before(sk, seg, before);
-
-        sk->u.tcp.ofo_count++;
-        sk->u.tcp.ofo_bytes += len;
-        sk->u.tcp.rcvbuf_used += len;
-        return 0;
-}
-
-/**
- * @brief Insert a segment into the ofo queue after trimming duplicates.
- *
- * Insert [seq, seq+len) into ofo; trim against recv_ack and existing segs.
- * Existing ofo bytes win on overlap. Covers three overlap shapes:
- *   - new left overhang only: insert [seq, cur_seq), done
- *   - new starts inside cur:  skip to cur_end, keep walking
- *   - new covers cur (seq < cur_seq && cur_end < seg_end): insert left
- *     overhang, skip over cur, continue with right remainder (do not break)
- * has_fin is kept only if the original segment end survives trimming.
- * @param sk Socket receiving the segment.
- * @param seq First sequence number of the received payload.
- * @param data Received payload bytes.
- * @param len Number of payload bytes.
- * @param has_fin Whether the received segment carries FIN.
- * @return 0 when discarded or buffered successfully, or -1 on buffer failure.
- */
-static int tcp_ofo_insert_impl(struct nsock *sk, uint32_t seq,
-                               const uint8_t *data, uint32_t len,
-                               int has_fin) {
-        uint32_t rcv_nxt = sk->u.tcp.recv_ack;
-        uint32_t wnd_end = rcv_nxt + tcp_rcv_wnd(sk);
-        struct tcp_ofo_seg *before;
-        struct tcp_ofo_seg *cur;
-        struct rb_node *prev_node;
-
-        /* Trim already-acked left edge. */
-        if (tcp_seq_lt(seq, rcv_nxt)) {
-                uint32_t skip = rcv_nxt - seq;
-                if (skip >= len)
-                        return 0; /* fully duplicate */
-
-                data += skip;
-                len -= skip;
-                seq = rcv_nxt;
-        }
-        /* Drop if entirely past window. */
-        if (!tcp_seq_lt(seq, wnd_end))
-                return 0;
-        if (tcp_seq_gt(seq + len, wnd_end)) {
-                len = wnd_end - seq;
-                has_fin = 0; /* trimmed off FIN */
-        }
-        if (len == 0 && !has_fin)
-                return 0;
-
-        /*
-         * Tree lookup finds the first node with node->seq >= seq. Its
-         * predecessor may still overlap the new segment, so begin there when
-         * necessary; then walk only the affected successor range.
-         */
-        before = tcp_ofo_lower_bound(sk, seq);
-        if (before != NULL) {
-                prev_node = rb_prev(&before->rb);
-        } else {
-                prev_node = rb_last(&sk->u.tcp.ofo_tree);
-        }
-
-        if (prev_node != NULL) {
-                struct tcp_ofo_seg *prev =
-                    rb_entry(prev_node, struct tcp_ofo_seg, rb);
-
-                if (tcp_seq_gt(prev->seq + prev->len, seq))
-                        cur = prev;
-                else
-                        cur = before;
-        } else {
-                cur = before;
-        }
-
-        while (cur != NULL && len > 0) {
-                uint32_t cur_end = cur->seq + cur->len;
-                uint32_t seg_end = seq + len;
-
-                /* cur entirely left of new segment */
-                if (tcp_seq_leq(cur_end, seq)) {
-                        cur = cur->next;
-                        continue;
-                }
-
-                /* cur entirely right of new segment → insert before cur */
-                if (tcp_seq_leq(seg_end, cur->seq))
-                        break;
-
-                /* Overlap with cur. Keep cur's bytes. */
-                if (tcp_seq_lt(seq, cur->seq)) {
-                        /*
-                         * Left overhang [seq, cur->seq). Always insert it.
-                         * If also cur_end < seg_end (new covers cur), advance
-                         * past cur and continue so the right overhang is kept.
-                         */
-                        uint32_t left = cur->seq - seq;
-                        if (tcp_ofo_link(sk, seq, data, left, 0, cur) != 0)
-                                return -1;
-
-                        uint32_t skip = cur_end - seq; /* left + cur->len */
-                        if (skip >= len)
-                                return 0; /* ended inside / at cur_end */
-
-                        data += skip;
-                        len -= skip;
-                        seq = cur_end;
-                        /* has_fin still applies to the surviving right end */
-                        cur = cur->next;
-                        continue;
-                }
-
-                /* seq inside [cur->seq, cur_end): drop overlap, keep right */
-                {
-                        uint32_t skip = cur_end - seq;
-                        if (skip >= len)
-                                return 0; /* fully covered by existing */
-
-                        data += skip;
-                        len -= skip;
-                        seq = cur_end;
-                        cur = cur->next;
-                }
-        }
-
-        return tcp_ofo_link(sk, seq, data, len, has_fin, cur);
-}
 
 /**
  * @brief Detect duplicates, insert OFO payload, and derive the ACK trigger.
- * @return Result from @ref tcp_ofo_insert_impl.
+ * @return Result from @ref tcp_ofo_queue_insert.
  */
 static int tcp_ofo_insert(struct nsock *sk, uint32_t seq, const uint8_t *data,
                           uint32_t len, int has_fin) {
         uint32_t trigger_seq = seq;
         uint32_t trigger_len = len;
         tcp_sack_note_duplicate(sk, seq, len);
-        int result = tcp_ofo_insert_impl(sk, seq, data, len, has_fin);
+        int result = tcp_ofo_queue_insert(sk, seq, data, len, has_fin);
 
         tcp_sack_note_recent(sk, trigger_seq, trigger_len);
         return result;
 }
 
-#ifdef TCP_TESTING
-void tcp_test_ofo_init(struct nsock *sk, uint32_t rcv_nxt,
-                       uint32_t rcvbuf_size) {
-        sk->u.tcp.recv_ack = rcv_nxt;
-        sk->u.tcp.rcvbuf_size = rcvbuf_size;
-        sk->u.tcp.rcvbuf_used = 0;
-        rb_root_init(&sk->u.tcp.ofo_tree);
-        sk->u.tcp.ofo = NULL;
-        sk->u.tcp.ofo_tail = NULL;
-        sk->u.tcp.ofo_count = 0;
-        sk->u.tcp.ofo_bytes = 0;
+static void tcp_ofo_enter_close_wait(struct nsock *sk) {
+        tcp_stream_set_status(sk, TCP_STATUS_CLOSE_WAIT);
 }
 
+#ifdef TCP_TESTING
 int tcp_test_ofo_insert(struct nsock *sk, uint32_t seq, const uint8_t *data,
                         uint32_t len, int has_fin) {
         return tcp_ofo_insert(sk, seq, data, len, has_fin);
 }
 
-struct tcp_ofo_seg *tcp_test_ofo_lower_bound(const struct nsock *sk,
-                                             uint32_t seq) {
-        return tcp_ofo_lower_bound(sk, seq);
+void tcp_test_ofo_drain(struct nsock *sk) {
+        tcp_ofo_drain(sk, tcp_deliver_payload, tcp_ofo_enter_close_wait);
 }
-
-void tcp_test_ofo_purge(struct nsock *sk) { tcp_ofo_purge(sk); }
 #endif
 
-/** @brief Deliver contiguous ofo segments and advance the receive boundary.
- * @param sk Socket whose sorted ofo queue is drained.
- *
- * Stops at the first sequence hole or when application delivery cannot accept
- * the next contiguous payload.
- */
-static void tcp_ofo_drain(struct nsock *sk) {
-        while (sk->u.tcp.ofo != NULL) {
-                struct tcp_ofo_seg *s = sk->u.tcp.ofo;
-                uint32_t len;
-                int fin;
-
-                if (tcp_seq_gt(s->seq, sk->u.tcp.recv_ack))
-                        break; /* hole remains */
-
-                /* Overlap with already-acked: trim left. */
-                if (tcp_seq_lt(s->seq, sk->u.tcp.recv_ack)) {
-                        uint32_t skip = sk->u.tcp.recv_ack - s->seq;
-                        if (skip >= s->len) {
-                                tcp_rcvbuf_sub(sk, s->len);
-                                tcp_ofo_unlink(sk, s);
-                                tcp_ofo_seg_free(s);
-                                continue;
-                        }
-
-                        /*
-                         * seq is the RB-tree key. Erase/reinsert after changing
-                         * it; modifying an indexed key in place corrupts the
-                         * tree ordering.
-                         */
-                        tcp_ofo_rekey_after_trim(sk, s, skip);
-                }
-
-                /*
-                 * Do not ACK bytes that could not be handed to the
-                 * application. Keep this node at the head so a later packet
-                 * (or the peer's RTO retransmission) can retry delivery.
-                 */
-                if (s->len > 0 && tcp_deliver_payload(sk, s->data, s->len) != 0)
-                        return;
-
-                len = s->len;
-                fin = s->has_fin;
-
-                /*
-                 * OFO memory is released here, but rcvbuf_used is intentionally
-                 * unchanged: delivered bytes remain accounted until an
-                 * owner-executed tcp_recv() copies them to the application.
-                 */
-                tcp_ofo_unlink(sk, s);
-                tcp_ofo_seg_free(s);
-
-                sk->u.tcp.recv_ack += len;
-
-                if (fin) {
-                        sk->u.tcp.recv_ack += 1;
-                        if (sk->u.tcp.status == TCP_STATUS_ESTABLISHED)
-                                tcp_stream_set_status(sk,
-                                                      TCP_STATUS_CLOSE_WAIT);
-                }
-        }
-}
 
 /** @brief Initialize an empty, lazily allocated TCP send buffer.
  * @param sb Send buffer to initialize.
@@ -2482,6 +1968,9 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
         tcp_sack_note_duplicate(sk, seq, payload_len);
 
         if (!tcp_segment_acceptable(sk, seq, payload_len, has_fin)) {
+                if (!tcp_seq_lt(seq, rcv_nxt))
+                        tcp_ofo_record_rcv_window_drop(
+                            sk, seq, payload_len, has_fin);
                 struct tcp_fragment *ack_f =
                     tcp_make_fragment(sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
                                       sk->u.tcp.recv_ack);
@@ -2534,14 +2023,16 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
                         }
                         if (recv_progress)
                                 tcp_options_note_receive_progress(sk);
-                        tcp_ofo_drain(sk);
+                        tcp_ofo_drain(sk, tcp_deliver_payload,
+                                      tcp_ofo_enter_close_wait);
                 }
         } else {
                 /* OOO (or partial left-trim happened inside insert). */
                 (void)tcp_ofo_insert(sk, seq, payload, payload_len, has_fin);
                 /* Do not advance recv_ack; drain is no-op unless trim made it
                  * in-order. */
-                tcp_ofo_drain(sk);
+                tcp_ofo_drain(sk, tcp_deliver_payload,
+                              tcp_ofo_enter_close_wait);
         }
 
         /* Pure ACK so the peer can retire its in-flight bytes. */
@@ -3852,7 +3343,7 @@ ssize_t tcp_recv(struct nsock *sk, void *buf, size_t len,
                 sk->u.tcp.rcvbuf_used = 0;
         else
                 sk->u.tcp.rcvbuf_used -= (uint32_t)n;
-        tcp_ofo_drain(sk);
+        tcp_ofo_drain(sk, tcp_deliver_payload, tcp_ofo_enter_close_wait);
 
         /* Promptly advertise space, including recovery from a zero window. */
         struct tcp_fragment *ack_f = tcp_make_fragment(

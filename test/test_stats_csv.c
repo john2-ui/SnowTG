@@ -34,6 +34,8 @@ int main(void) {
         snapshot.worker_index = 0;
         snapshot.phase = TG_STATS_PHASE_PERIODIC;
         snapshot.udp_tx_queue_drops = 77;
+        snapshot.ofo_drop_pressure = 88;
+        snapshot.ofo_pressure_active = 1;
         assert(tg_stats_csv_write(&csv, &snapshot) == 0);
         assert(tg_stats_csv_close(&csv) == 0);
 
@@ -51,12 +53,25 @@ int main(void) {
             split_csv(record, record_columns,
                       sizeof(record_columns) / sizeof(record_columns[0]));
         assert(header_count == record_count);
+        bool found_udp = false;
+        bool found_ofo_drop = false;
+        bool found_ofo_pressure = false;
         for (unsigned int i = 0; i < header_count; i++) {
                 if (strcmp(header_columns[i], "udp_tx_queue_drops") == 0) {
                         assert(strcmp(record_columns[i], "77") == 0);
-                        return 0;
+                        found_udp = true;
+                }
+                if (strcmp(header_columns[i], "ofo_drop_pressure") == 0) {
+                        assert(strcmp(record_columns[i], "88") == 0);
+                        found_ofo_drop = true;
+                }
+                if (strcmp(header_columns[i], "ofo_pressure_active") == 0) {
+                        assert(strcmp(record_columns[i], "1") == 0);
+                        found_ofo_pressure = true;
                 }
         }
-        assert(!"udp_tx_queue_drops column is missing");
-        return 1;
+        assert(found_udp);
+        assert(found_ofo_drop);
+        assert(found_ofo_pressure);
+        return 0;
 }

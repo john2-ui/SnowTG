@@ -9,9 +9,9 @@ ifneq ($(strip $(SANITIZERS)),)
 CFLAGS += -O1 -g3 -fno-omit-frame-pointer -fno-optimize-sibling-calls
 CFLAGS += -fsanitize=$(SANITIZERS)
 SANITIZER_LDFLAGS := -fsanitize=$(SANITIZERS)
-# These tests compile tcp.c as a seam.  At low optimization, production-only
-# sections remain reachable, so use the instrumented stack archive to satisfy
-# their dependencies instead of relying on --gc-sections to discard them.
+# These tests compile tcp.c/tcp_ofo.c as a seam. At low optimization,
+# production-only sections remain reachable, so use the instrumented stack
+# archive instead of relying on --gc-sections to discard their dependencies.
 TCP_SEAM_SUPPORT := $(STACK_LIB)
 TCP_SEAM_LDFLAGS := -Wl,--allow-multiple-definition
 endif
@@ -142,11 +142,13 @@ test-conn-pool: $(CONN_POOL_TEST)
 $(RBTREE_TEST): test_rbtree.c ../pro-stack/rbtree.c ../pro-stack/rbtree.h | $(BUILD_DIR)
 	$(CC) $(TEST_CFLAGS) test_rbtree.c ../pro-stack/rbtree.c -o $@
 
-$(OFO_TEST): test_ofo.c ../pro-stack/tcp.c ../pro-stack/tcp.h \
+$(OFO_TEST): test_ofo.c ../pro-stack/tcp.c ../pro-stack/tcp_ofo.c \
+		../pro-stack/tcp.h ../pro-stack/tcp_ofo.h \
 		../pro-stack/tcp_sack.c $(TCP_CC_SRCS) \
 		../pro-stack/rbtree.c ../pro-stack/rbtree.h $(TCP_SEAM_SUPPORT) | $(BUILD_DIR)
 	$(CC) $(OFO_CFLAGS) $(DPDK_CFLAGS) -DTCP_TESTING -ffunction-sections \
-		test_ofo.c ../pro-stack/tcp.c ../pro-stack/tcp_sack.c \
+		test_ofo.c ../pro-stack/tcp.c ../pro-stack/tcp_ofo.c \
+		../pro-stack/tcp_sack.c \
 		$(TCP_CC_SRCS) ../pro-stack/rbtree.c -o $@ \
 		-Wl,--gc-sections $(TCP_SEAM_LDFLAGS) $(TCP_SEAM_SUPPORT) $(DPDK_LIBS) -pthread
 
@@ -156,12 +158,14 @@ $(PAWS_TEST): test_tcp_paws.c ../pro-stack/tcp_options.c \
 	$(CC) $(PAWS_CFLAGS) $(DPDK_CFLAGS) -DTCP_TESTING test_tcp_paws.c \
 		../pro-stack/tcp_options.c ../pro-stack/tcp_sack.c -o $@ $(DPDK_LIBS)
 
-$(SACK_TEST): test_tcp_sack.c ../pro-stack/tcp.c ../pro-stack/tcp_options.c \
+$(SACK_TEST): test_tcp_sack.c ../pro-stack/tcp.c ../pro-stack/tcp_ofo.c \
+		../pro-stack/tcp_options.c \
 		../pro-stack/tcp_sack.c $(TCP_CC_SRCS) ../pro-stack/tcp_rtt.c ../pro-stack/tcp.h \
 		../pro-stack/tcp_options.h ../pro-stack/rbtree.c | \
 		$(TCP_SEAM_SUPPORT) $(BUILD_DIR)
 	$(CC) $(OFO_CFLAGS) $(DPDK_CFLAGS) -DTCP_TESTING -ffunction-sections \
-		test_tcp_sack.c ../pro-stack/tcp.c ../pro-stack/tcp_options.c \
+		test_tcp_sack.c ../pro-stack/tcp.c ../pro-stack/tcp_ofo.c \
+		../pro-stack/tcp_options.c \
 		../pro-stack/tcp_sack.c $(TCP_CC_SRCS) ../pro-stack/tcp_rtt.c ../pro-stack/rbtree.c \
 		-o $@ -Wl,--gc-sections $(TCP_SEAM_LDFLAGS) $(TCP_SEAM_SUPPORT) $(DPDK_LIBS) -pthread
 
@@ -171,11 +175,13 @@ $(TCP_CC_TEST): test_tcp_cc.c $(TCP_CC_SRCS) ../pro-stack/tcp_cc.h \
 		$(TCP_CC_SRCS) -o $@ $(DPDK_LIBS)
 
 $(EPHEMERAL_TEST): test_tcp_ephemeral.c ../pro-stack/tcp.c \
+		../pro-stack/tcp_ofo.c \
 		../pro-stack/tcp_sack.c $(TCP_CC_SRCS) ../pro-stack/tcp.h \
 		../pro-stack/rbtree.c ../pro-stack/rbtree.h | \
 		$(TCP_SEAM_SUPPORT) $(BUILD_DIR)
 	$(CC) $(OFO_CFLAGS) $(DPDK_CFLAGS) -DTCP_TESTING -ffunction-sections \
-		test_tcp_ephemeral.c ../pro-stack/tcp.c ../pro-stack/tcp_sack.c \
+		test_tcp_ephemeral.c ../pro-stack/tcp.c ../pro-stack/tcp_ofo.c \
+		../pro-stack/tcp_sack.c \
 		$(TCP_CC_SRCS) ../pro-stack/rbtree.c -o $@ \
 		-Wl,--gc-sections $(TCP_SEAM_LDFLAGS) $(TCP_SEAM_SUPPORT) $(DPDK_LIBS) -pthread
 

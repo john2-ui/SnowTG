@@ -9,6 +9,7 @@
 
 #include <limits.h>
 #include <rte_eal.h>
+#include <rte_malloc.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -22,6 +23,19 @@
 void socket_owner_ready_post(struct nsock *sk, uint32_t events) {
         (void)sk;
         (void)events;
+}
+
+int nsock_tcp_rx_enqueue(struct nsock *sk, struct tcp_rx_blob *blob) {
+        if (sk == NULL || blob == NULL || sk->u.tcp.rx_queue_count >= RING_SIZE)
+                return -1;
+        blob->next = NULL;
+        if (sk->u.tcp.rx_queue_tail != NULL)
+                sk->u.tcp.rx_queue_tail->next = blob;
+        else
+                sk->u.tcp.rx_queue_head = blob;
+        sk->u.tcp.rx_queue_tail = blob;
+        sk->u.tcp.rx_queue_count++;
+        return 0;
 }
 
 #define CHECK(condition)                                                       \
@@ -104,6 +118,202 @@ static void init_socket(struct nsock *sk, uint32_t rcv_nxt, uint32_t rcvbuf) {
         tcp_test_ofo_init(sk, rcv_nxt, rcvbuf);
 }
 
+static void free_test_rx_queue(struct nsock *sk) {
+        struct tcp_rx_blob *blob = sk->u.tcp.rx_queue_head;
+
+        while (blob != NULL) {
+                struct tcp_rx_blob *next = blob->next;
+
+                rte_free(blob->data);
+                rte_free(blob);
+                blob = next;
+        }
+        sk->u.tcp.rx_queue_head = NULL;
+        sk->u.tcp.rx_queue_tail = NULL;
+        sk->u.tcp.rx_queue_count = 0;
+}
+
+static void test_ofo_metrics_lifecycle(void) {
+        struct nsock sk;
+        struct tcp_ofo_metrics metrics;
+        static const char payload[] = "abcdefghij";
+
+        tcp_test_ofo_metrics_reset();
+        tcp_test_ofo_force_pressure(false);
+        init_socket(&sk, 90, TCP_RCVBUF_SIZE);
+        CHECK(tcp_test_ofo_insert(&sk, 100, (const uint8_t *)payload, 10, 0) ==
+              0);
+        tcp_ofo_metrics_take(&metrics);
+        CHECK(metrics.segments_current == 1);
+        CHECK(metrics.segments_peak == 1);
+        CHECK(metrics.bytes_current == 10);
+        CHECK(metrics.bytes_peak == 10);
+        CHECK(metrics.accepted_segments == 1);
+        CHECK(metrics.accepted_bytes == 10);
+        CHECK(metrics.reorder_distance_max == 10);
+
+        /* Advancing into the node exercises trim followed by a full drain. */
+        sk.u.tcp.recv_ack = 105;
+        tcp_test_ofo_drain(&sk);
+        CHECK(sk.u.tcp.ofo_count == 0);
+        CHECK(sk.u.tcp.ofo_reorder_distance_peak == 0);
+        CHECK(sk.u.tcp.rx_queue_head != NULL);
+        CHECK(sk.u.tcp.rx_queue_head->len == 5);
+        CHECK(memcmp(sk.u.tcp.rx_queue_head->data, payload + 5, 5) == 0);
+        tcp_ofo_metrics_take(&metrics);
+        CHECK(metrics.segments_current == 0);
+        CHECK(metrics.bytes_current == 0);
+        CHECK(metrics.released_segments == 1);
+        CHECK(metrics.released_bytes == 10);
+        free_test_rx_queue(&sk);
+
+        init_socket(&sk, 0, TCP_RCVBUF_SIZE);
+        CHECK(tcp_test_ofo_insert(&sk, 20, (const uint8_t *)payload, 4, 0) ==
+              0);
+        tcp_test_ofo_purge(&sk);
+        tcp_ofo_metrics_take(&metrics);
+        CHECK(metrics.released_segments == 1);
+        CHECK(metrics.released_bytes == 4);
+}
+
+static void test_pressure_tier(uint32_t first_seq, uint32_t expected_limit) {
+        struct nsock sk;
+        struct tcp_ofo_metrics metrics;
+        static const uint8_t byte = 0x5a;
+
+        tcp_test_ofo_metrics_reset();
+        tcp_test_ofo_force_pressure(true);
+        init_socket(&sk, 0, TCP_RCVBUF_SIZE);
+        for (uint32_t i = 0; i < expected_limit; i++)
+                CHECK(tcp_test_ofo_insert(&sk, first_seq + i * 2U, &byte, 1,
+                                          0) == 0);
+        CHECK(tcp_test_ofo_insert(&sk, first_seq + expected_limit * 2U, &byte,
+                                  1, 0) == -1);
+        CHECK(sk.u.tcp.ofo_count == expected_limit);
+        tcp_ofo_metrics_take(&metrics);
+        CHECK(metrics.segments_current == expected_limit);
+        CHECK(metrics.drop_seg_limit == 1);
+        CHECK(metrics.drop_pressure == 1);
+        CHECK(metrics.pressure_active == 1);
+        CHECK(metrics.reorder_distance_max ==
+              first_seq + expected_limit * 2U);
+        tcp_test_ofo_purge(&sk);
+}
+
+static void test_pressure_tiers_and_recovery(void) {
+        struct nsock sk;
+        struct tcp_ofo_metrics metrics;
+        static const uint8_t byte = 0x33;
+
+        test_pressure_tier(2, TCP_OFO_PRESSURE_NEAR_MAX_SEGS);
+        test_pressure_tier(TCP_OFO_PRESSURE_NEAR_DISTANCE + 2U,
+                           TCP_OFO_PRESSURE_MEDIUM_MAX_SEGS);
+        test_pressure_tier(TCP_OFO_PRESSURE_MEDIUM_DISTANCE + 2U,
+                           TCP_OFO_PRESSURE_FAR_MAX_SEGS);
+
+        tcp_test_ofo_metrics_reset();
+        tcp_test_ofo_force_pressure(true);
+        init_socket(&sk, 0, TCP_RCVBUF_SIZE);
+        for (uint32_t i = 0; i < TCP_OFO_PRESSURE_NEAR_MAX_SEGS; i++)
+                CHECK(tcp_test_ofo_insert(&sk, 2U + i * 2U, &byte, 1, 0) ==
+                      0);
+        tcp_test_ofo_force_pressure(false);
+        CHECK(sk.u.tcp.ofo_count == TCP_OFO_PRESSURE_NEAR_MAX_SEGS);
+        for (uint32_t i = TCP_OFO_PRESSURE_NEAR_MAX_SEGS;
+             i < TCP_OFO_MAX_SEGS; i++)
+                CHECK(tcp_test_ofo_insert(&sk, 2U + i * 2U, &byte, 1, 0) ==
+                      0);
+        CHECK(sk.u.tcp.ofo_count == TCP_OFO_MAX_SEGS);
+        tcp_ofo_metrics_take(&metrics);
+        CHECK(metrics.pressure_active == 0);
+        CHECK(metrics.pressure_transitions == 2);
+        tcp_test_ofo_purge(&sk);
+}
+
+static void test_owner_byte_pressure_hysteresis(void) {
+        struct nsock sk;
+        struct tcp_ofo_metrics metrics;
+        uint8_t payload[25] = {0};
+
+        tcp_test_ofo_metrics_reset();
+        tcp_test_ofo_set_owner_limit(100);
+        tcp_test_ofo_use_auto_pressure();
+        init_socket(&sk, 0, TCP_RCVBUF_SIZE);
+        CHECK(tcp_test_ofo_insert(&sk, 2, payload, sizeof(payload), 0) == 0);
+        CHECK(tcp_test_ofo_insert(&sk, 40, payload, sizeof(payload), 0) == 0);
+        CHECK(tcp_test_ofo_insert(&sk, 80, payload, sizeof(payload), 0) == 0);
+        tcp_ofo_metrics_take(&metrics);
+        CHECK(metrics.bytes_current == 75);
+        CHECK(metrics.pressure_active == 1);
+        CHECK(metrics.pressure_transitions == 1);
+
+        tcp_test_ofo_purge(&sk);
+        tcp_ofo_metrics_take(&metrics);
+        CHECK(metrics.bytes_current == 0);
+        CHECK(metrics.pressure_active == 0);
+        CHECK(metrics.pressure_transitions == 1);
+}
+
+static void test_ofo_drop_metrics(void) {
+        struct nsock sk;
+        struct tcp_ofo_metrics metrics;
+        static const char payload[] = "abcdefgh";
+
+        tcp_test_ofo_metrics_reset();
+        tcp_test_ofo_force_pressure(false);
+        init_socket(&sk, 100, 8);
+        CHECK(tcp_test_ofo_insert(&sk, 108, (const uint8_t *)payload, 1, 0) ==
+              0);
+        CHECK(tcp_test_ofo_insert(&sk, 90, (const uint8_t *)payload, 1, 0) ==
+              0); /* duplicate: not a drop */
+        tcp_ofo_metrics_take(&metrics);
+        CHECK(metrics.drop_rcvbuf == 1);
+        CHECK(metrics.drop_seg_limit == 0);
+
+        tcp_test_ofo_metrics_reset();
+        tcp_test_ofo_force_pressure(false);
+        init_socket(&sk, 0, 4);
+        CHECK(tcp_test_ofo_insert(&sk, 2, (const uint8_t *)payload, 2, 0) ==
+              0);
+        CHECK(tcp_test_ofo_insert(&sk, 2, (const uint8_t *)payload, 2, 0) ==
+              0);
+        tcp_ofo_metrics_take(&metrics);
+        CHECK(metrics.accepted_segments == 1);
+        CHECK(metrics.drop_rcvbuf == 0);
+        tcp_test_ofo_purge(&sk);
+
+        init_socket(&sk, 0, TCP_RCVBUF_SIZE);
+        sk.u.tcp.ofo_bytes = TCP_OFO_PRESSURE_NEAR_MAX_BYTES;
+        tcp_test_ofo_force_pressure(true);
+        CHECK(tcp_test_ofo_insert(&sk, 2, (const uint8_t *)payload, 1, 0) ==
+              -1);
+        sk.u.tcp.ofo_bytes = 0;
+        tcp_ofo_metrics_take(&metrics);
+        CHECK(metrics.drop_byte_limit == 1);
+        CHECK(metrics.drop_pressure == 1);
+
+        tcp_test_ofo_metrics_reset();
+        tcp_test_ofo_force_pressure(false);
+        tcp_test_ofo_set_owner_limit(4);
+        init_socket(&sk, 0, TCP_RCVBUF_SIZE);
+        CHECK(tcp_test_ofo_insert(&sk, 2, (const uint8_t *)payload, 4, 0) ==
+              0);
+        CHECK(tcp_test_ofo_insert(&sk, 10, (const uint8_t *)payload, 1, 0) ==
+              -1);
+        tcp_ofo_metrics_take(&metrics);
+        CHECK(metrics.drop_owner_limit == 1);
+        tcp_test_ofo_purge(&sk);
+
+        tcp_test_ofo_metrics_reset();
+        tcp_test_ofo_force_pressure(false);
+        init_socket(&sk, 0, TCP_RCVBUF_SIZE);
+        tcp_test_ofo_fail_next_alloc();
+        CHECK(tcp_test_ofo_insert(&sk, 2, (const uint8_t *)payload, 1, 0) ==
+              -1);
+        tcp_ofo_metrics_take(&metrics);
+        CHECK(metrics.drop_alloc == 1);
+}
+
 static void test_order_and_lower_bound(void) {
         struct nsock sk;
         static const char a[] = "AAAA";
@@ -160,6 +370,7 @@ static void test_overlap_trimming_and_fin(void) {
 
 static void test_receive_window_and_capacity(void) {
         struct nsock sk;
+        struct tcp_ofo_metrics metrics;
         static const char payload[] = "abcdefghijklmnopqrst";
         uint32_t i;
 
@@ -175,6 +386,8 @@ static void test_receive_window_and_capacity(void) {
         expect_segment(sk.u.tcp.ofo_tail, 110, payload, 12, 0);
         tcp_test_ofo_purge(&sk);
 
+        tcp_test_ofo_metrics_reset();
+        tcp_test_ofo_force_pressure(false);
         init_socket(&sk, 0, TCP_RCVBUF_SIZE);
         for (i = 0; i < TCP_OFO_MAX_SEGS; i++) {
                 CHECK(tcp_test_ofo_insert(&sk, i * 2, (const uint8_t *)payload,
@@ -183,16 +396,25 @@ static void test_receive_window_and_capacity(void) {
         CHECK(tcp_test_ofo_insert(&sk, TCP_OFO_MAX_SEGS * 2,
                                   (const uint8_t *)payload, 1, 0) == -1);
         CHECK(!sk.u.tcp.sack_recent_valid);
+        tcp_ofo_metrics_take(&metrics);
+        CHECK(metrics.segments_current == TCP_OFO_MAX_SEGS);
+        CHECK(metrics.segments_peak == TCP_OFO_MAX_SEGS);
+        CHECK(metrics.accepted_segments == TCP_OFO_MAX_SEGS);
+        CHECK(metrics.drop_seg_limit == 1);
+        CHECK(metrics.drop_pressure == 0);
         validate_indexes(&sk);
         tcp_test_ofo_purge(&sk);
 }
 
 static void test_sequence_wraparound(void) {
         struct nsock sk;
+        struct tcp_ofo_metrics metrics;
         static const char a[] = "A";
         static const char b[] = "B";
         static const char c[] = "C";
 
+        tcp_test_ofo_metrics_reset();
+        tcp_test_ofo_force_pressure(false);
         init_socket(&sk, UINT_MAX - 15, 64);
         CHECK(tcp_test_ofo_insert(&sk, 0, (const uint8_t *)b, 1, 0) == 0);
         CHECK(tcp_test_ofo_insert(&sk, UINT_MAX - 7, (const uint8_t *)a, 1,
@@ -204,6 +426,8 @@ static void test_sequence_wraparound(void) {
         expect_segment(sk.u.tcp.ofo_tail, 8, c, 1, 0);
         CHECK(tcp_test_ofo_lower_bound(&sk, UINT_MAX - 6)->seq == 0);
         CHECK(tcp_test_ofo_lower_bound(&sk, 1)->seq == 8);
+        tcp_ofo_metrics_take(&metrics);
+        CHECK(metrics.reorder_distance_max == 24);
         tcp_test_ofo_purge(&sk);
 }
 
@@ -266,6 +490,10 @@ int main(void) {
         char *eal_argv[] = {"test_ofo", "--in-memory", "--no-pci"};
 
         CHECK(rte_eal_init((int)ARRAY_SIZE(eal_argv), eal_argv) >= 0);
+        test_ofo_metrics_lifecycle();
+        test_pressure_tiers_and_recovery();
+        test_owner_byte_pressure_hysteresis();
+        test_ofo_drop_metrics();
         test_order_and_lower_bound();
         test_overlap_trimming_and_fin();
         test_receive_window_and_capacity();

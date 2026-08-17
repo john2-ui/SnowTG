@@ -6,6 +6,7 @@
 #include "log.h"
 #include "ring.h"
 #include "socket.h"
+#include "tcp.h"
 
 #include <rte_cycles.h>
 #include <rte_ether.h>
@@ -60,6 +61,7 @@ int stack_runtime_stop_requested(void) {
 void stack_runtime_metrics_take(struct stack_runtime_metrics *out) {
         struct stack_runtime_worker *worker;
         struct nsock_tx_metrics tx = {0};
+        struct tcp_ofo_metrics ofo = {0};
 
         if (out == NULL)
                 return;
@@ -83,6 +85,24 @@ void stack_runtime_metrics_take(struct stack_runtime_metrics *out) {
         out->udp_tx_queue_drops = tx.udp_tx_queue_drops;
         out->dirty_tx_high_water = tx.dirty_high_water;
         out->dirty_tx_depth = tx.dirty_depth;
+        tcp_ofo_metrics_take(&ofo);
+        out->ofo_segments_current = ofo.segments_current;
+        out->ofo_segments_peak = ofo.segments_peak;
+        out->ofo_bytes_current = ofo.bytes_current;
+        out->ofo_bytes_peak = ofo.bytes_peak;
+        out->ofo_accepted_segments = ofo.accepted_segments;
+        out->ofo_accepted_bytes = ofo.accepted_bytes;
+        out->ofo_released_segments = ofo.released_segments;
+        out->ofo_released_bytes = ofo.released_bytes;
+        out->ofo_reorder_distance_max = ofo.reorder_distance_max;
+        out->ofo_drop_rcvbuf = ofo.drop_rcvbuf;
+        out->ofo_drop_seg_limit = ofo.drop_seg_limit;
+        out->ofo_drop_byte_limit = ofo.drop_byte_limit;
+        out->ofo_drop_owner_limit = ofo.drop_owner_limit;
+        out->ofo_drop_alloc = ofo.drop_alloc;
+        out->ofo_drop_pressure = ofo.drop_pressure;
+        out->ofo_pressure_transitions = ofo.pressure_transitions;
+        out->ofo_pressure_active = ofo.pressure_active;
         memset(&worker->metrics, 0, sizeof(worker->metrics));
 }
 

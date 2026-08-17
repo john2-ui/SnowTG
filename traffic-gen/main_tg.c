@@ -273,6 +273,23 @@ static void tg_capture_stats_snapshot(struct tg_shard *shard,
         snapshot.maintenance_cycles = runtime.maintenance_cycles;
         snapshot.reactor_cycles = runtime.reactor_cycles;
         snapshot.tx_flush_cycles = runtime.tx_flush_cycles;
+        snapshot.ofo_segments_current = runtime.ofo_segments_current;
+        snapshot.ofo_segments_peak = runtime.ofo_segments_peak;
+        snapshot.ofo_bytes_current = runtime.ofo_bytes_current;
+        snapshot.ofo_bytes_peak = runtime.ofo_bytes_peak;
+        snapshot.ofo_accepted_segments = runtime.ofo_accepted_segments;
+        snapshot.ofo_accepted_bytes = runtime.ofo_accepted_bytes;
+        snapshot.ofo_released_segments = runtime.ofo_released_segments;
+        snapshot.ofo_released_bytes = runtime.ofo_released_bytes;
+        snapshot.ofo_reorder_distance_max = runtime.ofo_reorder_distance_max;
+        snapshot.ofo_drop_rcvbuf = runtime.ofo_drop_rcvbuf;
+        snapshot.ofo_drop_seg_limit = runtime.ofo_drop_seg_limit;
+        snapshot.ofo_drop_byte_limit = runtime.ofo_drop_byte_limit;
+        snapshot.ofo_drop_owner_limit = runtime.ofo_drop_owner_limit;
+        snapshot.ofo_drop_alloc = runtime.ofo_drop_alloc;
+        snapshot.ofo_drop_pressure = runtime.ofo_drop_pressure;
+        snapshot.ofo_pressure_transitions = runtime.ofo_pressure_transitions;
+        snapshot.ofo_pressure_active = runtime.ofo_pressure_active;
         snapshot.reactor_turns = reactor_turns;
         snapshot.reactor_events = reactor_events;
         snapshot.reactor_burst_high_water = reactor_burst_high_water;
@@ -296,6 +313,9 @@ static void tg_capture_stats_snapshot(struct tg_shard *shard,
                 snapshot.payload_available =
                     shard->memory.tcp.available[TCP_MEMORY_PAYLOAD];
                 snapshot.dirty_tx_depth = runtime.dirty_tx_depth;
+                snapshot.ofo_segments_current = runtime.ofo_segments_current;
+                snapshot.ofo_bytes_current = runtime.ofo_bytes_current;
+                snapshot.ofo_pressure_active = runtime.ofo_pressure_active;
                 snapshot.tokens = shard->scheduler.cycles_per_second == 0
                                       ? 0
                                       : shard->scheduler.token_numerator /

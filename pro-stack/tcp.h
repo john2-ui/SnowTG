@@ -80,6 +80,7 @@ struct tcp_rx_blob {
 struct tcp_ofo_seg {
         uint32_t seq;
         uint32_t len;
+        uint32_t data_off; /**< Trimmed prefix; data remains allocation base. */
         uint8_t has_fin;
         unsigned char *data;
         void *storage; /**< Owner-pool payload backing object. */
@@ -108,6 +109,32 @@ struct tcp_sndbuf {
         uint32_t head_seq; /**< Sequence of the first buffered byte. */
 };
 
+/** Owner-local OFO counters and gauges sampled by the stack runtime. */
+struct tcp_ofo_metrics {
+        uint64_t segments_current;
+        uint64_t segments_peak;
+        uint64_t bytes_current;
+        uint64_t bytes_peak;
+        uint64_t accepted_segments;
+        uint64_t accepted_bytes;
+        uint64_t released_segments;
+        uint64_t released_bytes;
+        uint64_t reorder_distance_max;
+        uint64_t drop_rcvbuf;
+        uint64_t drop_seg_limit;
+        uint64_t drop_byte_limit;
+        uint64_t drop_owner_limit;
+        uint64_t drop_alloc;
+        uint64_t drop_pressure;
+        uint64_t pressure_transitions;
+        uint64_t pressure_active;
+};
+
+/** Return interval counters plus current gauges, then clear interval metrics. */
+void tcp_ofo_metrics_take(struct tcp_ofo_metrics *out);
+/** Reset one owner's OFO controller before the owner begins processing. */
+void tcp_ofo_metrics_reset_owner(unsigned int lcore_id);
+
 #ifdef TCP_TESTING
 struct nsock;
 
@@ -126,6 +153,18 @@ int tcp_test_ofo_insert(struct nsock *sk, uint32_t seq, const uint8_t *data,
 struct tcp_ofo_seg *tcp_test_ofo_lower_bound(const struct nsock *sk,
                                              uint32_t seq);
 void tcp_test_ofo_purge(struct nsock *sk);
+/** Drain contiguous OFO data after a test advances RCV.NXT. */
+void tcp_test_ofo_drain(struct nsock *sk);
+/** Reset metrics for the current test lcore. */
+void tcp_test_ofo_metrics_reset(void);
+/** Force pressure mode on or off without requiring production pool exhaustion. */
+void tcp_test_ofo_force_pressure(bool enabled);
+/** Restore production pressure decisions after a forced test state. */
+void tcp_test_ofo_use_auto_pressure(void);
+/** Override the owner byte budget; zero restores the production budget. */
+void tcp_test_ofo_set_owner_limit(uint64_t bytes);
+/** Force the next OFO descriptor/payload allocation to fail. */
+void tcp_test_ofo_fail_next_alloc(void);
 void tcp_test_update_snd_wnd(struct nsock *sk, uint32_t seg_seq,
                              uint32_t seg_ack, uint16_t seg_wnd);
 /** Test-only initialization plus append through the lazy TX chunk path. */
@@ -322,6 +361,8 @@ struct tcp_stream {
         /** OFO resource accounting, owned exclusively by packet worker. */
         uint16_t ofo_count;
         uint32_t ofo_bytes;
+        /** Largest forward sequence distance in the current OFO episode. */
+        uint32_t ofo_reorder_distance_peak;
 };
 
 /**
