@@ -27,7 +27,6 @@
 #include "tcp.h"
 #include "udp.h"
 
-#include <pthread.h>
 #include <rte_ether.h>
 #include <rte_ring.h>
 #include <stdbool.h>
@@ -89,14 +88,6 @@ struct nsock {
         enum nsock_io_mode io_mode;
         nsock_release_fn release_fn;
         void *release_ctx;
-
-        /**
-         * Transitional protocol lock/condition.  Application APIs no longer
-         * touch these directly; owner conversion lets them be removed once all
-         * legacy transport helpers have been simplified.
-         */
-        pthread_cond_t cond;
-        pthread_mutex_t mutex;
 
         uint32_t id;         /**< Slot in the owner's object table. */
         uint32_t generation; /**< Rejects stale commands after slot reuse. */

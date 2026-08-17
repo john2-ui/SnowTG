@@ -393,6 +393,11 @@ transport hook 是一次非阻塞 probe：暂时无数据/空间返回 `EAGAIN`�
 SEND/RECV/CONNECT/ACCEPT waiter。TCP 短读、`rcvbuf_used`、OFO drain 与窗口 ACK
 均为 owner 私有，因此不再需要 ARC-001 的裸指针接收事件路径。
 
+后续审计确认 SEND command、ACK/RX、TCP timer 和 dirty-TX flush 均在同一
+owner lcore 串行执行，`nsock` 中过渡期的 `mutex` / `cond` 已删除。command 自身的
+`done_mutex` / `done_cond` 仍用于 app 与 owner 之间的 completion 通知，不属于
+协议状态锁。
+
 ### 可见性、close、timer 与析构
 
 `app_visible` 区分已暴露给应用的连接和 listener 的未 accept child；listener
@@ -909,7 +914,7 @@ sudo perf script -i /tmp/tg-XXX.data | "$FG/stackcollapse-perf.pl" \
 - **触发**：原发送路径只依赖累计 ACK 与 RTO，无法表达对端已收到的非连续
   区间，也缺少 SACK Fast Recovery、显式恢复边界及可替换的拥塞控制接口。
 - **架构决策**：接收侧 SACK/D-SACK 生成、发送侧 RFC 6675 scoreboard、恢复
-  调度和拥塞控制分层；worker/socket owner 在 `sk->mutex` 下串行提交 ACK、
+  调度和拥塞控制分层；worker/socket owner 在单一 owner lcore 上串行提交 ACK、
   scoreboard、恢复模式和 `cwnd`，只有报文成功进入 TX ring 后才提交重传状态。
 
 ### 协议范围与核心不变量
@@ -939,8 +944,8 @@ sudo perf script -i /tmp/tg-XXX.data | "$FG/stackcollapse-perf.pl" \
 5. `pending` 只是已选择、尚未提交的候选。ARP、mbuf 或 TX-ring 暂时失败时
    保留相同候选；只有成功入输出 ring 后才更新 `HighRxt`、`Pipe` 和
    `retransmitted`。
-6. 拥塞控制回调在 socket mutex 下运行，只修改 `tcp_cc_state`；scoreboard、
-   `sndbuf`、序号推进、选包和实际发送仍由 TCP 恢复/发送模块负责。
+6. 拥塞控制回调在 socket owner lcore 上运行，只修改 `tcp_cc_state`；
+   scoreboard、`sndbuf`、序号推进、选包和实际发送仍由 TCP 恢复/发送模块负责。
 
 ### 结构关联
 

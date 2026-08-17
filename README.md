@@ -224,7 +224,7 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 - [ ] **定义 TCP 关闭策略**：实现并验证 graceful close、abortive close、`SO_LINGER`，以及 FIN 分配/入队失败时的 RST 或本地终止策略。
 - [ ] **完善 command 生命周期与取消**：当前 command 位于调用线程栈上，调用者必须等待 completion；加入超时、线程取消、异步 API 或 coroutine 前，应改为 slab/heap command，并设计引用计数、取消状态和 late completion。
 - [ ] **改进 command ring 背压**：当前 ring 满时 app lcore 通过 `rte_pause()` 忙等；评估 per-app ring、控制命令保留容量、eventfd/futex 或高低水位，同时保证 CLOSE 等生命周期命令绝不丢失。
-- [ ] **删除 owner 内遗留锁与条件变量**：审计 `sk->mutex` / `sk->cond` 的全部调用点，在确认 SEND、ACK、timer、TX 都只由 owner 执行后移除冗余同步。
+- [x] **删除 owner 内遗留锁与条件变量**：审计 `sk->mutex` / `sk->cond` 的全部调用点，在确认 SEND、ACK、timer、TX 都只由 owner 执行后移除冗余同步。
 - [ ] ~~**收紧跨 lcore 数据结构约束**：修正仍描述 app 直接消费~~ `recv_buf`~~、共同生产~~ `send_buf` ~~的旧注释，并在确认唯一 producer/consumer 后收紧 DPDK ring flags。~~
 
 

@@ -17,7 +17,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <pthread.h>
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
@@ -398,7 +397,6 @@ static void test_duplicate_ack_recovery_entry(void) {
             {1200, 1300}, {1400, 1500}, {1600, 1700}};
 
         init_score_socket(&sk, 1000, 1000);
-        CHECK(pthread_mutex_init(&sk.mutex, NULL) == 0);
         for (size_t i = 0; i < ARRAY_SIZE(blocks); i++) {
                 sk.u.tcp.rx_sack_count = 1;
                 sk.u.tcp.rx_sacks[0] = blocks[i];
@@ -415,11 +413,9 @@ static void test_duplicate_ack_recovery_entry(void) {
         tcp_test_process_peer_ack(&sk, 1000, false);
         CHECK(sk.u.tcp.cc.cwnd == sack_recovery_cwnd);
         tcp_test_sack_score_clear(&sk);
-        pthread_mutex_destroy(&sk.mutex);
 
         init_score_socket(&sk, 1000, 1000);
         sk.u.tcp.sack_permitted = false;
-        CHECK(pthread_mutex_init(&sk.mutex, NULL) == 0);
         for (unsigned int i = 0; i < TCP_SACK_DUP_THRESH; i++)
                 tcp_test_process_peer_ack(&sk, 1000, true);
         CHECK(sk.u.tcp.sack.mode == TCP_RECOVERY_NEWRENO);
@@ -437,7 +433,6 @@ static void test_duplicate_ack_recovery_entry(void) {
         CHECK(sk.u.tcp.sack.pending.kind == TCP_RECOVERY_TX_NONE);
         CHECK(sk.u.tcp.cc.cwnd == sk.u.tcp.cc.ssthresh);
         tcp_test_sack_score_clear(&sk);
-        pthread_mutex_destroy(&sk.mutex);
 }
 
 static void test_dsack_emission(void) {

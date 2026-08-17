@@ -857,17 +857,6 @@ struct nsock *nsock_alloc_mode(uint8_t protocol, enum nsock_io_mode io_mode) {
                 }
         }
 
-        if (pthread_mutex_init(&sk->mutex, NULL) != 0 ||
-            pthread_cond_init(&sk->cond, NULL) != 0) {
-                LOG_ERROR("pthread init failed");
-                if (sk->recv_buf != NULL)
-                        rte_ring_free(sk->recv_buf);
-                if (sk->send_buf != NULL)
-                        rte_ring_free(sk->send_buf);
-                rte_free(sk);
-                return NULL;
-        }
-
         /* TCP starts CLOSED; timer is armed later by connect / RTO paths. */
         if (protocol == IPPROTO_TCP) {
                 if (tcp_sndbuf_init(&sk->u.tcp.sndbuf, 0) != 0) {
@@ -876,8 +865,6 @@ struct nsock *nsock_alloc_mode(uint8_t protocol, enum nsock_io_mode io_mode) {
                                 rte_ring_free(sk->recv_buf);
                         if (sk->send_buf != NULL)
                                 rte_ring_free(sk->send_buf);
-                        pthread_mutex_destroy(&sk->mutex);
-                        pthread_cond_destroy(&sk->cond);
                         rte_free(sk);
                         return NULL;
                 }
@@ -986,8 +973,6 @@ void nsock_free(struct nsock *sk) {
 
         LL_REMOVE(sk, registry->sock_list);
         sk->registry_flags = 0;
-        pthread_cond_destroy(&sk->cond);
-        pthread_mutex_destroy(&sk->mutex);
         if (sk->recv_buf != NULL)
                 rte_ring_free(sk->recv_buf);
         if (sk->send_buf != NULL)

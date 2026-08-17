@@ -27,7 +27,6 @@
 #include <inttypes.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
-#include <pthread.h>
 #include <rte_bitops.h>
 #include <rte_byteorder.h>
 #include <rte_cycles.h>
@@ -951,9 +950,9 @@ static void tcp_sndbuf_reset(struct tcp_sndbuf *sb, uint32_t seq) {
 
 /** @brief Append application bytes to the TCP send buffer.
  *
- * The caller must hold the owning socket's @c mutex.  This helper only
- * enforces physical buffer capacity; application admission against the local
- * high-water mark and peer window is handled by @ref tcp_send.
+ * The caller must run on the owning lcore. This helper only enforces physical
+ * buffer capacity; application admission against the local high-water mark
+ * and peer window is handled by @ref tcp_send.
  *
  * @param sb Destination send buffer.
  * @param data Source bytes.
@@ -1023,11 +1022,11 @@ static ssize_t tcp_sndbuf_append(struct tcp_sndbuf *sb, const uint8_t *data,
  * used.  Afterwards, the accepted application data must not exceed the smaller
  * of that mark and the peer's most recently advertised receive window.
  *
- * The caller must hold @c sk->mutex.
+ * This helper runs on the socket's owner lcore.
  * @param sk TCP socket whose send capacity is queried.
  * @return Maximum number of bytes that may remain in @c sndbuf.
  */
-static uint32_t tcp_app_snd_limit_locked(const struct nsock *sk) {
+static uint32_t tcp_app_snd_limit(const struct nsock *sk) {
         uint32_t limit = TCP_SNDBUF_APP_HIWAT;
 
         if (sk->u.tcp.snd_wnd_valid && sk->u.tcp.snd_wnd < limit)
@@ -1039,12 +1038,12 @@ static uint32_t tcp_app_snd_limit_locked(const struct nsock *sk) {
 /**
  * @brief Return immediately writable application-buffer space.
  *
- * The caller must hold @c sk->mutex.
+ * This helper runs on the socket's owner lcore.
  * @param sk TCP socket whose available send-buffer space is queried.
  * @return Bytes admissible to @ref tcp_send, or zero when it must wait.
  */
-static uint32_t tcp_app_snd_space_locked(const struct nsock *sk) {
-        uint32_t limit = tcp_app_snd_limit_locked(sk);
+static uint32_t tcp_app_snd_space(const struct nsock *sk) {
+        uint32_t limit = tcp_app_snd_limit(sk);
 
         if (sk->u.tcp.sndbuf.len >= limit)
                 return 0;
@@ -1504,8 +1503,8 @@ static uint16_t tcp_alloc_ephemeral_port(const struct nsock *sk) {
 static void tcp_arm_syn_timer(struct nsock *sk, uint64_t delay_ms);
 static void tcp_arm_data_rto(struct nsock *sk, uint64_t delay_ms);
 
-/** Clear advisory sender SACK state. The caller must hold @c sk->mutex. */
-static void tcp_sack_score_clear_locked(struct nsock *sk) {
+/** Clear advisory sender SACK state on the socket's owner lcore. */
+static void tcp_sack_score_clear(struct nsock *sk) {
         tcp_sack_state_reset(&sk->u.tcp, sk->u.tcp.snd_una);
 }
 
@@ -1515,7 +1514,7 @@ static void tcp_sack_score_clear_locked(struct nsock *sk) {
  * SND.NXT may include FIN, while sndbuf contains only payload.  Taking the
  * earlier boundary prevents FIN sequence space from entering the scoreboard.
  */
-static uint32_t tcp_sack_payload_flight_end_locked(const struct nsock *sk) {
+static uint32_t tcp_sack_payload_flight_end(const struct nsock *sk) {
         uint32_t buffer_end =
             sk->u.tcp.sndbuf.head_seq + sk->u.tcp.sndbuf.len;
 
@@ -1529,11 +1528,11 @@ void tcp_test_sack_score_update(struct nsock *sk,
                                 const struct tcp_sack_block *blocks,
                                 uint8_t count) {
         (void)tcp_sack_update(&sk->u.tcp, sk->u.tcp.snd_una, blocks, count,
-                              tcp_sack_payload_flight_end_locked(sk));
+                              tcp_sack_payload_flight_end(sk));
 }
 
 bool tcp_test_sack_schedule_retransmit(struct nsock *sk) {
-        uint32_t end = tcp_sack_payload_flight_end_locked(sk);
+        uint32_t end = tcp_sack_payload_flight_end(sk);
 
         if (tcp_sack_score_count(&sk->u.tcp) == 0)
                 return false;
@@ -1542,7 +1541,7 @@ bool tcp_test_sack_schedule_retransmit(struct nsock *sk) {
 }
 
 void tcp_test_sack_score_clear(struct nsock *sk) {
-        tcp_sack_score_clear_locked(sk);
+        tcp_sack_score_clear(sk);
 }
 #endif
 
@@ -1561,8 +1560,8 @@ void tcp_test_sack_score_clear(struct nsock *sk) {
  * TX, so RTO rebuilds them via tcp_make_fragment + tcp_enqueue_fragment.
  * App data stays in sndbuf until ACK; every retransmission uses a separate
  * candidate and therefore never rewinds snd_nxt.
- * The data and FIN retransmission branches hold @c sk->mutex while accessing
- * send-side state shared with the application lcore.
+ * Timer callbacks execute on the socket's owner lcore, serialized with
+ * command handling, packet ingress, ACK processing, and TX flushing.
  * @param timer Expired DPDK timer (unused).
  * @param arg Owning @ref nsock.
  */
@@ -1622,9 +1621,7 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
         } else if (sk->u.tcp.status == TCP_STATUS_ESTABLISHED ||
                    sk->u.tcp.status == TCP_STATUS_CLOSE_WAIT) {
                 /* Data-only RTO. FIN states are handled below. */
-                pthread_mutex_lock(&sk->mutex);
                 if (sk->u.tcp.snd_una == sk->u.tcp.sent_seq) {
-                        pthread_mutex_unlock(&sk->mutex);
                         return; /* nothing in flight: ignore */
                 }
                 if (sk->u.tcp.retries >= TCP_DATA_MAX_RETRIES) {
@@ -1634,7 +1631,6 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                                      TCP_SK_ARG(sk), sk->u.tcp.snd_una,
                                      sk->u.tcp.sent_seq, sk->u.tcp.retries);
                         /* Optional: RST / CLOSED; minimal: stop retrying */
-                        pthread_mutex_unlock(&sk->mutex);
                         return;
                 }
                 sk->u.tcp.retries++;
@@ -1644,7 +1640,7 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                  */
                 tcp_rtt_on_timeout(sk);
                 uint32_t flight_end =
-                    tcp_sack_payload_flight_end_locked(sk);
+                    tcp_sack_payload_flight_end(sk);
                 uint32_t flight_size = flight_end - sk->u.tcp.snd_una;
                 bool first_rto = !sk->u.tcp.cc.rto_loss_valid ||
                                  sk->u.tcp.cc.rto_loss_seq !=
@@ -1667,7 +1663,6 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                              sk->u.tcp.sack.pending.end,
                              sk->u.tcp.rto_ms);
                 tcp_arm_data_rto(sk, sk->u.tcp.rto_ms);
-                pthread_mutex_unlock(&sk->mutex);
                 tcp_mark_tx_dirty(sk);
         } else if (sk->u.tcp.status == TCP_STATUS_SYN_RECV) {
                 /*
@@ -1725,9 +1720,7 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                  * sequence without touching snd_nxt. FIN-only loss continues
                  * to rebuild the control fragment at snd_una.
                  */
-                pthread_mutex_lock(&sk->mutex);
                 if (sk->u.tcp.snd_una == sk->u.tcp.sent_seq) {
-                        pthread_mutex_unlock(&sk->mutex);
                         return; /* FIN (and data) already ACKed */
                 }
 
@@ -1737,7 +1730,6 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                                      "nxt=%u retry=%u",
                                      TCP_SK_ARG(sk), sk->u.tcp.snd_una,
                                      sk->u.tcp.sent_seq, sk->u.tcp.retries);
-                        pthread_mutex_unlock(&sk->mutex);
                         return;
                 }
                 sk->u.tcp.retries++;
@@ -1746,7 +1738,7 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                 bool retransmit_data = false;
                 if (sk->u.tcp.sndbuf.len > 0) {
                         uint32_t flight_end =
-                            tcp_sack_payload_flight_end_locked(sk);
+                            tcp_sack_payload_flight_end(sk);
                         uint32_t flight_size =
                             flight_end - sk->u.tcp.snd_una;
                         bool first_rto = !sk->u.tcp.cc.rto_loss_valid ||
@@ -1785,7 +1777,6 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                 }
 
                 tcp_arm_data_rto(sk, sk->u.tcp.rto_ms);
-                pthread_mutex_unlock(&sk->mutex);
                 if (retransmit_data)
                         tcp_mark_tx_dirty(sk);
         }
@@ -1800,10 +1791,10 @@ static void tcp_arm_data_rto(struct nsock *sk, uint64_t delay_ms) {
                         tcp_timer_lcore(sk), tcp_timer_cb, sk);
 }
 
-/** Locked implementation used to commit an RFC 793 peer-window update. */
-static bool tcp_update_snd_wnd_locked(struct nsock *sk, uint32_t seg_seq,
-                                      uint32_t seg_ack, uint16_t seg_wnd,
-                                      uint8_t scale, bool *need_tx);
+/** Owner-local implementation used to commit a peer-window update. */
+static bool tcp_update_snd_wnd_local(struct nsock *sk, uint32_t seg_seq,
+                                     uint32_t seg_ack, uint16_t seg_wnd,
+                                     uint8_t scale, bool *need_tx);
 
 /**
  * @brief Atomically process ACK, window, SACK, recovery, RTT, and CC state.
@@ -1811,7 +1802,8 @@ static bool tcp_update_snd_wnd_locked(struct nsock *sk, uint32_t seg_seq,
  * ACKs in [SND.UNA, SND.NXT] are accepted.  ACK == SND.UNA retains sndbuf but
  * may add new SACK information and trigger fast recovery.  Cumulative progress
  * removes only payload bytes, clips the scoreboard, updates RTT/RTO state, and
- * dispatches one coherent event to congestion control under @c sk->mutex.
+ * dispatches one coherent event to congestion control as one owner-lcore
+ * operation.
  *
  * @param sk Stream receiving the ACK.
  * @param ack Packet ACK field in host order.
@@ -1825,7 +1817,6 @@ static void tcp_process_peer_ack_ex(struct nsock *sk, uint32_t ack,
                                     bool classic_dup_candidate,
                                     bool apply_window, uint32_t seg_seq,
                                     uint16_t seg_wnd, uint8_t scale) {
-        pthread_mutex_lock(&sk->mutex);
         bool window_need_tx = false;
         bool window_accepted = false;
 
@@ -1835,17 +1826,16 @@ static void tcp_process_peer_ack_ex(struct nsock *sk, uint32_t ack,
                 LOG_TCP_TRACE(
                     TCP_SK_FMT " event=peer-ack-ignored ack=%u una=%u nxt=%u",
                     TCP_SK_ARG(sk), ack, sk->u.tcp.snd_una, sk->u.tcp.sent_seq);
-                pthread_mutex_unlock(&sk->mutex);
                 return;
         }
         window_accepted =
-            apply_window && tcp_update_snd_wnd_locked(
+            apply_window && tcp_update_snd_wnd_local(
                                 sk, seg_seq, ack, seg_wnd, scale,
                                 &window_need_tx);
 
         uint32_t old_una = sk->u.tcp.snd_una;
         uint32_t old_sndbuf_len = sk->u.tcp.sndbuf.len;
-        uint32_t flight_end = tcp_sack_payload_flight_end_locked(sk);
+        uint32_t flight_end = tcp_sack_payload_flight_end(sk);
         uint32_t flight_size = flight_end - sk->u.tcp.snd_una;
         uint32_t acked = 0;
         bool progressed = ack != sk->u.tcp.snd_una;
@@ -2027,7 +2017,6 @@ static void tcp_process_peer_ack_ex(struct nsock *sk, uint32_t ack,
                 need_tx = need_tx ||
                           tcp_seq_lt(sk->u.tcp.sent_seq, buf_end);
         }
-        pthread_mutex_unlock(&sk->mutex);
         if (progressed || window_accepted) {
                 /* Retry commands parked by zero local/peer send-window
                  * space. */
@@ -2057,7 +2046,7 @@ void tcp_test_process_peer_ack(struct nsock *sk, uint32_t ack,
  *
  * Older advertisements cannot overwrite a newer window.  When an update is
  * accepted, waiting application senders are awakened so each can re-evaluate
- * its admission limit while holding @c sk->mutex.
+ * its admission limit when the owner retries its parked command.
  *
  * @param sk TCP socket whose peer window is updated.
  * @param seg_seq SEG.SEQ from the segment carrying the update.
@@ -2067,9 +2056,9 @@ void tcp_test_process_peer_ack(struct nsock *sk, uint32_t ack,
  * @param need_tx Set when unsent sndbuf payload may now be transmitted.
  * @return True when this advertisement was new enough to be accepted.
  */
-static bool tcp_update_snd_wnd_locked(struct nsock *sk, uint32_t seg_seq,
-                                      uint32_t seg_ack, uint16_t seg_wnd,
-                                      uint8_t scale, bool *need_tx) {
+static bool tcp_update_snd_wnd_local(struct nsock *sk, uint32_t seg_seq,
+                                     uint32_t seg_ack, uint16_t seg_wnd,
+                                     uint8_t scale, bool *need_tx) {
         struct tcp_stream *tp = &sk->u.tcp;
         uint32_t scaled_wnd = (uint32_t)seg_wnd << scale;
 
@@ -2113,11 +2102,8 @@ static void tcp_update_snd_wnd(struct nsock *sk, uint32_t seg_seq,
                                uint8_t scale) {
         bool need_tx = false;
 
-        pthread_mutex_lock(&sk->mutex);
-        bool accepted = tcp_update_snd_wnd_locked(
+        bool accepted = tcp_update_snd_wnd_local(
             sk, seg_seq, seg_ack, seg_wnd, scale, &need_tx);
-
-        pthread_mutex_unlock(&sk->mutex);
         if (!accepted)
                 return;
         /* Harmless if no sender is parked or the accepted window stayed zero.
@@ -3322,9 +3308,9 @@ static void tcp_abort_on_rst(struct nsock *sk) {
  *
  * Buffered bytes remain in sndbuf until acknowledged; this helper advances
  * sent_seq and arms the data RTO only after successful packet construction.
- * It holds @c sk->mutex through packet construction because that operation
- * copies the payload from @c sndbuf; this prevents concurrent compaction by
- * @ref tcp_send from invalidating the source pointer.
+ * Packet construction copies directly from @c sndbuf. Both this helper and
+ * @ref tcp_send execute on the socket's owner lcore, so the source pointer
+ * remains stable until the copy completes.
  */
 enum tcp_sndbuf_flush_result {
         TCP_SNDBUF_IDLE = 0,
@@ -3350,11 +3336,10 @@ tcp_tx_flush_recovery_retransmit(struct nsock *sk, struct rte_mempool *mp) {
         enum tcp_sndbuf_flush_result result = TCP_SNDBUF_IDLE;
         uint32_t arp_wait_ip = 0;
 
-        pthread_mutex_lock(&sk->mutex);
         if (sk->u.tcp.sack.pending.kind == TCP_RECOVERY_TX_NONE &&
             sk->u.tcp.sack.mode == TCP_RECOVERY_SACK) {
                 uint32_t flight_end =
-                    tcp_sack_payload_flight_end_locked(sk);
+                    tcp_sack_payload_flight_end(sk);
                 uint32_t pipe = tcp_sack_set_pipe(&sk->u.tcp, flight_end);
                 uint32_t cwnd = tcp_cc_send_window(&sk->u.tcp);
                 uint32_t smss = sk->u.tcp.snd_mss;
@@ -3373,7 +3358,7 @@ tcp_tx_flush_recovery_retransmit(struct nsock *sk, struct rte_mempool *mp) {
         struct tcp_sndbuf *sb = &sk->u.tcp.sndbuf;
         uint32_t seq = sk->u.tcp.sack.pending.seq;
         uint32_t end = sk->u.tcp.sack.pending.end;
-        uint32_t flight_end = tcp_sack_payload_flight_end_locked(sk);
+        uint32_t flight_end = tcp_sack_payload_flight_end(sk);
         if (sb->len == 0 || tcp_seq_lt(seq, sb->head_seq) ||
             !tcp_seq_lt(seq, end) || tcp_seq_gt(end, flight_end)) {
                 tcp_sack_cancel_candidate(&sk->u.tcp);
@@ -3452,7 +3437,6 @@ tcp_tx_flush_recovery_retransmit(struct nsock *sk, struct rte_mempool *mp) {
         result = TCP_SNDBUF_SENT;
 
 out:
-        pthread_mutex_unlock(&sk->mutex);
         if (result == TCP_SNDBUF_ARP_WAIT)
                 nsock_tx_arp_wait(sk, arp_wait_ip);
         return result;
@@ -3463,12 +3447,7 @@ tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
         enum tcp_sndbuf_flush_result result = TCP_SNDBUF_IDLE;
         uint32_t arp_wait_ip = 0;
 
-        /*
-         * tcp_send() may compact and append to sndbuf concurrently.  Keep the
-         * lock through tcp_build_pkt(): it copies f.payload into the mbuf, so
-         * the sndbuf pointer is no longer used after that call returns.
-         */
-        pthread_mutex_lock(&sk->mutex);
+        /* tcp_send() and this flush are serialized by the socket owner. */
 
         if (sk->u.tcp.status != TCP_STATUS_ESTABLISHED &&
             sk->u.tcp.status != TCP_STATUS_CLOSE_WAIT &&
@@ -3499,7 +3478,7 @@ tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
         if (sk->u.tcp.sack.mode == TCP_RECOVERY_SACK ||
             sk->u.tcp.sack.limited_transmit) {
                 uint32_t flight_end =
-                    tcp_sack_payload_flight_end_locked(sk);
+                    tcp_sack_payload_flight_end(sk);
                 congestion_in_flight =
                     tcp_sack_set_pipe(&sk->u.tcp, flight_end);
         }
@@ -3532,7 +3511,8 @@ tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
                 /*
                  * Resolver rate-limits probes.  Park this socket until ARP
                  * learning wakes it instead of retrying every worker turn.
-                 * Defer the wait-list move until after unlocking sk->mutex.
+                 * Defer the wait-list move until the packet-building path has
+                 * finished using the socket's send state.
                  */
                 arp_wait_ip = sk->u.tcp.remote_ip;
                 result = TCP_SNDBUF_ARP_WAIT;
@@ -3615,7 +3595,6 @@ tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
         result = TCP_SNDBUF_SENT;
 
 out:
-        pthread_mutex_unlock(&sk->mutex);
         if (result == TCP_SNDBUF_ARP_WAIT)
                 nsock_tx_arp_wait(sk, arp_wait_ip);
         return result;
@@ -3796,23 +3775,19 @@ ssize_t tcp_send(struct nsock *sk, const void *buf, size_t len, int flags) {
         if (len == 0)
                 return 0;
 
-        pthread_mutex_lock(&sk->mutex);
         if (sk->u.tcp.status != TCP_STATUS_ESTABLISHED) {
-                pthread_mutex_unlock(&sk->mutex);
                 errno = EPIPE;
                 return -1;
         }
 
-        uint32_t space = tcp_app_snd_space_locked(sk);
+        uint32_t space = tcp_app_snd_space(sk);
         if (space == 0) {
-                pthread_mutex_unlock(&sk->mutex);
                 errno = EAGAIN;
                 return -1;
         }
 
         size_t accepted = len < space ? len : space;
         ssize_t n = tcp_sndbuf_append(&sk->u.tcp.sndbuf, buf, accepted);
-        pthread_mutex_unlock(&sk->mutex);
 
         if (n <= 0) {
                 errno = ENOBUFS;
@@ -3904,27 +3879,20 @@ ssize_t tcp_recv(struct nsock *sk, void *buf, size_t len,
 
 /** @brief Discard pending control fragments and reset send-side sequence state.
  *
- * Serializes against all writers and readers of @c sndbuf, drains queued
- * control fragments, resets the data window to @c sent_seq, and wakes blocked
- * senders so they can observe the new connection state.
+ * Runs on the socket owner, drains queued control fragments, resets the data
+ * window to @c sent_seq, and lets the owning command path notify waiters.
  *
  * @param sk Socket whose transmit-side state is reset.
  */
 static void tcp_drain_send(struct nsock *sk) {
         struct tcp_fragment *f;
 
-        /*
-         * Serialize reset of sndbuf/head sequence against tcp_send(),
-         * tcp_tx_flush_sndbuf(), ACK processing, and the retransmission timer.
-         */
-        pthread_mutex_lock(&sk->mutex);
         while ((f = nsock_tcp_tx_dequeue(sk)) != NULL) {
                 tcp_fragment_free(f);
         }
         tcp_sndbuf_reset(&sk->u.tcp.sndbuf, sk->u.tcp.sent_seq);
         sk->u.tcp.snd_una = sk->u.tcp.sent_seq;
-        tcp_sack_score_clear_locked(sk);
-        pthread_mutex_unlock(&sk->mutex);
+        tcp_sack_score_clear(sk);
 }
 
 /** @brief Release queued application payload and all out-of-order data.
