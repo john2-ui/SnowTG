@@ -208,7 +208,7 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 ##### P0 — 正确性与回归门槛
 
 - [ ] ~~**补齐生命周期并发压力测试**：覆盖~~ `nclose` ~~与 SEND/RECV 并发、fd/owner slot 高频复用、SYN_SENT timeout 与 close、RST 与 pending waiter、listener close 与半连接/已 accept child、FIN/TIME_WAIT 回收、UDP pending RECVFROM，以及多 app lcore 共享 fd。~~
-- [ ] **引入动态竞态检查**：在构建环境允许时运行 ASan/UBSan，并补充真实 NIC 长时间流量测试，确认 command、timer 与延迟回收不存在 UAF、double-free 或 waiter 遗失。
+- [x] **引入动态竞态检查**：在构建环境允许时运行 ASan/UBSan，并补充真实 NIC 长时间流量测试，确认 command、timer 与延迟回收不存在 UAF、double-free 或 waiter 遗失。
 - [x] **把 traffic-gen owner socket 上限配置化**：启动时按 scenario 的
   `max_concurrency / active_shards` 自动计算 per-owner `NSOCK_ID_MAX` 容量，
   默认保留两倍关闭中 socket 余量，并支持 `--socket-id-max N` 增大容量；
@@ -324,7 +324,7 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 #### P2 — 高阶能力与规模验证
 
 - [ ] **扩展 L7 覆盖面**：可选 HTTPS（小并发或仅握手）和极简 MySQL 客户端。
-- [ ] **多 worker 实测爬坡**：按 1k → 1 万 → 10 万并发逐档验证，记录硬件、
+- [x] **多 worker 实测爬坡**：按 1k → 1 万 → 10 万并发逐档验证，记录硬件、
   NIC 队列、巨页、剧本参数和瓶颈；未实测前不宣称百万连接能力。
 - [ ] **完善产品化入口**：提供启动参数/剧本样例、压测命令、结果报表和 README
   使用说明。
