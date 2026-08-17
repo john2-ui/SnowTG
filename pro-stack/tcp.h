@@ -74,9 +74,8 @@ struct tcp_rx_blob {
 /**
  * One buffered out-of-order segment (payload copy).
  *
- * Chained as a seq-sorted doubly-linked list today (@c prev/@c next).
- * TODO: add an rb-tree node (Linux ofo style) for O(log n) insert while
- * keeping the list for in-order drain from @c recv_ack.
+ * Indexed by an RB-tree for O(log n) insertion/overlap lookup and also linked
+ * in sequence order (@c prev/@c next) for efficient drain from @c recv_ack.
  */
 struct tcp_ofo_seg {
         uint32_t seq;
@@ -85,7 +84,7 @@ struct tcp_ofo_seg {
         unsigned char *data;
         void *storage; /**< Owner-pool payload backing object. */
 
-        /*O(log n) lookup index, keyed by seq*/
+        /** O(log n) lookup index, keyed by @c seq. */
         struct rb_node rb;
 
         /* Sequence-ordered queue for O(1) drain from recv_ack. */
@@ -198,8 +197,9 @@ struct tcp_stream {
 
         /**
          * Sliding-window buffer for @c nsend() payload (kept until ACK).
-         * Control segments (SYN / SYN+ACK / FIN) go on @c nsock.send_buf and
-         * are freed after TX; their RTO rebuilds them onto send_buf.
+         * Control segments (SYN / SYN+ACK / FIN) go through the enclosing
+         * socket's owner-local TX queue and are freed after TX; their RTO
+         * rebuilds them onto that queue.
          */
         struct tcp_sndbuf sndbuf;
 

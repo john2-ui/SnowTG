@@ -3,8 +3,8 @@
  * @brief TCP control block, table-driven state machine, encode/egress, and the
  *        tcp_ops vector consumed by the unified socket layer.
  *
- * Inbound:  tcp_ingress -> state handler -> recv_buf (ESTABLISHED) or send_buf
- * Outbound: tcp_tx_flush -> arp resolve -> out ring -> NIC
+ * Inbound:  tcp_ingress -> state handler -> owner-local RX/control queues
+ * Outbound: tcp_tx_flush -> ARP resolve -> worker output ring -> NIC
  */
 #include "tcp.h"
 #include "arp.h"
@@ -582,11 +582,9 @@ static int tcp_deliver_payload(struct nsock *sk, const uint8_t *data,
  * @brief Link an already-trimmed segment into the sorted ofo list.
  * @p before is the first existing node with seq >= new seq (NULL = append).
  *
- * TODO: replace this O(n) sorted doubly-linked list with a Linux-style
- * out-of-order cache: rb-tree keyed by seq for O(log n) insert/lookup, plus
- * a doubly-linked list in seq order for O(1) drain from rcv_nxt (see
- * tcp_data_queue / sk_buff ofo in the kernel). Cap / reclaim under memory
- * pressure (ofo full / possible DoS) should live next to that structure.
+ * The RB-tree supplies O(log n) lookup while the doubly-linked list preserves
+ * sequence-order traversal and O(1) drain from rcv_nxt. Per-stream and
+ * per-owner limits bound retained descriptors and payload bytes.
  * @param sk Socket owning the ofo list.
  * @param seq Sequence number of the first payload byte.
  * @param data Payload bytes to copy.
@@ -1261,7 +1259,7 @@ static uint32_t tcp_next_isn(void) {
  */
 struct nsock *tcp_stream_create(uint32_t remote_ip, uint32_t local_ip,
                                 uint16_t remote_port, uint16_t local_port) {
-        struct nsock *sk = nsock_alloc(-1, IPPROTO_TCP);
+        struct nsock *sk = nsock_alloc(IPPROTO_TCP);
         if (sk == NULL) {
                 LOG_ERROR("tcp_stream_create: nsock_alloc failed");
                 return NULL;
@@ -3838,9 +3836,9 @@ ssize_t tcp_send(struct nsock *sk, const void *buf, size_t len, int flags) {
  * @return Number of bytes copied, 0 for orderly EOF, or -1/EAGAIN when the
  *         owner must park a blocking RECV command.
  *
- * Short reads retain the unread suffix in app-owned @c rx_current so the next
- * read preserves TCP byte-stream order without creating a second producer for
- * @c recv_buf.
+ * Short reads retain the unread suffix in owner-held @c rx_current so the next
+ * command preserves TCP byte-stream order. Application lcores never consume
+ * @c recv_buf directly.
  */
 ssize_t tcp_recv(struct nsock *sk, void *buf, size_t len,
                  __attribute__((unused)) int flags) {

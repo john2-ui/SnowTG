@@ -239,8 +239,8 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 
 ##### P3 — 兼容字段与文档清理
 
-- [ ] **删除诊断用途的** `nsock->fd`：先把剩余日志迁移为 `{id, generation}`，确认该字段不再参与身份、索引或生命周期后移除。
-- [ ] **清理已失真的源码 TODO 与注释**：OFO 已使用 RB-tree，但 `tcp.h` / `tcp.c` / `config.h` 仍保留旧的链表 TODO；同时同步 recv/send ring 的实际 producer/consumer 模型，避免文档与代码误导后续设计。
+- [x] **删除诊断用途的** `nsock->fd`：日志已使用 `{id, generation}`，该字段及无意义的分配参数已移除。
+- [x] **清理已失真的源码 TODO 与注释**：OFO 注释已同步 RB-tree + 有序链表实现；recv/send ring 已明确为 owner 内 SPSC，并收紧相应 flags/API。
 
 
 

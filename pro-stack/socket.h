@@ -68,25 +68,24 @@ enum nsock_io_mode {
 /**
  * @brief One userspace socket, shared by every transport.
  *
- * Ring-backed sockets use @c recv_buf and @c send_buf for transport objects.
+ * Ring-backed sockets use @c recv_buf and @c send_buf as owner-local SPSC
+ * transport queues. Packet ingress, command execution, timers, and TX all run
+ * on the owner lcore, so application lcores never access either ring.
  * Owner-local sockets leave those fields NULL; each transport's @ref sock_ops
  * uses its embedded state instead. In particular, local UDP does not retain a
  * send queue and sends directly to the owner worker's output ring.
  */
 struct nsock {
-        /**
-         * Diagnostic fd label only.  Object identity is id+generation; this
-         * field is never used for lookup or lifetime ownership.
-         */
-        int fd;
         uint8_t protocol; /**< IPPROTO_UDP / IPPROTO_TCP. */
 
         uint32_t local_ip;   /**< Bound IPv4, network byte order. */
         uint16_t local_port; /**< Bound transport port, network byte order. */
         uint8_t local_mac[RTE_ETHER_ADDR_LEN]; /**< Local Ethernet address. */
 
-        struct rte_ring *recv_buf; /**< Worker -> application packet ring. */
-        struct rte_ring *send_buf; /**< Application -> worker packet ring. */
+        /** Owner-produced/owner-consumed inbound transport-object queue. */
+        struct rte_ring *recv_buf;
+        /** Owner-produced/owner-consumed outbound transport-object queue. */
+        struct rte_ring *send_buf;
         enum nsock_io_mode io_mode;
         nsock_release_fn release_fn;
         void *release_ctx;
@@ -239,15 +238,12 @@ int nsock_tcp_local_taken(uint32_t ip, uint16_t port);
 /**
  * @brief Allocate and register a @ref nsock with the selected queue mode.
  *
- * @param fd       Optional diagnostic label; pass -1 for owner-created
- *                 sockets.  It does not participate in object lookup.
  * @param protocol IP protocol number; selects the @ref sock_ops to bind.
  * @return Initialized socket, or NULL on allocation failure.
  */
-struct nsock *nsock_alloc(int fd, uint8_t protocol);
+struct nsock *nsock_alloc(uint8_t protocol);
 /** Allocate a socket with an explicit queue implementation. */
-struct nsock *nsock_alloc_mode(int fd, uint8_t protocol,
-                               enum nsock_io_mode io_mode);
+struct nsock *nsock_alloc_mode(uint8_t protocol, enum nsock_io_mode io_mode);
 /** Install a one-shot final-release observer owned by the packet worker. */
 void nsock_set_release_observer(struct nsock *sk, nsock_release_fn fn,
                                 void *ctx);

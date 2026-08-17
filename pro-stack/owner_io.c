@@ -30,7 +30,7 @@ static int owner_io_socket_create_mode(uint8_t protocol,
                 return -1;
         }
 
-        struct nsock *sk = nsock_alloc_mode(-1, protocol, io_mode);
+        struct nsock *sk = nsock_alloc_mode(protocol, io_mode);
         if (sk == NULL) {
                 errno = EPROTONOSUPPORT;
                 return -1;

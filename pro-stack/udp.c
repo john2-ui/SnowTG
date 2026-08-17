@@ -340,7 +340,7 @@ int udp_ingress(struct rte_mbuf *mbuf) {
                         rte_pktmbuf_free(mbuf);
                         return -1;
                 }
-        } else if (rte_ring_mp_enqueue(sk->recv_buf, mbuf) != 0) {
+        } else if (rte_ring_sp_enqueue(sk->recv_buf, mbuf) != 0) {
                 LOG_ERROR("recv_buf full for " UDP_SK_FMT ", dropping packet",
                           UDP_SK_ARG(sk));
                 rte_pktmbuf_free(mbuf);
@@ -387,7 +387,7 @@ int udp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
                         rte_memcpy(eth->dst_addr.addr_bytes, dst_mac,
                                    RTE_ETHER_ADDR_LEN);
                 } else {
-                        if (rte_ring_mp_enqueue(sk->send_buf, mbuf) != 0) {
+                        if (rte_ring_sp_enqueue(sk->send_buf, mbuf) != 0) {
                                 LOG_ERROR("send_buf full while waiting ARP");
                                 rte_pktmbuf_free(mbuf);
                                 return SOCK_TX_FLUSH_IDLE;
@@ -400,7 +400,7 @@ int udp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
         struct rte_ring *out_ring = ring_instance()->out;
         if (rte_ring_sp_enqueue(out_ring, mbuf) != 0) {
                 LOG_ERROR("out ring full, retrying datagram");
-                if (rte_ring_mp_enqueue(sk->send_buf, mbuf) != 0) {
+                if (rte_ring_sp_enqueue(sk->send_buf, mbuf) != 0) {
                         LOG_ERROR("send_buf full while retrying datagram");
                         rte_pktmbuf_free(mbuf);
                         return SOCK_TX_FLUSH_IDLE;
@@ -472,7 +472,7 @@ ssize_t udp_sendto(struct nsock *sk, const void *buf, size_t len,
                                 &count) != 0)
                 return -1;
 
-        if (rte_ring_mp_enqueue_bulk(sk->send_buf, (void *const *)packets,
+        if (rte_ring_sp_enqueue_bulk(sk->send_buf, (void *const *)packets,
                                      count, NULL) != count) {
                 LOG_ERROR("send_buf full for " UDP_SK_FMT, UDP_SK_ARG(sk));
                 for (unsigned int i = 0; i < count; i++)

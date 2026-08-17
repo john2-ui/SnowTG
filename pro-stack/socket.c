@@ -745,7 +745,7 @@ int nsock_tcp_tx_enqueue(struct nsock *sk, struct tcp_fragment *fragment) {
         if (sk == NULL || fragment == NULL)
                 return -1;
         if (sk->io_mode == NSOCK_IO_RINGS)
-                return rte_ring_mp_enqueue(sk->send_buf, fragment);
+                return rte_ring_sp_enqueue(sk->send_buf, fragment);
         if (sk->u.tcp.tx_queue_count >= RING_SIZE)
                 return -1;
         fragment->next = NULL;
@@ -787,7 +787,7 @@ int nsock_tcp_tx_requeue_head(struct nsock *sk, struct tcp_fragment *fragment) {
                  * rte_ring has no head-push; preserve the fragment at the cost
                  * of possible reordering with any still-queued segments.
                  */
-                return rte_ring_mp_enqueue(sk->send_buf, fragment);
+                return rte_ring_sp_enqueue(sk->send_buf, fragment);
         }
         if (sk->u.tcp.tx_queue_count >= RING_SIZE)
                 return -1;
@@ -807,8 +807,7 @@ void nsock_set_release_observer(struct nsock *sk, nsock_release_fn fn,
         sk->release_ctx = ctx;
 }
 
-struct nsock *nsock_alloc_mode(int fd, uint8_t protocol,
-                               enum nsock_io_mode io_mode) {
+struct nsock *nsock_alloc_mode(uint8_t protocol, enum nsock_io_mode io_mode) {
         const struct sock_ops *ops = sock_ops_lookup(protocol);
         struct socket_registry *registry = registry_current();
 
@@ -828,11 +827,6 @@ struct nsock *nsock_alloc_mode(int fd, uint8_t protocol,
         }
         memset(sk, 0, sizeof(*sk));
 
-        /*
-         * fd is retained only as a diagnostic label during migration.  It is
-         * never used to find or own this object; fd_table stores a handle.
-         */
-        sk->fd = fd;
         sk->id = NSOCK_INVALID_ID;
         sk->protocol = protocol;
         sk->ops = ops;
@@ -850,7 +844,8 @@ struct nsock *nsock_alloc_mode(int fd, uint8_t protocol,
                     rte_ring_create(recv_name, RING_SIZE, rte_socket_id(),
                                     RING_F_SP_ENQ | RING_F_SC_DEQ);
                 sk->send_buf = rte_ring_create(send_name, RING_SIZE,
-                                               rte_socket_id(), RING_F_SC_DEQ);
+                                               rte_socket_id(),
+                                               RING_F_SP_ENQ | RING_F_SC_DEQ);
                 if (sk->recv_buf == NULL || sk->send_buf == NULL) {
                         LOG_ERROR("rte_ring_create(nsock) failed");
                         if (sk->recv_buf)
@@ -915,8 +910,8 @@ struct nsock *nsock_alloc_mode(int fd, uint8_t protocol,
         return sk;
 }
 
-struct nsock *nsock_alloc(int fd, uint8_t protocol) {
-        return nsock_alloc_mode(fd, protocol, NSOCK_IO_RINGS);
+struct nsock *nsock_alloc(uint8_t protocol) {
+        return nsock_alloc_mode(protocol, NSOCK_IO_RINGS);
 }
 
 void nsock_free(struct nsock *sk) {

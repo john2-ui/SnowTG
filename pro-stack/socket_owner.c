@@ -721,7 +721,7 @@ static void owner_process_one(struct sock_cmd *cmd) {
         if (cmd->type == SOCK_CMD_CREATE) {
                 int adopt_rc = 0;
 
-                sk = nsock_alloc(-1, (uint8_t)cmd->args.create.protocol);
+                sk = nsock_alloc((uint8_t)cmd->args.create.protocol);
                 if (sk != NULL)
                         adopt_rc = socket_owner_adopt(sk);
                 if (sk == NULL || adopt_rc != 0) {

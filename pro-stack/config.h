@@ -174,8 +174,7 @@
 /** UDP's implicit-bind range used by owner-local datagram flows. */
 #define UDP_EPHEMERAL_PORT_MIN EPHEMERAL_PORT_MIN
 #define UDP_EPHEMERAL_PORT_MAX EPHEMERAL_PORT_MAX
-/** Max out-of-order segments buffered per TCB (DLL today; see ofo rb-tree
- * TODO). */
+/** Maximum RB-tree/DLL-indexed out-of-order segments buffered per TCB. */
 #define TCP_OFO_MAX_SEGS 32
 
 #define TCP_MSL_MS 1000
