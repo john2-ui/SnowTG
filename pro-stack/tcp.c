@@ -76,6 +76,7 @@ static void tcp_drain_send(struct nsock *sk);
 static void tcp_drain_recv(struct nsock *sk);
 static void tcp_abort_stream(struct nsock *sk, int error, bool send_reset,
                              const char *reason);
+static bool tcp_enter_time_wait(struct nsock *sk);
 static void tcp_timer_cb(struct owner_timer *timer, void *arg,
                          uint64_t now_cycles);
 
@@ -375,8 +376,95 @@ static int tcp_ofo_insert(struct nsock *sk, uint32_t seq, const uint8_t *data,
         return result;
 }
 
-static void tcp_ofo_enter_close_wait(struct nsock *sk) {
-        tcp_stream_set_status(sk, TCP_STATUS_CLOSE_WAIT);
+/** Mark the one receive-side EOF boundary found by direct or OFO delivery. */
+static void tcp_note_peer_eof(struct nsock *sk) { sk->u.tcp.peer_eof = true; }
+
+/** Apply the teardown transition implied by a newly contiguous peer FIN. */
+static bool tcp_apply_peer_eof(struct nsock *sk) {
+        if (!sk->u.tcp.peer_eof)
+                return true;
+
+        switch (sk->u.tcp.status) {
+        case TCP_STATUS_ESTABLISHED:
+                tcp_stream_set_status(sk, TCP_STATUS_CLOSE_WAIT);
+                break;
+        case TCP_STATUS_FIN_WAIT_1:
+                tcp_stream_set_status(sk, TCP_STATUS_CLOSING);
+                break;
+        case TCP_STATUS_FIN_WAIT_2:
+                return tcp_enter_time_wait(sk);
+        default:
+                break;
+        }
+        return true;
+}
+
+/**
+ * Deliver one payload/FIN range through the shared TCP stream receive path.
+ *
+ * Every state whose receive side is still open uses the same window clipping,
+ * duplicate trimming, OFO reassembly, receive accounting, and EOF boundary.
+ * Once EOF is established, later payload can only be a retransmission and is
+ * acknowledged by the caller without being delivered again.
+ */
+static bool tcp_receive_stream_range(struct nsock *sk, uint32_t seq,
+                                     const uint8_t *payload,
+                                     uint32_t payload_len, bool has_fin) {
+        uint32_t rcv_nxt = sk->u.tcp.recv_ack;
+        uint32_t wnd_end = rcv_nxt + tcp_rcv_wnd(sk);
+
+        tcp_sack_note_duplicate(sk, seq, payload_len);
+        if (sk->u.tcp.status == TCP_STATUS_CLOSE_WAIT ||
+            sk->u.tcp.status == TCP_STATUS_LAST_ACK ||
+            sk->u.tcp.status == TCP_STATUS_CLOSING ||
+            sk->u.tcp.status == TCP_STATUS_TIME_WAIT)
+                sk->u.tcp.peer_eof = true;
+        if (sk->u.tcp.peer_eof)
+                return true;
+
+        if (!tcp_segment_acceptable(sk, seq, payload_len, has_fin)) {
+                if (!tcp_seq_lt(seq, rcv_nxt))
+                        tcp_ofo_record_rcv_window_drop(
+                            sk, seq, payload_len, has_fin);
+                return true;
+        }
+
+        /* Clip the right edge to RCV.WND, including FIN sequence space. */
+        uint32_t data_end = seq + payload_len;
+        if (tcp_seq_gt(data_end, wnd_end)) {
+                payload_len = wnd_end - seq;
+                has_fin = false;
+        } else if (has_fin && !tcp_seq_lt(data_end, wnd_end)) {
+                has_fin = false;
+        }
+
+        if (seq == rcv_nxt) {
+                if (payload_len > 0 &&
+                    tcp_deliver_payload(sk, payload, payload_len) != 0) {
+                        (void)tcp_ofo_insert(sk, seq, payload, payload_len,
+                                             has_fin);
+                } else {
+                        sk->u.tcp.recv_ack += payload_len;
+                        sk->u.tcp.rcvbuf_used += payload_len;
+                        if (has_fin) {
+                                sk->u.tcp.recv_ack++;
+                                tcp_note_peer_eof(sk);
+                                /* Buffered bytes beyond FIN are not stream
+                                 * data and must not survive the EOF boundary.
+                                 */
+                                tcp_ofo_purge(sk);
+                        } else {
+                                tcp_ofo_drain(sk, tcp_deliver_payload,
+                                              tcp_note_peer_eof);
+                        }
+                }
+        } else {
+                /* OFO insertion performs the partial-left duplicate trim. */
+                (void)tcp_ofo_insert(sk, seq, payload, payload_len, has_fin);
+                tcp_ofo_drain(sk, tcp_deliver_payload, tcp_note_peer_eof);
+        }
+
+        return tcp_apply_peer_eof(sk);
 }
 
 #ifdef TCP_TESTING
@@ -386,7 +474,14 @@ int tcp_test_ofo_insert(struct nsock *sk, uint32_t seq, const uint8_t *data,
 }
 
 void tcp_test_ofo_drain(struct nsock *sk) {
-        tcp_ofo_drain(sk, tcp_deliver_payload, tcp_ofo_enter_close_wait);
+        tcp_ofo_drain(sk, tcp_deliver_payload, tcp_note_peer_eof);
+        (void)tcp_apply_peer_eof(sk);
+}
+
+bool tcp_test_receive_stream_segment(struct nsock *sk, uint32_t seq,
+                                     const uint8_t *data, uint32_t len,
+                                     bool has_fin) {
+        return tcp_receive_stream_range(sk, seq, data, len, has_fin);
 }
 #endif
 
@@ -1646,12 +1741,19 @@ static int tcp_arm_syn_timer(struct nsock *sk, uint64_t delay_ms) {
 /** @brief Enter TIME_WAIT and arm the 2MSL expiry timer.
  * @param sk Stream that completed active close processing.
  */
-static void tcp_enter_time_wait(struct nsock *sk) {
+static bool tcp_enter_time_wait(struct nsock *sk) {
         tcp_stream_set_status(sk, TCP_STATUS_TIME_WAIT);
         sk->u.tcp.retries = 0;
         sk->u.tcp.close_deadline_cycles = 0;
+#ifdef TCP_TESTING
+        return true;
+#else
         if (owner_timer_arm_after_ms(&sk->u.tcp.timer, TCP_2MSL_MS) != 0)
                 tcp_abort_stream(sk, ENOBUFS, false, "timer-arm-failed");
+        else
+                return true;
+        return false;
+#endif
 }
 
 /**
@@ -1951,6 +2053,51 @@ static int tcp_state_syn_recv(struct nsock *sk, struct rte_tcp_hdr *hdr,
         return 0;
 }
 
+/** Parse and publish one payload/FIN range through the shared stream path. */
+static bool tcp_receive_stream_segment(struct nsock *sk,
+                                       struct rte_tcp_hdr *hdr,
+                                       struct rte_mbuf *mbuf) {
+        uint8_t hdrlen = (hdr->data_off >> 4) * 4;
+        uint16_t payload_len =
+            rte_be_to_cpu_16(tcp_ipv4_header(mbuf)->total_length) -
+            sizeof(struct rte_ipv4_hdr) - hdrlen;
+        bool has_fin = (hdr->tcp_flags & RTE_TCP_FIN_FLAG) != 0;
+        uint32_t old_recv_ack = sk->u.tcp.recv_ack;
+        uint8_t *payload = (uint8_t *)hdr + hdrlen;
+
+        if (payload_len == 0 && !has_fin)
+                return true;
+        if (hdr->tcp_flags & RTE_TCP_SYN_FLAG)
+                return true;
+        if (!tcp_receive_stream_range(sk, ntohl(hdr->sent_seq), payload,
+                                      payload_len, has_fin))
+                return false;
+
+        if (sk->u.tcp.recv_ack != old_recv_ack)
+                tcp_options_note_receive_progress(sk);
+
+        /* ACK accepted bytes, the current SACK view, or the established EOF. */
+        struct tcp_fragment *ack_f = tcp_make_fragment(
+            sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
+        uint16_t ack_win = ack_f == NULL ? 0 : ack_f->rx_win;
+        (void)tcp_enqueue_fragment(sk, ack_f);
+        LOG_TCP_DEBUG(TCP_SK_FMT " event=ack-queue reason=%s ack=%u win=%u",
+                      TCP_SK_ARG(sk),
+                      has_fin       ? "data-fin"
+                      : payload_len ? "data"
+                                    : "ooo",
+                      sk->u.tcp.recv_ack, ack_win);
+
+        if (nsock_tcp_rx_count(sk) != 0 || sk->u.tcp.peer_eof) {
+                socket_owner_wake_recv(sk);
+                uint32_t events = OWNER_IO_EV_READ;
+                if (sk->u.tcp.peer_eof)
+                        events |= OWNER_IO_EV_HUP;
+                socket_owner_ready_post(sk, events);
+        }
+        return true;
+}
+
 /** @brief Process data, ACK, FIN, and out-of-order payload in ESTABLISHED.
  * @param sk Established stream.
  * @param hdr Inbound TCP header.
@@ -1986,123 +2133,7 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
         }
 
         /* ACK and advertised-window state were committed atomically above. */
-
-        if (payload_len == 0 && !has_fin)
-                return 0; /* pure ACK: caller frees mbuf */
-
-        /* SYN is unexpected once established; ignore for now. */
-        if (hdr->tcp_flags & RTE_TCP_SYN_FLAG)
-                return 0;
-
-        uint32_t seq = ntohl(hdr->sent_seq);
-        uint32_t rcv_nxt = sk->u.tcp.recv_ack;
-        uint32_t wnd_end = rcv_nxt + tcp_rcv_wnd(sk);
-
-        tcp_sack_note_duplicate(sk, seq, payload_len);
-
-        if (!tcp_segment_acceptable(sk, seq, payload_len, has_fin)) {
-                if (!tcp_seq_lt(seq, rcv_nxt))
-                        tcp_ofo_record_rcv_window_drop(
-                            sk, seq, payload_len, has_fin);
-                struct tcp_fragment *ack_f =
-                    tcp_make_fragment(sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
-                                      sk->u.tcp.recv_ack);
-                (void)tcp_enqueue_fragment(sk, ack_f);
-                return 0; /* caller frees mbuf */
-        }
-
-        /*
-         * The segment may only partially fall within the receive window; retain
-         * only the payload that lies within the window. The FIN flag also
-         * consumes a sequence number; if it falls beyond the right edge of the
-         * window, it cannot be consumed.
-         */
-        uint32_t data_end = seq + payload_len;
-
-        if (tcp_seq_gt(data_end, wnd_end)) {
-                payload_len = wnd_end - seq;
-                has_fin = 0;
-        } else if (has_fin && !tcp_seq_lt(data_end, wnd_end)) {
-                /** sequence of fin >= right edge of the windows */
-                has_fin = 0;
-        }
-
-        uint8_t *payload = (uint8_t *)hdr + hdrlen;
-
-        int wake_recv = 0;
-        int recv_progress = 0;
-        if (seq == rcv_nxt) {
-                /*
-                 * recv_ack is a delivery boundary, not merely an RX boundary:
-                 * if the app queue/allocation is full, retain the segment in
-                 * ofo and leave the cumulative ACK unchanged. The peer will
-                 * retransmit if no later input lets tcp_ofo_drain retry it.
-                 */
-                if (payload_len > 0 &&
-                    tcp_deliver_payload(sk, payload, payload_len) != 0) {
-                        (void)tcp_ofo_insert(sk, seq, payload, payload_len,
-                                             has_fin);
-                } else {
-                        sk->u.tcp.recv_ack += payload_len;
-                        sk->u.tcp.rcvbuf_used += payload_len;
-                        wake_recv = payload_len > 0;
-                        recv_progress = payload_len > 0;
-                        if (has_fin) {
-                                sk->u.tcp.recv_ack += 1;
-                                tcp_stream_set_status(sk,
-                                                      TCP_STATUS_CLOSE_WAIT);
-                                wake_recv = 1;
-                                recv_progress = 1;
-                        }
-                        if (recv_progress)
-                                tcp_options_note_receive_progress(sk);
-                        tcp_ofo_drain(sk, tcp_deliver_payload,
-                                      tcp_ofo_enter_close_wait);
-                }
-        } else {
-                /* OOO (or partial left-trim happened inside insert). */
-                (void)tcp_ofo_insert(sk, seq, payload, payload_len, has_fin);
-                /* Do not advance recv_ack; drain is no-op unless trim made it
-                 * in-order. */
-                tcp_ofo_drain(sk, tcp_deliver_payload,
-                              tcp_ofo_enter_close_wait);
-        }
-
-        /* Pure ACK so the peer can retire its in-flight bytes. */
-        struct tcp_fragment *ack_f = tcp_make_fragment(
-            sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
-        uint16_t ack_win = ack_f == NULL ? 0 : ack_f->rx_win;
-        (void)tcp_enqueue_fragment(sk, ack_f);
-        LOG_TCP_DEBUG(TCP_SK_FMT " event=ack-queue reason=%s ack=%u win=%u",
-                      TCP_SK_ARG(sk),
-                      has_fin       ? "data-fin"
-                      : payload_len ? "data"
-                                    : "ooo",
-                      sk->u.tcp.recv_ack, ack_win);
-        /*
-         * All TCP receive state and the cumulative ACK have been committed.
-         * A resumed recv may now safely send a window-update ACK.
-         */
-        /*
-         * OFO drain can deliver bytes even when this input segment carried no
-         * directly deliverable payload.  The ready event must reflect either
-         * source of newly readable data.
-         */
-        if (nsock_tcp_rx_count(sk) != 0)
-                wake_recv = 1;
-        /*
-         * An OFO FIN may advance the stream to CLOSE_WAIT without adding a
-         * payload blob to recv_buf.  Publish HUP in that case so event-driven
-         * consumers observe EOF even when there are no readable bytes.
-         */
-        if (wake_recv || sk->u.tcp.status == TCP_STATUS_CLOSE_WAIT) {
-                socket_owner_wake_recv(sk);
-                uint32_t events = OWNER_IO_EV_READ;
-                if (sk->u.tcp.status == TCP_STATUS_CLOSE_WAIT)
-                        events |= OWNER_IO_EV_HUP;
-                socket_owner_ready_post(sk, events);
-        }
-
+        (void)tcp_receive_stream_segment(sk, hdr, mbuf);
         return 0;
 }
 
@@ -2115,23 +2146,11 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
 static int tcp_state_last_ack(struct nsock *sk, struct rte_tcp_hdr *hdr,
                               struct rte_mbuf *mbuf) {
         // Passive close final step
-        (void)mbuf;
         if (sk->u.tcp.status != TCP_STATUS_LAST_ACK)
                 return 0;
 
-        /* Peer retransmitted FIN (our ACK-of-FIN was lost): re-ACK. */
-        if (hdr->tcp_flags & RTE_TCP_FIN_FLAG) {
-                struct tcp_fragment *ack_f =
-                    tcp_make_fragment(sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
-                                      sk->u.tcp.recv_ack);
-                if (tcp_enqueue_fragment(sk, ack_f) == 0) {
-                        LOG_TCP_INFO("tcp LAST_ACK re-ACK peer FIN " IP_FMT
-                                     ":%u ack=%u",
-                                     IP_ARG(sk->u.tcp.remote_ip),
-                                     rte_be_to_cpu_16(sk->u.tcp.remote_port),
-                                     sk->u.tcp.recv_ack);
-                }
-        }
+        if (!tcp_receive_stream_segment(sk, hdr, mbuf))
+                return 0;
 
         if (!(hdr->tcp_flags & RTE_TCP_ACK_FLAG))
                 return 0;
@@ -2170,23 +2189,10 @@ static int tcp_state_last_ack(struct nsock *sk, struct rte_tcp_hdr *hdr,
  */
 static int tcp_state_time_wait(struct nsock *sk, struct rte_tcp_hdr *hdr,
                                struct rte_mbuf *mbuf) {
-        (void)mbuf;
         if (sk->u.tcp.status != TCP_STATUS_TIME_WAIT)
                 return 0;
 
-        /* Peer retransmitted FIN (our ACK-of-FIN was lost): re-ACK. */
-        if (hdr->tcp_flags & RTE_TCP_FIN_FLAG) {
-                struct tcp_fragment *ack_f =
-                    tcp_make_fragment(sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
-                                      sk->u.tcp.recv_ack);
-                if (tcp_enqueue_fragment(sk, ack_f) == 0) {
-                        LOG_TCP_INFO("tcp TIME_WAIT re-ACK peer FIN " IP_FMT
-                                     ":%u ack=%u",
-                                     IP_ARG(sk->u.tcp.remote_ip),
-                                     rte_be_to_cpu_16(sk->u.tcp.remote_port),
-                                     sk->u.tcp.recv_ack);
-                }
-        }
+        (void)tcp_receive_stream_segment(sk, hdr, mbuf);
         return 0;
 }
 
@@ -2198,25 +2204,12 @@ static int tcp_state_time_wait(struct nsock *sk, struct rte_tcp_hdr *hdr,
  */
 static int tcp_state_closing(struct nsock *sk, struct rte_tcp_hdr *hdr,
                              struct rte_mbuf *mbuf) {
-
-        (void)mbuf;
         if (sk->u.tcp.status != TCP_STATUS_CLOSING) {
                 return 0;
         }
 
-        /* Peer retransmitted FIN (our ACK-of-FIN was lost): re-ACK. */
-        if (hdr->tcp_flags & RTE_TCP_FIN_FLAG) {
-                struct tcp_fragment *ack_f =
-                    tcp_make_fragment(sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
-                                      sk->u.tcp.recv_ack);
-                if (tcp_enqueue_fragment(sk, ack_f) == 0) {
-                        LOG_TCP_INFO("tcp CLOSING re-ACK peer FIN " IP_FMT
-                                     ":%u ack=%u",
-                                     IP_ARG(sk->u.tcp.remote_ip),
-                                     rte_be_to_cpu_16(sk->u.tcp.remote_port),
-                                     sk->u.tcp.recv_ack);
-                }
-        }
+        if (!tcp_receive_stream_segment(sk, hdr, mbuf))
+                return 0;
 
         if (!(hdr->tcp_flags & RTE_TCP_ACK_FLAG))
                 return 0;
@@ -2235,7 +2228,7 @@ static int tcp_state_closing(struct nsock *sk, struct rte_tcp_hdr *hdr,
 
         LOG_TCP_INFO("tcp CLOSING rx ACK -> TIME_WAIT " TCP_ID_FMT,
                      TCP_ID_ARG(sk));
-        tcp_enter_time_wait(sk);
+        (void)tcp_enter_time_wait(sk);
         return 0;
 }
 
@@ -2247,7 +2240,6 @@ static int tcp_state_closing(struct nsock *sk, struct rte_tcp_hdr *hdr,
  */
 static int tcp_state_fin_wait_1(struct nsock *sk, struct rte_tcp_hdr *hdr,
                                 struct rte_mbuf *mbuf) {
-        int has_fin = !!(hdr->tcp_flags & RTE_TCP_FIN_FLAG);
         int has_ack = !!(hdr->tcp_flags & RTE_TCP_ACK_FLAG);
         uint32_t acknum = has_ack ? ntohl(hdr->recv_ack) : 0;
 
@@ -2255,37 +2247,7 @@ static int tcp_state_fin_wait_1(struct nsock *sk, struct rte_tcp_hdr *hdr,
         if (has_ack && !tcp_process_peer_ack(sk, acknum))
                 return 0;
 
-        int ack_ok = has_ack && (acknum == sk->u.tcp.sent_seq);
-        uint32_t seq = ntohl(hdr->sent_seq);
-
-        if (seq != sk->u.tcp.recv_ack) {
-                LOG_DEBUG("tcp FIN_WAIT_1 drop ooo/dup seq=%u expect=%u", seq,
-                          sk->u.tcp.recv_ack);
-                return 0;
-        }
-
-        if (has_fin) {
-                sk->u.tcp.recv_ack = seq + 1;
-                struct tcp_fragment *ack_f =
-                    tcp_make_fragment(sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
-                                      sk->u.tcp.recv_ack);
-                if (tcp_enqueue_fragment(sk, ack_f) == 0) {
-                        LOG_TCP_INFO("tcp FIN_WAIT_1 ACK peer FIN " IP_FMT
-                                     ":%u ack=%u",
-                                     IP_ARG(sk->u.tcp.remote_ip),
-                                     rte_be_to_cpu_16(sk->u.tcp.remote_port),
-                                     sk->u.tcp.recv_ack);
-                }
-
-                if (ack_ok) {
-                        tcp_enter_time_wait(sk);
-                } else {
-                        tcp_stream_set_status(sk, TCP_STATUS_CLOSING);
-                }
-                return 0;
-        }
-
-        if (ack_ok) {
+        if (has_ack && acknum == sk->u.tcp.sent_seq) {
                 tcp_stream_set_status(sk, TCP_STATUS_FIN_WAIT_2);
                 uint64_t now = owner_timer_now();
                 uint64_t timeout =
@@ -2297,22 +2259,18 @@ static int tcp_state_fin_wait_1(struct nsock *sk, struct rte_tcp_hdr *hdr,
                     deadline < sk->u.tcp.close_deadline_cycles)
                         sk->u.tcp.close_deadline_cycles = deadline;
                 if (owner_timer_arm_at(&sk->u.tcp.timer,
-                                       sk->u.tcp.close_deadline_cycles) != 0)
+                                       sk->u.tcp.close_deadline_cycles) != 0) {
                         tcp_abort_stream(sk, ENOBUFS, true,
                                          "timer-arm-failed");
-                return 0;
+                        return 0;
+                }
         }
 
-        LOG_DEBUG(
-            "tcp FIN_WAIT_1 drop seq=%u expect=%u len=%u flags=%s", seq,
-            sk->u.tcp.recv_ack,
-            (unsigned)(rte_be_to_cpu_16(tcp_ipv4_header(mbuf)->total_length) -
-                       sizeof(struct rte_ipv4_hdr) - (hdr->data_off >> 4) * 4),
-            tcp_flags_str(hdr->tcp_flags));
+        (void)tcp_receive_stream_segment(sk, hdr, mbuf);
         return 0; /* caller frees mbuf */
 }
 
-/** @brief Process the peer FIN after the local FIN has been acknowledged.
+/** @brief Process stream data and peer FIN after the local FIN was ACKed.
  * @param sk FIN_WAIT_2 stream.
  * @param hdr Inbound TCP header.
  * @param mbuf Inbound packet; not retained.
@@ -2328,66 +2286,16 @@ static int tcp_state_fin_wait_2(struct nsock *sk, struct rte_tcp_hdr *hdr,
             !tcp_process_peer_ack(sk, ntohl(hdr->recv_ack)))
                 return 0;
 
-        /* Only peer FIN advances us. */
-        if (!(hdr->tcp_flags & RTE_TCP_FIN_FLAG))
-                return 0;
-
-        uint32_t seq = ntohl(hdr->sent_seq);
-        if (seq != sk->u.tcp.recv_ack) {
-                LOG_DEBUG("tcp FIN_WAIT_2 drop ooo/dup seq=%u expect=%u", seq,
-                          sk->u.tcp.recv_ack);
-                return 0;
-        }
-
-        uint8_t hdrlen = (hdr->data_off >> 4) * 4;
-        uint16_t ip_len = rte_be_to_cpu_16(tcp_ipv4_header(mbuf)->total_length);
-        uint16_t payload_len = ip_len - sizeof(struct rte_ipv4_hdr) - hdrlen;
-        uint8_t *payload = (uint8_t *)hdr + hdrlen;
-
-        /*
-         * The FIN sequence number immediately follows the payload. If delivery
-         * fails, do not acknowledge the payload or the FIN; keep recv_ack
-         * unchanged to prompt the peer to retransmit the entire segment based
-         * on RTO.
-         */
-        if (payload_len > 0) {
-                if (tcp_deliver_payload(sk, payload, payload_len) != 0) {
-                        struct tcp_fragment *ack_f = tcp_make_fragment(
-                            sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
-                            sk->u.tcp.recv_ack);
-                        (void)tcp_enqueue_fragment(sk, ack_f);
-                        return 0;
-                }
-                sk->u.tcp.recv_ack += payload_len;
-                sk->u.tcp.rcvbuf_used += payload_len;
-        }
-
-        /* Payload has been delivered; now acknowledge the FIN. */
-        sk->u.tcp.recv_ack += 1;
-
-        struct tcp_fragment *ack_f = tcp_make_fragment(
-            sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
-        if (tcp_enqueue_fragment(sk, ack_f) == 0) {
-                LOG_INFO("tcp FIN_WAIT_2 ACK peer FIN " IP_FMT ":%u ack=%u",
-                         IP_ARG(sk->u.tcp.remote_ip),
-                         rte_be_to_cpu_16(sk->u.tcp.remote_port),
-                         sk->u.tcp.recv_ack);
-        }
-        LOG_INFO("tcp FIN_WAIT_2 rx FIN -> TIME_WAIT " IP_FMT ":%u ack=%u",
-                 IP_ARG(sk->u.tcp.remote_ip),
-                 rte_be_to_cpu_16(sk->u.tcp.remote_port), sk->u.tcp.recv_ack);
-        tcp_enter_time_wait(sk);
-
+        (void)tcp_receive_stream_segment(sk, hdr, mbuf);
         return 0;
 }
 
 /**
- * @brief Re-ACK a retransmitted peer FIN while the application is in
- * CLOSE_WAIT.
+ * @brief Process retransmitted stream ranges while in CLOSE_WAIT.
  *
- * Peer retransmitted FIN while we wait for the app's nclose (CLOSE_WAIT).
- * Re-ACK so the peer can retire its FIN if our first ACK-of-FIN was lost.
- * Our own FIN is sent later from tcp_close().
+ * The receive-side EOF is already fixed, so payload/FIN ranges pass through
+ * the shared receive path only for duplicate classification and re-ACK. Our
+ * own FIN is sent later from tcp_close().
  * @param sk CLOSE_WAIT stream.
  * @param hdr Inbound TCP header.
  * @param mbuf Inbound packet; not retained.
@@ -2395,7 +2303,6 @@ static int tcp_state_fin_wait_2(struct nsock *sk, struct rte_tcp_hdr *hdr,
  */
 static int tcp_state_close_wait(struct nsock *sk, struct rte_tcp_hdr *hdr,
                                 struct rte_mbuf *mbuf) {
-        (void)mbuf;
         if (sk->u.tcp.status != TCP_STATUS_CLOSE_WAIT)
                 return 0;
 
@@ -2404,18 +2311,7 @@ static int tcp_state_close_wait(struct nsock *sk, struct rte_tcp_hdr *hdr,
             !tcp_process_peer_ack(sk, ntohl(hdr->recv_ack)))
                 return 0;
 
-        if (hdr->tcp_flags & RTE_TCP_FIN_FLAG) {
-                struct tcp_fragment *ack_f =
-                    tcp_make_fragment(sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
-                                      sk->u.tcp.recv_ack);
-                if (tcp_enqueue_fragment(sk, ack_f) == 0) {
-                        LOG_INFO("tcp CLOSE_WAIT re-ACK peer FIN " IP_FMT
-                                 ":%u ack=%u",
-                                 IP_ARG(sk->u.tcp.remote_ip),
-                                 rte_be_to_cpu_16(sk->u.tcp.remote_port),
-                                 sk->u.tcp.recv_ack);
-                }
-        }
+        (void)tcp_receive_stream_segment(sk, hdr, mbuf);
         return 0;
 }
 
@@ -3440,7 +3336,7 @@ ssize_t tcp_recv(struct nsock *sk, void *buf, size_t len,
                          * Once all previously queued bytes are drained, the
                          * stream reports the conventional zero-length EOF.
                          */
-                        if (sk->u.tcp.status == TCP_STATUS_CLOSE_WAIT ||
+                        if (sk->u.tcp.peer_eof ||
                             sk->u.tcp.status == TCP_STATUS_CLOSED)
                                 return 0;
                         errno = EAGAIN;
@@ -3462,7 +3358,9 @@ ssize_t tcp_recv(struct nsock *sk, void *buf, size_t len,
                 sk->u.tcp.rcvbuf_used = 0;
         else
                 sk->u.tcp.rcvbuf_used -= (uint32_t)n;
-        tcp_ofo_drain(sk, tcp_deliver_payload, tcp_ofo_enter_close_wait);
+        tcp_ofo_drain(sk, tcp_deliver_payload, tcp_note_peer_eof);
+        if (!tcp_apply_peer_eof(sk))
+                return (ssize_t)n;
 
         /* Promptly advertise space, including recovery from a zero window. */
         struct tcp_fragment *ack_f = tcp_make_fragment(
@@ -3773,6 +3671,7 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
 
         sk->u.tcp.recv_ack = 0;
         sk->u.tcp.retries = 0;
+        sk->u.tcp.peer_eof = false;
 
         sk->u.tcp.rcv_wscale = tcp_choose_rcv_wscale(sk->u.tcp.rcvbuf_size);
         sk->u.tcp.snd_wscale = 0;
@@ -3826,6 +3725,7 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
 int tcp_listen(struct nsock *sk, int backlog) {
         /* Listener has no peer; children carry the remote 4-tuple half. */
         sk->u.tcp.status = TCP_STATUS_LISTEN;
+        sk->u.tcp.peer_eof = false;
         sk->u.tcp.remote_ip = 0;
         sk->u.tcp.remote_port = 0;
         sk->u.tcp.syn_pending = 0;

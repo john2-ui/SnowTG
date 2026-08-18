@@ -404,6 +404,7 @@ void tcp_ofo_purge(struct nsock *sk) {
         while (seg != NULL) {
                 struct tcp_ofo_seg *next = seg->next;
 
+                tcp_ofo_rcvbuf_sub(sk, seg->len);
                 tcp_ofo_unlink(sk, seg);
                 tcp_ofo_seg_free(seg);
                 seg = next;
@@ -548,7 +549,7 @@ int tcp_ofo_queue_insert(struct nsock *sk, uint32_t seq, const uint8_t *data,
         if (tcp_ofo_seq_lt(seq, rcv_nxt)) {
                 uint32_t skip = rcv_nxt - seq;
 
-                if (skip >= len)
+                if (skip > len || (skip == len && !has_fin))
                         return 0;
                 data += skip;
                 len -= skip;
@@ -599,7 +600,7 @@ int tcp_ofo_queue_insert(struct nsock *sk, uint32_t seq, const uint8_t *data,
                         if (tcp_ofo_link(sk, seq, data, left, 0, cur) != 0)
                                 return -1;
                         skip = cur_end - seq;
-                        if (skip >= len)
+                        if (skip > len || (skip == len && !has_fin))
                                 return 0;
                         data += skip;
                         len -= skip;
@@ -610,7 +611,7 @@ int tcp_ofo_queue_insert(struct nsock *sk, uint32_t seq, const uint8_t *data,
                 {
                         uint32_t skip = cur_end - seq;
 
-                        if (skip >= len)
+                        if (skip > len || (skip == len && !has_fin))
                                 return 0;
                         data += skip;
                         len -= skip;
@@ -622,7 +623,7 @@ int tcp_ofo_queue_insert(struct nsock *sk, uint32_t seq, const uint8_t *data,
 }
 
 void tcp_ofo_drain(struct nsock *sk, tcp_ofo_deliver_fn deliver,
-                   tcp_ofo_close_wait_fn close_wait) {
+                   tcp_ofo_eof_fn eof) {
         while (sk->u.tcp.ofo != NULL) {
                 struct tcp_ofo_seg *seg = sk->u.tcp.ofo;
                 uint32_t len;
@@ -633,7 +634,8 @@ void tcp_ofo_drain(struct nsock *sk, tcp_ofo_deliver_fn deliver,
                 if (tcp_ofo_seq_lt(seg->seq, sk->u.tcp.recv_ack)) {
                         uint32_t skip = sk->u.tcp.recv_ack - seg->seq;
 
-                        if (skip >= seg->len) {
+                        if (skip > seg->len ||
+                            (skip == seg->len && !seg->has_fin)) {
                                 tcp_ofo_rcvbuf_sub(sk, seg->len);
                                 tcp_ofo_unlink(sk, seg);
                                 tcp_ofo_seg_free(seg);
@@ -653,13 +655,13 @@ void tcp_ofo_drain(struct nsock *sk, tcp_ofo_deliver_fn deliver,
                 sk->u.tcp.recv_ack += len;
                 if (fin) {
                         sk->u.tcp.recv_ack++;
-                        if (sk->u.tcp.status == TCP_STATUS_ESTABLISHED) {
-                                if (close_wait != NULL)
-                                        close_wait(sk);
-                                else
-                                        sk->u.tcp.status =
-                                            TCP_STATUS_CLOSE_WAIT;
-                        }
+                        if (eof != NULL)
+                                eof(sk);
+                        else if (sk->u.tcp.status == TCP_STATUS_ESTABLISHED)
+                                sk->u.tcp.status = TCP_STATUS_CLOSE_WAIT;
+                        /* No byte after the first stream FIN is deliverable. */
+                        tcp_ofo_purge(sk);
+                        return;
                 }
         }
 }
@@ -670,6 +672,7 @@ void tcp_test_ofo_init(struct nsock *sk, uint32_t rcv_nxt,
         sk->u.tcp.recv_ack = rcv_nxt;
         sk->u.tcp.rcvbuf_size = rcvbuf_size;
         sk->u.tcp.rcvbuf_used = 0;
+        sk->u.tcp.peer_eof = false;
         rb_root_init(&sk->u.tcp.ofo_tree);
         sk->u.tcp.ofo = NULL;
         sk->u.tcp.ofo_tail = NULL;

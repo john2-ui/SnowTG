@@ -227,6 +227,7 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 ### 测试与工程化
 
 - TCP OFO、PAWS、SACK、拥塞控制、临时端口、owner_io、ARP、RSS/端口拓扑、UDP flow、IPv4 重组、scenario/scheduler、CSV 和协议插件回归测试
+- TCP 拆除态与 ESTABLISHED 共用 stream 重组、接收窗口、`tcp_rx_blob` 和 EOF 交付路径，覆盖 FIN_WAIT/CLOSE_WAIT 的乱序、窗口裁剪与重传边界
 - 生命周期并发回归覆盖 close 与 pending 操作、slot/fd 复用、RST/timer、listener/child、FIN/TIME_WAIT 和 UDP pending receive
 - 根目录 [run-sanitizers.sh](run-sanitizers.sh) 支持一键 ASan/UBSan 独立构建和完整测试
 - 已删除 `nsock->fd` 等失真兼容字段，并同步 OFO、ring ownership 与 SPSC 约束文档
@@ -237,13 +238,7 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 
 ## 三、TODO 与路线图
 
-本节只保留尚未完成的工作，不再混列历史完成项。优先级为：**先修正确性和退出问题，再补公开 API 与事件模型，最后扩展性能、网络协议和产品能力**。
-
-### P0 — TCP 正确性与可靠退出
-
-- [ ] **统一拆除态接收交付**：ESTABLISHED 已使用 `tcp_rx_blob`；FIN_WAIT/CLOSE_WAIT 等携带 payload 的路径也应统一经过 stream 重组、接收窗口和 EOF 交付，不保留状态专用旁路。
-
-
+本节只保留尚未完成的工作，不再混列历史完成项。优先级为：**先补公开 API 与事件模型，再扩展性能、网络协议和产品能力**。
 
 ### P1 — 公开 API、事件模型与 owner 命令
 

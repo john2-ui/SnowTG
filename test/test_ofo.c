@@ -431,6 +431,70 @@ static void test_sequence_wraparound(void) {
         tcp_test_ofo_purge(&sk);
 }
 
+static void test_teardown_stream_receive_and_eof(void) {
+        struct nsock sk;
+        static const uint8_t head[] = "abcd";
+        static const uint8_t tail[] = "ef";
+        static const uint8_t after_fin[] = "x";
+        static const uint8_t oversized[] = "abcdef";
+
+        /* FIN_WAIT_2 must retain OFO payload and deliver it in stream order
+         * before publishing EOF/TIME_WAIT. */
+        init_socket(&sk, 100, 64);
+        sk.u.tcp.status = TCP_STATUS_FIN_WAIT_2;
+        CHECK(tcp_test_receive_stream_segment(&sk, 104, tail, 2, true));
+        CHECK(tcp_test_receive_stream_segment(&sk, 108, after_fin, 1,
+                                              false));
+        CHECK(sk.u.tcp.recv_ack == 100);
+        CHECK(sk.u.tcp.ofo_count == 2);
+        CHECK(!sk.u.tcp.peer_eof);
+        CHECK(tcp_test_receive_stream_segment(&sk, 100, head, 4, false));
+        CHECK(sk.u.tcp.recv_ack == 107);
+        CHECK(sk.u.tcp.peer_eof);
+        CHECK(sk.u.tcp.status == TCP_STATUS_TIME_WAIT);
+        CHECK(sk.u.tcp.ofo_count == 0);
+        CHECK(sk.u.tcp.rcvbuf_used == 6);
+        CHECK(sk.u.tcp.rx_queue_count == 2);
+        CHECK(sk.u.tcp.rx_queue_head->len == sizeof(head) - 1);
+        CHECK(memcmp(sk.u.tcp.rx_queue_head->data, head, sizeof(head) - 1) ==
+              0);
+        CHECK(sk.u.tcp.rx_queue_tail->len == sizeof(tail) - 1);
+        CHECK(memcmp(sk.u.tcp.rx_queue_tail->data, tail, sizeof(tail) - 1) ==
+              0);
+        free_test_rx_queue(&sk);
+
+        /* The shared receive window clips both payload and an out-of-window
+         * FIN in FIN_WAIT_1 exactly as it does in ESTABLISHED. */
+        init_socket(&sk, 200, 4);
+        sk.u.tcp.status = TCP_STATUS_FIN_WAIT_1;
+        CHECK(tcp_test_receive_stream_segment(&sk, 200, oversized, 6, true));
+        CHECK(sk.u.tcp.recv_ack == 204);
+        CHECK(!sk.u.tcp.peer_eof);
+        CHECK(sk.u.tcp.status == TCP_STATUS_FIN_WAIT_1);
+        CHECK(sk.u.tcp.rx_queue_head->len == 4);
+        CHECK(memcmp(sk.u.tcp.rx_queue_head->data, oversized, 4) == 0);
+        free_test_rx_queue(&sk);
+
+        /* A retransmission whose payload is wholly below RCV.NXT can still
+         * carry the first FIN exactly at RCV.NXT. */
+        init_socket(&sk, 300, 32);
+        sk.u.tcp.status = TCP_STATUS_FIN_WAIT_1;
+        CHECK(tcp_test_receive_stream_segment(&sk, 295, oversized, 5, true));
+        CHECK(sk.u.tcp.recv_ack == 301);
+        CHECK(sk.u.tcp.peer_eof);
+        CHECK(sk.u.tcp.status == TCP_STATUS_CLOSING);
+        CHECK(sk.u.tcp.rx_queue_count == 0);
+
+        /* CLOSE_WAIT has already established EOF; later payload is only a
+         * retransmission and must never be delivered a second time. */
+        init_socket(&sk, 400, 32);
+        sk.u.tcp.status = TCP_STATUS_CLOSE_WAIT;
+        CHECK(tcp_test_receive_stream_segment(&sk, 400, head, 4, true));
+        CHECK(sk.u.tcp.recv_ack == 400);
+        CHECK(sk.u.tcp.peer_eof);
+        CHECK(sk.u.tcp.rx_queue_count == 0);
+}
+
 static void test_initial_send_window_update(void) {
         struct nsock sk;
         const uint32_t peer_seq = UINT32_C(2544753203);
@@ -498,6 +562,7 @@ int main(void) {
         test_overlap_trimming_and_fin();
         test_receive_window_and_capacity();
         test_sequence_wraparound();
+        test_teardown_stream_receive_and_eof();
         test_initial_send_window_update();
         test_chunked_send_buffer_ack_reclaim();
         puts("test_ofo: PASS");

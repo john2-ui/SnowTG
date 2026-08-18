@@ -155,6 +155,10 @@ struct tcp_ofo_seg *tcp_test_ofo_lower_bound(const struct nsock *sk,
 void tcp_test_ofo_purge(struct nsock *sk);
 /** Drain contiguous OFO data after a test advances RCV.NXT. */
 void tcp_test_ofo_drain(struct nsock *sk);
+/** Feed one payload/FIN range through the shared stream receive path. */
+bool tcp_test_receive_stream_segment(struct nsock *sk, uint32_t seq,
+                                     const uint8_t *data, uint32_t len,
+                                     bool has_fin);
 /** Reset metrics for the current test lcore. */
 void tcp_test_ofo_metrics_reset(void);
 /** Force pressure mode on or off without requiring production pool exhaustion. */
@@ -248,6 +252,8 @@ struct tcp_stream {
          */
         uint32_t rcvbuf_size;
         uint32_t rcvbuf_used;
+        /** A contiguous peer FIN has established the receive-side EOF. */
+        bool peer_eof;
         struct tcp_rx_blob *rx_current; /**< Owner-held short-read blob. */
         /** Owner-local replacement for nsock.recv_buf when enabled. */
         struct tcp_rx_blob *rx_queue_head;
