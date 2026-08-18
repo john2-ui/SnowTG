@@ -11,7 +11,6 @@
 #include "socket.h"
 
 #include "config.h"
-#include "list.h"
 #include "log.h"
 #include "net_context.h"
 #include "rx_dispatch.h"
@@ -59,7 +58,6 @@ struct socket_registry {
         struct rte_hash *tcp_listener_hash;
         struct rte_hash *tcp_conn_hash;
         uint32_t capacity;
-        struct nsock *sock_list;
         struct nsock *dirty_tx_head;
         struct nsock *dirty_tx_tail;
         struct nsock *arp_wait[NSOCK_TX_ARP_BUCKETS];
@@ -428,12 +426,6 @@ const struct sock_ops *sock_ops_lookup(uint8_t protocol) {
                 break;
         }
         return NULL;
-}
-
-struct nsock *nsock_list_local(void) {
-        struct socket_registry *registry = registry_current();
-
-        return registry == NULL ? NULL : registry->sock_list;
 }
 
 static uint32_t tx_arp_bucket(uint32_t ip) {
@@ -895,7 +887,6 @@ struct nsock *nsock_alloc_mode(uint8_t protocol, enum nsock_io_mode io_mode) {
 
         rte_memcpy(sk->local_mac, g_net.local_mac, RTE_ETHER_ADDR_LEN);
 
-        LL_ADD(sk, registry->sock_list);
         return sk;
 }
 
@@ -939,6 +930,7 @@ void nsock_free(struct nsock *sk) {
 
         /* Drop any pending retransmission/TIME_WAIT callback before free. */
         if (sk->protocol == IPPROTO_TCP) {
+                tcp_listener_child_detach(sk);
                 (void)owner_timer_cancel(&sk->u.tcp.timer);
                 tcp_sack_state_reset(&sk->u.tcp, sk->u.tcp.snd_una);
                 tcp_sndbuf_free(&sk->u.tcp.sndbuf);
@@ -973,7 +965,6 @@ void nsock_free(struct nsock *sk) {
                     IPPROTO_UDP, sk->local_ip, sk->local_port, sk->owner_lcore);
         }
 
-        LL_REMOVE(sk, registry->sock_list);
         sk->registry_flags = 0;
         if (sk->recv_buf != NULL)
                 rte_ring_free(sk->recv_buf);

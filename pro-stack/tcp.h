@@ -22,7 +22,6 @@
 #ifndef NETARCH_TCP_H
 #define NETARCH_TCP_H
 
-#include "list.h"
 #include "owner_timer.h"
 #include "rbtree.h"
 #include "tcp_cc.h"
@@ -233,6 +232,12 @@ struct tcp_stream {
 
         /** Parent listener; set on passive-open children, NULL otherwise. */
         struct nsock *listener;
+        /** Passive children still owned by this listener. */
+        struct nsock *listener_child_head;
+        struct nsock *listener_child_tail;
+        /** Intrusive links within the parent listener's child list. */
+        struct nsock *listener_child_prev;
+        struct nsock *listener_child_next;
 
         uint32_t sent_seq; /**< snd_nxt: next seq to send (host order). */
         uint32_t snd_una;  /**< Oldest unacknowledged seq (host order). */
@@ -409,8 +414,8 @@ struct tcp_fragment {
 /**
  * @brief Find an existing TCP connection by the 4-tuple.
  *
- * Scans the unified socket list for a TCP socket whose peer and local tuple
- * match. The local half is read from the enclosing @ref nsock.
+ * Uses the owner-local four-tuple index to find a TCP socket whose peer and
+ * local tuple match. The local half is read from the enclosing @ref nsock.
  *
  * @param remote_ip   Peer IPv4 (network order).
  * @param local_ip    Local IPv4 (network order).
@@ -441,6 +446,10 @@ struct nsock *tcp_stream_create(uint32_t remote_ip, uint32_t local_ip,
 void tcp_timer_init(struct nsock *sk);
 /** Force terminal local cleanup from an owner-local control path. */
 void tcp_force_abort(struct nsock *sk, int error, const char *reason);
+/** Add a newly allocated passive child to its listener-owned child list. */
+void tcp_listener_child_attach(struct nsock *listener, struct nsock *child);
+/** Remove a passive child from its listener before accept or destruction. */
+void tcp_listener_child_detach(struct nsock *child);
 
 /**
  * @brief Dequeue one established passive-open child without blocking.

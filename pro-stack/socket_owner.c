@@ -178,6 +178,20 @@ struct nsock *socket_owner_resolve_local(struct nsock_handle handle) {
         return sk;
 }
 
+uint32_t socket_owner_slot_capacity_local(void) {
+        struct socket_owner *owner = socket_owner_current();
+
+        return owner == NULL ? 0 : owner->slot_capacity;
+}
+
+struct nsock *socket_owner_slot_at_local(uint32_t id) {
+        struct socket_owner *owner = socket_owner_current();
+
+        if (owner == NULL || owner->slots == NULL || id >= owner->slot_capacity)
+                return NULL;
+        return owner->slots[id];
+}
+
 /** Append a command to an owner-only FIFO wait queue. */
 static void waitq_push(struct sock_cmd **head, struct sock_cmd **tail,
                        struct sock_cmd *cmd) {

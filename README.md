@@ -34,7 +34,6 @@ pro-stack/
 ├── net_context.h / .c  全局本端身份 g_net（port/ip/mac/mempool）
 ├── ring.h / ring.c     NIC↔worker 的 in/out 环
 ├── port.h / port.c     以太网端口初始化
-├── list.h              侵入式双向链表宏 LL_ADD/LL_REMOVE（过渡；目标改为哈希表）
 ├── rbtree.h / .c       通用侵入式红黑树（TCP OFO 索引）
 ├── config.h            ENABLE_* 开关与常量
 ├── log.h               分级日志 + IP/MAC 格式化
@@ -142,7 +141,7 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 
 ### socket 层
 
-- 统一 `struct nsock`；`g_sock_list` 仅保留为 owner-local 生命周期索引，TX 使用 dirty socket queue（[socket.c](pro-stack/socket.c)）
+- 统一 `struct nsock`；协议查找走 owner-local 哈希索引，生命周期枚举走 generation-protected slot table，TX 使用 dirty socket queue（[socket.c](pro-stack/socket.c)）
 - fd→代际句柄表 O(1) 查找与分配（`NSOCK_FD_MAX=1024`）
 - socket 注册表：UDP 本地二元组、TCP 本地 bind、listener 与 TCP 四元组均通过 `rte_hash` 索引
 - **per-worker owner 生命周期**：fd 表保存代际句柄；应用命令不携带裸指针；packet ingress、TCP timer、状态迁移与 `nsock_free` 全部归流所属 worker
@@ -256,7 +255,6 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 
 - [ ] **实现协议栈内部 payload 零拷贝**：在不改变现有应用缓冲区 API 的前提下，评估 TCP TX retained mbuf/引用计数、TCP RX/OFO mbuf slice 和 UDP RX 持有策略；必须带自动复制回退、资源上限、完整释放语义和可观测性。
 - [ ] **实现 owner_timer 时间轮后端**：先用 profile 证明收益，再以时间轮或分层时间轮替换当前 `rte_timer` backend；TCP/traffic-gen 保持公共接口不变，随后为 `tg_flow` 嵌入 timer node 并删除 `tg_flow_expire()` 每轮全表扫描。
-- [ ] **移除剩余生命周期全链表扫描**：`g_sock_list` 只应承担必要的 owner-local 枚举；listener child、关闭中 TCB 和调试遍历逐步改用直接索引或专用队列。
 - [ ] **补齐延迟与容量可观测性**：增加 P50/P95/P99/最大值直方图，以及各 owner pool 的容量、当前值、峰值和失败原因，支持长测判断缓慢泄漏。
 
 

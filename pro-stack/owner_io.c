@@ -217,14 +217,19 @@ int owner_io_memory_snapshot(struct owner_io_memory_snapshot *snapshot) {
 
 int owner_io_tcp_lifecycle_snapshot(
     struct owner_io_tcp_lifecycle_snapshot *snapshot) {
-        struct nsock *sk;
+        uint32_t capacity;
 
         if (snapshot == NULL || owner_timer_engine_current() == NULL) {
                 errno = EPERM;
                 return -1;
         }
         memset(snapshot, 0, sizeof(*snapshot));
-        for (sk = nsock_list_local(); sk != NULL; sk = sk->next) {
+        capacity = socket_owner_slot_capacity_local();
+        for (uint32_t id = 0; id < capacity; id++) {
+                struct nsock *sk = socket_owner_slot_at_local(id);
+
+                if (sk == NULL)
+                        continue;
                 if (sk->protocol != IPPROTO_TCP)
                         continue;
                 snapshot->total++;
@@ -237,23 +242,45 @@ int owner_io_tcp_lifecycle_snapshot(
 }
 
 uint32_t owner_io_tcp_force_cleanup(void) {
-        struct nsock *sk = nsock_list_local();
+        uint32_t capacity;
         uint32_t cleaned = 0;
 
         if (owner_timer_engine_current() == NULL) {
                 errno = EPERM;
                 return 0;
         }
-        while (sk != NULL) {
-                struct nsock *next = sk->next;
+        capacity = socket_owner_slot_capacity_local();
 
-                if (sk->protocol == IPPROTO_TCP) {
-                        sk->app_closed = true;
-                        socket_owner_abort_waiters(sk, ECANCELED);
-                        tcp_force_abort(sk, ECANCELED, "owner-force-cleanup");
+        /* Count first because destroying a listener also retires its children.
+         */
+        for (uint32_t id = 0; id < capacity; id++) {
+                struct nsock *sk = socket_owner_slot_at_local(id);
+
+                if (sk != NULL && sk->protocol == IPPROTO_TCP)
                         cleaned++;
-                }
-                sk = next;
+        }
+
+        /* Listeners own accept-queued and half-open children; destroy them
+         * first so no later per-slot cleanup can leave a dangling queue entry.
+         */
+        for (uint32_t id = 0; id < capacity; id++) {
+                struct nsock *sk = socket_owner_slot_at_local(id);
+
+                if (sk == NULL || sk->protocol != IPPROTO_TCP ||
+                    sk->u.tcp.status != TCP_STATUS_LISTEN)
+                        continue;
+                sk->app_closed = true;
+                tcp_force_abort(sk, ECANCELED, "owner-force-cleanup");
+        }
+
+        for (uint32_t id = 0; id < capacity; id++) {
+                struct nsock *sk = socket_owner_slot_at_local(id);
+
+                if (sk == NULL || sk->protocol != IPPROTO_TCP)
+                        continue;
+                sk->app_closed = true;
+                socket_owner_abort_waiters(sk, ECANCELED);
+                tcp_force_abort(sk, ECANCELED, "owner-force-cleanup");
         }
         return cleaned;
 }

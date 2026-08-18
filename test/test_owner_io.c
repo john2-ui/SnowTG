@@ -9,6 +9,7 @@
 #include <rte_eal.h>
 #include <rte_launch.h>
 #include <rte_lcore.h>
+#include <rte_ring.h>
 #include <rte_timer.h>
 
 static void count_release(void *ctx) {
@@ -293,6 +294,56 @@ int main(int argc, char **argv) {
         assert(owner_io_tcp_force_cleanup() == 3);
         assert(lifecycle_release_count == 4);
         assert(timer_engine.active == 0);
+
+        /* Listener cleanup owns both accept-queued and half-open children;
+         * force cleanup must retire them without a registry-wide scan or a
+         * dangling accept_queue entry. */
+        struct nsock_handle listener_handle;
+        struct sockaddr_in listener_addr = {
+            .sin_family = AF_INET,
+            .sin_addr.s_addr = local_ip,
+            .sin_port = rte_cpu_to_be_16(49100),
+        };
+        unsigned int listener_release_count = 0;
+        assert(owner_io_socket_create_local(IPPROTO_TCP, &listener_handle) ==
+               0);
+        assert(owner_io_bind(listener_handle,
+                             (const struct sockaddr *)&listener_addr,
+                             sizeof(listener_addr)) == 0);
+        struct nsock *listener =
+            socket_owner_resolve_local(listener_handle);
+        assert(listener != NULL);
+        assert(listener->ops->listen(listener, 2) == 0);
+        nsock_set_release_observer(listener, count_release,
+                                   &listener_release_count);
+
+        struct nsock *half_open = nsock_alloc(IPPROTO_TCP);
+        struct nsock *accept_queued = nsock_alloc(IPPROTO_TCP);
+        assert(half_open != NULL && accept_queued != NULL);
+        assert(socket_owner_adopt(half_open) == 0);
+        assert(socket_owner_adopt(accept_queued) == 0);
+        half_open->u.tcp.status = TCP_STATUS_SYN_RECV;
+        accept_queued->u.tcp.status = TCP_STATUS_ESTABLISHED;
+        tcp_listener_child_attach(listener, half_open);
+        tcp_listener_child_attach(listener, accept_queued);
+        listener->u.tcp.syn_pending = 1;
+        assert(rte_ring_mp_enqueue(listener->u.tcp.accept_queue,
+                                   accept_queued) == 0);
+        nsock_set_release_observer(half_open, count_release,
+                                   &listener_release_count);
+        nsock_set_release_observer(accept_queued, count_release,
+                                   &listener_release_count);
+
+        memset(&lifecycle, 0, sizeof(lifecycle));
+        assert(owner_io_tcp_lifecycle_snapshot(&lifecycle) == 0);
+        assert(lifecycle.total == 3);
+        assert(lifecycle.states[TCP_STATUS_LISTEN] == 1);
+        assert(lifecycle.states[TCP_STATUS_SYN_RECV] == 1);
+        assert(lifecycle.states[TCP_STATUS_ESTABLISHED] == 1);
+        assert(owner_io_tcp_force_cleanup() == 3);
+        assert(listener_release_count == 3);
+        assert(timer_engine.active == 0);
+        assert(socket_owner_resolve_local(listener_handle) == NULL);
 
         unsigned int worker_lcore = rte_get_next_lcore(rte_lcore_id(), 1, 0);
         if (worker_lcore != RTE_MAX_LCORE && rte_eal_has_hugepages()) {

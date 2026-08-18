@@ -17,6 +17,10 @@ struct udp_owner_memory;
 
 /** Resolve a generation-checked handle on its owner lcore, or set errno. */
 struct nsock *socket_owner_resolve_local(struct nsock_handle handle);
+/** Number of generation-protected object slots owned by the current lcore. */
+uint32_t socket_owner_slot_capacity_local(void);
+/** Return one current owner-local object by slot, or NULL for a vacant slot. */
+struct nsock *socket_owner_slot_at_local(uint32_t id);
 /** Coalesce readiness bits for a live owner-local socket. */
 void socket_owner_ready_post(struct nsock *sk, uint32_t events);
 /** Remove up to @p max_events coalesced readiness records from the owner queue.

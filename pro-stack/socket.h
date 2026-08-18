@@ -16,8 +16,8 @@
  *
  * The socket API entry points are command producers.  Protocol lookup, state
  * mutation, timer processing, and final destruction all run on the owner
- * worker.  The socket list is retained for lifecycle enumeration; TX
- * scheduling is driven by the owner-local dirty TX queue.
+ * worker.  Lifecycle enumeration uses the owner's generation-protected slot
+ * table; TX scheduling is driven by the owner-local dirty TX queue.
  */
 #ifndef NETARCH_SOCKET_H
 #define NETARCH_SOCKET_H
@@ -128,9 +128,6 @@ struct nsock {
         uint8_t registry_flags; /**< Flags indicating the socket's registry
                                    state. */
 
-        struct nsock *prev; /**< Previous socket in its owner-local list. */
-        struct nsock *next; /**< Next socket in its owner-local list. */
-
         /*
          * A socket is linked on at most one TX work list at a time:
          * dirty_prev/dirty_next are used by either the dirty FIFO or the
@@ -155,10 +152,6 @@ int socket_registry_init_owner_with_capacity(unsigned int lcore_id,
                                              uint32_t capacity);
 /** @brief Release the process-wide fd table and all owner-local indexes. */
 void socket_registry_fini(void);
-/** Return the current worker's intrusive socket list, or NULL outside an owner.
- */
-struct nsock *nsock_list_local(void);
-
 /**
  * @brief Per-owner TX scheduler counters.
  *

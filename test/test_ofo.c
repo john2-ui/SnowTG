@@ -550,6 +550,51 @@ static void test_chunked_send_buffer_ack_reclaim(void) {
         tcp_test_sndbuf_free(&sk);
 }
 
+static void test_listener_child_list(void) {
+        struct nsock listener;
+        struct nsock first;
+        struct nsock middle;
+        struct nsock last;
+
+        memset(&listener, 0, sizeof(listener));
+        memset(&first, 0, sizeof(first));
+        memset(&middle, 0, sizeof(middle));
+        memset(&last, 0, sizeof(last));
+
+        tcp_listener_child_attach(&listener, &first);
+        tcp_listener_child_attach(&listener, &middle);
+        tcp_listener_child_attach(&listener, &last);
+        CHECK(listener.u.tcp.listener_child_head == &first);
+        CHECK(listener.u.tcp.listener_child_tail == &last);
+        CHECK(first.u.tcp.listener_child_next == &middle);
+        CHECK(middle.u.tcp.listener_child_prev == &first);
+        CHECK(middle.u.tcp.listener_child_next == &last);
+        CHECK(last.u.tcp.listener_child_prev == &middle);
+
+        tcp_listener_child_detach(&middle);
+        CHECK(middle.u.tcp.listener == NULL);
+        CHECK(middle.u.tcp.listener_child_prev == NULL);
+        CHECK(middle.u.tcp.listener_child_next == NULL);
+        CHECK(first.u.tcp.listener_child_next == &last);
+        CHECK(last.u.tcp.listener_child_prev == &first);
+
+        tcp_listener_child_detach(&first);
+        CHECK(listener.u.tcp.listener_child_head == &last);
+        CHECK(last.u.tcp.listener_child_prev == NULL);
+        tcp_listener_child_detach(&last);
+        CHECK(listener.u.tcp.listener_child_head == NULL);
+        CHECK(listener.u.tcp.listener_child_tail == NULL);
+
+        /* Reattachment first removes the child from its previous parent. */
+        tcp_listener_child_attach(&listener, &middle);
+        tcp_listener_child_attach(&first, &middle);
+        CHECK(listener.u.tcp.listener_child_head == NULL);
+        CHECK(listener.u.tcp.listener_child_tail == NULL);
+        CHECK(first.u.tcp.listener_child_head == &middle);
+        CHECK(first.u.tcp.listener_child_tail == &middle);
+        tcp_listener_child_detach(&middle);
+}
+
 int main(void) {
         char *eal_argv[] = {"test_ofo", "--in-memory", "--no-pci"};
 
@@ -565,6 +610,7 @@ int main(void) {
         test_teardown_stream_receive_and_eof();
         test_initial_send_window_update();
         test_chunked_send_buffer_ack_reclaim();
+        test_listener_child_list();
         puts("test_ofo: PASS");
         return EXIT_SUCCESS;
 }

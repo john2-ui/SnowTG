@@ -76,6 +76,8 @@ static void tcp_drain_send(struct nsock *sk);
 static void tcp_drain_recv(struct nsock *sk);
 static void tcp_abort_stream(struct nsock *sk, int error, bool send_reset,
                              const char *reason);
+static void tcp_close_listener(struct nsock *sk, int error,
+                               const char *reason);
 static bool tcp_enter_time_wait(struct nsock *sk);
 static void tcp_timer_cb(struct owner_timer *timer, void *arg,
                          uint64_t now_cycles);
@@ -827,6 +829,54 @@ static uint32_t tcp_next_isn(void) {
         }
         tcp_isn_state += 0x9e3779b1u; /* golden-ratio-ish step per stream */
         return tcp_isn_state;
+}
+
+/** Link an unaccepted passive-open child to its owning listener. */
+void tcp_listener_child_attach(struct nsock *listener, struct nsock *child) {
+        if (listener == NULL || child == NULL || listener == child)
+                return;
+
+        tcp_listener_child_detach(child);
+        child->u.tcp.listener = listener;
+        child->u.tcp.listener_child_prev =
+            listener->u.tcp.listener_child_tail;
+        child->u.tcp.listener_child_next = NULL;
+        if (listener->u.tcp.listener_child_tail != NULL)
+                listener->u.tcp.listener_child_tail->u.tcp
+                    .listener_child_next = child;
+        else
+                listener->u.tcp.listener_child_head = child;
+        listener->u.tcp.listener_child_tail = child;
+}
+
+void tcp_listener_child_detach(struct nsock *child) {
+        struct nsock *listener;
+
+        if (child == NULL)
+                return;
+        listener = child->u.tcp.listener;
+        if (listener == NULL) {
+                child->u.tcp.listener_child_prev = NULL;
+                child->u.tcp.listener_child_next = NULL;
+                return;
+        }
+
+        if (child->u.tcp.listener_child_prev != NULL)
+                child->u.tcp.listener_child_prev->u.tcp.listener_child_next =
+                    child->u.tcp.listener_child_next;
+        else
+                listener->u.tcp.listener_child_head =
+                    child->u.tcp.listener_child_next;
+        if (child->u.tcp.listener_child_next != NULL)
+                child->u.tcp.listener_child_next->u.tcp.listener_child_prev =
+                    child->u.tcp.listener_child_prev;
+        else
+                listener->u.tcp.listener_child_tail =
+                    child->u.tcp.listener_child_prev;
+
+        child->u.tcp.listener = NULL;
+        child->u.tcp.listener_child_prev = NULL;
+        child->u.tcp.listener_child_next = NULL;
 }
 
 /**
@@ -1816,7 +1866,7 @@ static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
                 return 0;
         }
         /* Used by tcp_state_syn_recv to wake naccept on the parent. */
-        child->u.tcp.listener = listener;
+        tcp_listener_child_attach(listener, child);
         tcp_options_negotiate_syn(child, opts);
 
         listener->u.tcp.syn_pending++;
@@ -2749,6 +2799,10 @@ static void tcp_abort_stream(struct nsock *sk, int error, bool send_reset,
 }
 
 void tcp_force_abort(struct nsock *sk, int error, const char *reason) {
+        if (sk != NULL && sk->u.tcp.status == TCP_STATUS_LISTEN) {
+                tcp_close_listener(sk, error, reason);
+                return;
+        }
         tcp_abort_stream(sk, error, true, reason);
 }
 
@@ -3428,6 +3482,44 @@ static void tcp_drain_recv(struct nsock *sk) {
         sk->u.tcp.rcvbuf_used = 0;
 }
 
+/** Destroy a listener and every passive child it still owns. */
+static void tcp_close_listener(struct nsock *sk, int error,
+                               const char *reason) {
+        if (sk->u.tcp.accept_queue != NULL) {
+                struct nsock *child;
+
+                while (rte_ring_sc_dequeue(sk->u.tcp.accept_queue,
+                                           (void **)&child) == 0) {
+                        tcp_drain_send(child);
+                        tcp_drain_recv(child);
+                        nsock_free(child);
+                }
+                rte_ring_free(sk->u.tcp.accept_queue);
+                sk->u.tcp.accept_queue = NULL;
+        }
+
+        while (sk->u.tcp.listener_child_head != NULL) {
+                struct nsock *child = sk->u.tcp.listener_child_head;
+
+                /* Accepted children normally detach in tcp_accept_owned(). */
+                if (child->app_visible) {
+                        tcp_listener_child_detach(child);
+                        continue;
+                }
+                tcp_drain_send(child);
+                tcp_drain_recv(child);
+                nsock_free(child);
+        }
+
+        sk->u.tcp.syn_pending = 0;
+        socket_owner_abort_waiters(sk, error);
+        LOG_TCP_INFO(TCP_SK_FMT " event=listener-destroy reason=%s",
+                     TCP_SK_ARG(sk), reason == NULL ? "unknown" : reason);
+        tcp_drain_send(sk);
+        tcp_drain_recv(sk);
+        nsock_free(sk);
+}
+
 /**
  * @brief Start TCP teardown without blocking the owning packet worker.
  *
@@ -3449,43 +3541,7 @@ int tcp_close(struct nsock *sk) {
         }
 
         if (status == TCP_STATUS_LISTEN) {
-                /*
-                 * Completed but unaccepted children are owned by the accept
-                 * queue.  Accepted children survive listener close; sever
-                 * their parent pointer before freeing the listener.
-                 */
-                if (sk->u.tcp.accept_queue != NULL) {
-                        struct nsock *child;
-                        while (rte_ring_sc_dequeue(sk->u.tcp.accept_queue,
-                                                   (void **)&child) == 0) {
-                                tcp_drain_send(child);
-                                tcp_drain_recv(child);
-                                nsock_free(child);
-                        }
-                        rte_ring_free(sk->u.tcp.accept_queue);
-                        sk->u.tcp.accept_queue = NULL;
-                }
-
-                struct nsock *cur = nsock_list_local();
-                while (cur != NULL) {
-                        struct nsock *next = cur->next;
-                        if (cur != sk && cur->protocol == IPPROTO_TCP &&
-                            cur->u.tcp.listener == sk) {
-                                if (cur->app_visible) {
-                                        cur->u.tcp.listener = NULL;
-                                } else {
-                                        tcp_drain_send(cur);
-                                        tcp_drain_recv(cur);
-                                        nsock_free(cur);
-                                }
-                        }
-                        cur = next;
-                }
-
-                sk->u.tcp.syn_pending = 0;
-                tcp_drain_send(sk);
-                tcp_drain_recv(sk);
-                nsock_free(sk);
+                tcp_close_listener(sk, ECANCELED, "listener-close");
                 return 0;
         }
 
@@ -3812,6 +3868,8 @@ struct nsock *tcp_accept_owned(struct nsock *sk) {
                         nsock_free(child);
                         continue;
                 }
+
+                tcp_listener_child_detach(child);
 
                 LOG_INFO("tcp_accept listener=%u -> child=%u peer " IP_FMT
                          ":%u",
