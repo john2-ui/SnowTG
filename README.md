@@ -222,6 +222,7 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 ##### P1 — 生命周期语义与 owner 边界收尾
 
 - [ ] **定义 TCP 关闭策略**：实现并验证 graceful close、abortive close、`SO_LINGER`，以及 FIN 分配/入队失败时的 RST 或本地终止策略。
+- [ ] **修复长测结束后的 TCP 排空永久等待**：六小时 `http-long-run` 在停止发车并完成全部事务后，仍有 435 个 `live_sockets`，owner TCP TX 池中还有 75 个对象至少八小时未归还。为 `FIN_WAIT_2` 增加有限超时；数据或 FIN RTO 达到上限时，对已经 `app_closed` 的 TCB 执行 abort 和完整回收；traffic-gen 排空阶段增加总 deadline、残留 TCP 状态统计和可计数的强制清理。验收要求正常输出 `final`/`aggregate`，所有 worker 的 `active`、`live_sockets` 归零，TCP/OFO 缓冲区与 owner pool 恢复到基线容量。
 - [ ] **完善 command 生命周期与取消**：当前 command 位于调用线程栈上，调用者必须等待 completion；加入超时、线程取消、异步 API 或 coroutine 前，应改为 slab/heap command，并设计引用计数、取消状态和 late completion。
 - [ ] **改进 command ring 背压**：当前 ring 满时 app lcore 通过 `rte_pause()` 忙等；评估 per-app ring、控制命令保留容量、eventfd/futex 或高低水位，同时保证 CLOSE 等生命周期命令绝不丢失。
 - [x] **删除 owner 内遗留锁与条件变量**：审计 `sk->mutex` / `sk->cond` 的全部调用点，在确认 SEND、ACK、timer、TX 都只由 owner 执行后移除冗余同步。

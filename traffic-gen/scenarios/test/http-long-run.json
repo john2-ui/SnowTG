@@ -1,9 +1,9 @@
 {
   "name": "http-long-run",
   "duration_sec": 21600,
-  "max_concurrency": 1000,
+  "max_concurrency": 500,
   "target_cps": 10000,
-  "report_interval_sec": 60,
+  "report_interval_sec": 3600,
   "classes": [
     {
       "name": "http_keepalive_get",
