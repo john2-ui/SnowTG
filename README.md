@@ -1,6 +1,6 @@
 # dpdk-l 用户态协议栈 — 架构与功能状态
 
-本文档描述仓库中**当前现网模块** [pro-stack/](pro-stack/) 的文件架构、已完成能力与协议栈/流量发生器路线图。行号会随代码变动；A 类 `pro-stack` 待办以源码中的 `TODO` 注释为参考，B 类整体设计待办以 [DESIGN-traffic-gen.md](DESIGN-traffic-gen.md) 为准。
+本文档描述仓库中**当前现网模块** [pro-stack/](pro-stack/) 的文件架构、已完成能力与协议栈/流量发生器路线图。行号会随代码变动；实现细节以源码和测试为准，traffic-gen 的完整设计见 [DESIGN-traffic-gen.md](docs/DESIGN-traffic-gen.md)。
 
 总目标：**先做成功能完备的 TCP 协议栈**（可靠性、流控、选项、RST 等），再补强 **ARP / ICMP** 与网络层（分片、路由等），并在此基础上完成可复现的 traffic-gen 闭环。文档中的长期设计一律按高效方案书写；当前低效实现仅作为过渡状态说明。
 
@@ -17,10 +17,19 @@ pro-stack/
 ├── sock_ops.h          每协议 ops 向量 + sock_ops_lookup
 ├── pkt_frame.h / .c    共享 Ethernet+IPv4 组帧 helper (eth_ipv4_build)
 ├── tcp.h / tcp.c       TCP：表驱动状态机、tcp_ops、编解码/egress、定时器
+├── tcp_ofo.h / .c      TCP 乱序队列、压力控制与指标
+├── tcp_options.h / .c  MSS/窗口缩放/Timestamp/SACK 选项
+├── tcp_rtt.h / .c      RTT 采样、SRTT/RTTVAR 与 RTO
+├── tcp_sack.h / .c     SACK scoreboard 与丢包恢复
+├── tcp_cc*             NewReno/CUBIC 拥塞控制
 ├── udp.h / udp.c       UDP：udp_ops、收发、egress
+├── tcp_memory.*        owner-local TCP 固定对象池
+├── udp_memory.*        owner-local UDP RX 节点池
 ├── socket_api.h        兼容 shim（#include "socket.h"）
 ├── arp.h / arp.c       ARP 表 + ARP 包构造/处理
 ├── icmp.h / icmp.c     ICMP echo reply
+├── ipv4_reassembly.*   IPv4 分片重组与过期维护
+├── rx_dispatch.*       硬件 RSS 回退时的软件流分发
 ├── net_context.h / .c  全局本端身份 g_net（port/ip/mac/mempool）
 ├── ring.h / ring.c     NIC↔worker 的 in/out 环
 ├── port.h / port.c     以太网端口初始化
@@ -34,7 +43,11 @@ test/
 ├── test_rbtree.c       红黑树单元测试
 ├── test_ofo.c          TCP OFO 队列单元测试
 ├── test_tcp_paws.c     TCP PAWS 单元测试
+├── test_tcp_sack.c     TCP SACK/恢复单元测试
+├── test_tcp_cc.c       拥塞控制单元测试
 ├── test_owner_io.c     owner_io / ready queue 回归测试
+├── test_flow_udp.c     UDP flow 与 owner-local API 回归测试
+├── test_*              RSS、IPv4 重组、scenario、CSV 等测试
 └── Makefile            统一测试构建目标
 
 apps/
@@ -44,7 +57,9 @@ apps/
 
 traffic-gen/
 ├── main_tg.c           独立发生器入口
-├── reactor.h / .c      owner-local ready-event 消费与 flow 驱动边界
+├── core/               reactor、scheduler、flow、连接池、统计与 scenario
+├── proto/              HTTP 与 DNS L7 插件
+├── scenarios/          可复现测试剧本
 └── Makefile            链接 pro-stack 静态库生成 build/traffic-gen
 ```
 
@@ -112,22 +127,29 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 ### 基础设施
 
 - DPDK EAL 初始化、单端口 burst 收发、丢包统计（[apps/stack-demo/](apps/stack-demo/)）
-- 软件环 `in/out` 单例（[ring.c](pro-stack/ring.c)）
+- 按 owner/lcore 分片的 NIC↔worker `in/out` 软件环（[ring.c](pro-stack/ring.c)）
 - 全局本端身份 `g_net`（[net_context.c](pro-stack/net_context.c)）
 - 分级日志 + IP/MAC 格式化（[log.h](pro-stack/log.h)）
 - 编译期功能开关 `ENABLE_*`（[config.h](pro-stack/config.h)）
 - `rte_timer`：TCP SYN_SENT RTO（指数退避）与 TIME_WAIT 2MSL；packet worker 周期维护 ARP 缓存
+- IPv4、TCP 和 UDP RX 软件校验；IPv4 UDP 零校验和按 RFC 768 接受
+- IPv4 分片在进入 L4 前通过 `rte_ip_frag` 重组，并对表项执行定期过期维护（[ipv4_reassembly.c](pro-stack/ipv4_reassembly.c)）
+- 多 RX/TX queue；优先使用硬件 RSS 固定四元组 owner，能力不足时回退到单 RX queue 软件分发
 
 
 
 ### socket 层
 
-- 统一 `struct nsock`，UDP/TCP 共用 `g_sock_list` 供过渡性 TX 遍历（[socket.c](pro-stack/socket.c)）
+- 统一 `struct nsock`；`g_sock_list` 仅保留为 owner-local 生命周期索引，TX 使用 dirty socket queue（[socket.c](pro-stack/socket.c)）
 - fd→代际句柄表 O(1) 查找与分配（`NSOCK_FD_MAX=1024`）
 - socket 注册表：UDP 本地二元组、TCP 本地 bind、listener 与 TCP 四元组均通过 `rte_hash` 索引
-- **单 owner 生命周期**：fd 表保存代际句柄；应用命令不携带裸指针；packet ingress、TCP timer、状态迁移与 `nsock_free` 全部归同一 worker
+- **per-worker owner 生命周期**：fd 表保存代际句柄；应用命令不携带裸指针；packet ingress、TCP timer、状态迁移与 `nsock_free` 全部归流所属 worker
+- owner slot、ready 资源、协议 registry 和 flow map 按 lcore 分片；endpoint hash 不走全局锁
+- worker 只冲洗 dirty socket；ARP 未解析的 socket 按邻居分桶等待，邻居学习后事件唤醒
 - 阻塞 `send/recv/connect/accept` 使用 owner-only waiter 队列；owner 遇到 `EAGAIN/EINPROGRESS` 时挂起命令但不阻塞包处理
 - `nclose` 原子撤销 fd 后仅发起协议关闭；TCP TCB 可继续经历 FIN/TIME_WAIT，终态由 owner 延迟释放；generation 防止 slot 复用 ABA
+- owner 数据路径已移除 socket mutex/condition variable；recv/send ring 的 producer/consumer 和 SPSC flags 已收紧
+- traffic-gen owner socket 容量按 scenario 和 shard 自动计算，并支持 `--socket-id-max`；app-visible fd 与 TCP 缓冲预算独立配置
 - BSD/app-visible socket 使用唯一命名的 recv/send 环
 `sock_recv_%u / sock_send_%u`；traffic-gen owner-local socket 不创建这两个环
 - BSD 风格 API：`nsocket / nbind / nsend / nrecv / nsendto / nrecvfrom / nclose / nconnect / nlisten / naccept`
@@ -165,8 +187,13 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 - **被动打开**：LISTEN → SYN_RECV → ESTABLISHED；`tcp_listen` backlog + `accept_queue`；`tcp_accept` 分配 fd
 - **主动打开**：CLOSED → SYN_SENT → ESTABLISHED；隐式 bind + 临时端口；SYN RTO + 指数退避
 - **控制段 RTO**：SYN_SENT / SYN_RECV（SYN+ACK）与 FIN（FIN_WAIT_1 / LAST_ACK / CLOSING）独立定时重传
-- ESTABLISHED：累计 ACK、`tcp_rx_blob` 按序交付；OOO 通过 RB-tree（查找）+ 双向链表（drain）重组，保留重叠裁剪与 FIN；每 TCB 和全局 OFO 内存均有上限
-- **发送滑动窗口**：`sndbuf` + `snd_una`/`sent_seq`；按对端通告窗口限制 TX，TX 后数据保留至 ACK；数据 RTO（Go-Back-N）；按 `TCP_DEFAULT_MSS` 切段
+- ESTABLISHED：累计 ACK、`tcp_rx_blob` 按序交付；OOO 通过 RB-tree（查找）+ 双向链表（drain）重组，保留重叠裁剪与 FIN；每 TCB 和 owner OFO 内存均有上限
+- **OFO 压力控制与可观测性**：正常模式保留 32 节点硬上限；依据 descriptor/payload pool、owner 字节预算和本轮最大乱序距离，在压力状态使用 8/16/24 节点档位；runtime/CSV 提供 current、peak、接受/释放、距离、drop 和压力切换指标
+- **TCP 选项**：MSS、窗口缩放、Timestamp/PAWS、SACK-Permitted、SACK 与 D-SACK 的解析、协商和发送
+- **发送滑动窗口**：`sndbuf` + `snd_una`/`sent_seq`；按对端通告窗口和协商 MSS 限制 TX，TX 后数据保留至 ACK
+- **RTT/RTO**：Timestamp/ACK 采样、SRTT/RTTVAR、自适应 RTO、Karn 抑制和超时退避
+- **丢包恢复**：重复 ACK、NewReno 快重传/快恢复，以及 RFC 6675 SACK scoreboard、Pipe/NextSeg 恢复
+- **拥塞控制**：可选 NewReno 与 RFC 9438 CUBIC；CUBIC 包含 HyStart++，默认算法由编译期配置选择
 - **发送侧应用背压**：本地高水位与对端窗口共同限制写入；阻塞请求停放在 owner waiter 队列，`MSG_DONTWAIT` 返回 `EAGAIN`
 - **被动拆除**：ESTABLISHED → CLOSE_WAIT → LAST_ACK → CLOSED
 - **主动拆除**：FIN_WAIT_1/2、CLOSING、TIME_WAIT（2MSL 定时器）
@@ -179,190 +206,88 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 
 - `eth_ipv4_build` 共享 L2/L3；UDP/TCP 仅填 L4（[pkt_frame.c](pro-stack/pkt_frame.c)）
 
+
+
+### traffic-gen
+
+- 独立二进制入口；reactor 与 socket owner 同核，通过 owner-local 非阻塞 transport API 驱动 flow
+- JSON scenario、CPS token bucket、并发水位、flow/transaction 对象池和资源背压
+- HTTP/1.1 GET、HTTP keep-alive 连接池、短连接，以及 UDP DNS 插件
+- per-worker shard、硬件 RSS/软件分发、四元组固定归属和 owner-local L7 parser
+- 按 worker 采集吞吐、并发、延迟、错误分类、内存、dirty TX、ring/NIC drop 和 OFO 指标；低频汇总并写入 CSV
+- 已完成 1k → 1 万 → 10 万并发的多 worker 爬坡记录；环境、参数和瓶颈归档于 [PERFORMANCE.md](docs/PERFORMANCE.md)
+
+
+
+### 测试与工程化
+
+- TCP OFO、PAWS、SACK、拥塞控制、临时端口、owner_io、ARP、RSS/端口拓扑、UDP flow、IPv4 重组、scenario/scheduler、CSV 和协议插件回归测试
+- 生命周期并发回归覆盖 close 与 pending 操作、slot/fd 复用、RST/timer、listener/child、FIN/TIME_WAIT 和 UDP pending receive
+- 根目录 [run-sanitizers.sh](run-sanitizers.sh) 支持一键 ASan/UBSan 独立构建和完整测试
+- 已删除 `nsock->fd` 等失真兼容字段，并同步 OFO、ring ownership 与 SPSC 约束文档
+
 ---
 
 
 
 ## 三、TODO 与路线图
 
-本仓库的待办分为两类：
+本节只保留尚未完成的工作，不再混列历史完成项。优先级为：**先修正确性和退出问题，再补公开 API 与事件模型，最后扩展性能、网络协议和产品能力**。
 
-1. **完善** `pro-stack`：协议正确性、socket 生命周期、网络层与性能扩展；
-2. **整体设计与开发**：以流量发生器为目标的事件模型、调度器、L7 插件和可复现实测。
+### P0 — TCP 正确性与可靠退出
 
-第一类中的位置标注为源码 `TODO`（约数，以注释为准）；第二类的完整设计、
-验收口径和分期见 [DESIGN-traffic-gen.md](docs/DESIGN-traffic-gen.md)。
-
-### A. 完善 `pro-stack` 的 TODO
-
-优先级：**完备 TCP（P0/P1）→ ARP/ICMP 与网络层（P2）**。
-
-#### P0 — TCP 正确性（丢包/乱序/窗口下仍可用）
-
-本阶段原有的发送背压与 socket 生命周期并发项均已完成：前者由 `sndbuf` 高水位、对端窗口和 owner waiter 实现；后者采用严格 worker ownership、代际句柄与终态延迟释放。后续压力测试仍需覆盖 fd 快速复用、close/RST/timer 竞态和多应用线程共享 fd。
-
-#### Socket owner 后续 TODO
-
-以下事项是单 owner 架构落地后的剩余工作，详细背景和约束见 [DevLog ARC-002](docs/DevLog.md#arc-002socket-单-owner代际句柄与命令队列)。
-
-##### P0 — 正确性与回归门槛
-
-- [ ] ~~**补齐生命周期并发压力测试**：覆盖~~ `nclose` ~~与 SEND/RECV 并发、fd/owner slot 高频复用、SYN_SENT timeout 与 close、RST 与 pending waiter、listener close 与半连接/已 accept child、FIN/TIME_WAIT 回收、UDP pending RECVFROM，以及多 app lcore 共享 fd。~~
-- [x] **引入动态竞态检查**：在构建环境允许时运行 ASan/UBSan，并补充真实 NIC 长时间流量测试，确认 command、timer 与延迟回收不存在 UAF、double-free 或 waiter 遗失。
-- [x] **把 traffic-gen owner socket 上限配置化**：启动时按 scenario 的
-  `max_concurrency / active_shards` 自动计算 per-owner `NSOCK_ID_MAX` 容量，
-  默认保留两倍关闭中 socket 余量，并支持 `--socket-id-max N` 增大容量；
-  owner 槽表、ready 资源、协议 registry 和 flow map 使用同一容量。
-- [x] **把 app-visible fd 和缓冲预算配置化**：继续独立调整
-  `NSOCK_FD_MAX`，并为 TCP 发送/接收缓冲设定每连接与全局内存预算；
-  真实 1k～1 万并发验收仍需在 NIC 上完成，不能只依据默认容量。
-
-
-
-##### P1 — 生命周期语义与 owner 边界收尾
-
-- [ ] **定义 TCP 关闭策略**：实现并验证 graceful close、abortive close、`SO_LINGER`，以及 FIN 分配/入队失败时的 RST 或本地终止策略。
 - [ ] **修复长测结束后的 TCP 排空永久等待**：六小时 `http-long-run` 在停止发车并完成全部事务后，仍有 435 个 `live_sockets`，owner TCP TX 池中还有 75 个对象至少八小时未归还。为 `FIN_WAIT_2` 增加有限超时；数据或 FIN RTO 达到上限时，对已经 `app_closed` 的 TCB 执行 abort 和完整回收；traffic-gen 排空阶段增加总 deadline、残留 TCP 状态统计和可计数的强制清理。验收要求正常输出 `final`/`aggregate`，所有 worker 的 `active`、`live_sockets` 归零，TCP/OFO 缓冲区与 owner pool 恢复到基线容量。
+- [ ] **定义完整 TCP 关闭策略**：实现并验证 graceful close、abortive close、`SO_LINGER`，以及 FIN 分配/入队失败、对端长期不发 FIN 和重传耗尽时的 RST 或本地终止策略。
+- [ ] **统一拆除态接收交付**：ESTABLISHED 已使用 `tcp_rx_blob`；FIN_WAIT/CLOSE_WAIT 等携带 payload 的路径也应统一经过 stream 重组、接收窗口和 EOF 交付，不保留状态专用旁路。
+
+
+
+### P1 — 公开 API、事件模型与 owner 命令
+
 - [ ] **完善 command 生命周期与取消**：当前 command 位于调用线程栈上，调用者必须等待 completion；加入超时、线程取消、异步 API 或 coroutine 前，应改为 slab/heap command，并设计引用计数、取消状态和 late completion。
 - [ ] **改进 command ring 背压**：当前 ring 满时 app lcore 通过 `rte_pause()` 忙等；评估 per-app ring、控制命令保留容量、eventfd/futex 或高低水位，同时保证 CLOSE 等生命周期命令绝不丢失。
-- [x] **删除 owner 内遗留锁与条件变量**：审计 `sk->mutex` / `sk->cond` 的全部调用点，在确认 SEND、ACK、timer、TX 都只由 owner 执行后移除冗余同步。
-- [ ] ~~**收紧跨 lcore 数据结构约束**：修正仍描述 app 直接消费~~ `recv_buf`~~、共同生产~~ `send_buf` ~~的旧注释，并在确认唯一 producer/consumer 后收紧 DPDK ring flags。~~
-
-
-
-##### P2 — 性能与多 worker 扩展
-
-- [x] **用 dirty socket queue 替代全量 TX 遍历**：socket 从无发送工作变为有发送工作时入队，worker 只 flush 活跃 socket；ARP 未解析时进入按邻居分桶的等待队列。
-- [x] **扩展为 per-worker socket owner**：将当前单例 `g_owner` 改为按 worker/lcore 分片的 context；结合硬件 RSS 保证同一四元组固定归属同一 worker，并同步分片 slot、协议 hash、timer 与 dirty queue。
-- [x] **分片 socket registry**：单 owner 下将 endpoint hash 转为 owner-local；多 worker 时按 RSS/owner 分片 fd 之外的协议注册表，避免全局 `registry_lock` 回到数据路径。
-
-
-
-##### P3 — 兼容字段与文档清理
-
-- [x] **删除诊断用途的** `nsock->fd`：日志已使用 `{id, generation}`，该字段及无意义的分配参数已移除。
-- [x] **清理已失真的源码 TODO 与注释**：OFO 注释已同步 RB-tree + 有序链表实现；recv/send ring 已明确为 owner 内 SPSC，并收紧相应 flags/API。
-
-
-
-#### P1 — 完备 TCP（选项、拥塞、校验、API）
-
-
-| 功能              | 位置                                                                                             | 说明 / 目标设计                                                                              |
-| --------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| TCP 选项          | [tcp.c](pro-stack/tcp.c) ~2104                                                                 | 解析/协商 MSS、窗口缩放、SACK、时间戳                                                                |
-| 拥塞控制            | —                                                                                              | 无 cwnd/ssthresh。目标：至少 Reno（慢启动 / 拥塞避免 / 快重传快恢复）                                        |
-| 协商 MSS / 选项驱动分段 | [tcp.c](pro-stack/tcp.c) 选项 TODO                                                               | 发送已按 `TCP_DEFAULT_MSS` 切段；目标：握手协商 MSS 后按协商值切                                           |
-| RTT → RTO       | —                                                                                              | 数据路径固定 RTO + 退避，无 SRTT/RTTVAR                                                          |
-| 重复 ACK / 快重传    | —                                                                                              | 依赖 ACK 处理与 SACK（可选）                                                                    |
-| RX 校验和          | [stack_runtime.c](pro-stack/stack_runtime.c)、[tcp.c](pro-stack/tcp.c)、[udp.c](pro-stack/udp.c) | IPv4、TCP 与 UDP RX 已软件校验；IPv4 UDP 的零校验和按 RFC 768 接受                                     |
-| socket 选项       | —                                                                                              | `SO_REUSEADDR`、非阻塞、`TCP_NODELAY` 等                                                     |
-| 多连接应用调度         | [apps/tcp-echo/](apps/tcp-echo/)                                                               | 示例 echo server 在一个连接的阻塞 `nrecv` 循环中不会再 `accept`。目标：非阻塞 recv + poll/ready queue，或连接任务调度 |
-| 接收交付抽象          | 见上文                                                                                            | ESTABLISHED 已用 `tcp_rx_blob`；目标：统一 stream buffer，FIN_* 等状态同样走重组交付                      |
+- [ ] **落地公开 epoll-like 就绪模型**：提供 `READ` / `WRITE` / `CONNECTED` / `ERROR` / `HUP` 事件；同一 socket 按 `{id, generation}` 合并，并为 ready ring 满定义可恢复策略，不能静默丢失状态迁移。
+- [ ] **完成公开非阻塞 API 闭环**：补充 socket 级 nonblocking 状态、`naccept4(..., SOCK_NONBLOCK)`、`ngetsockopt(SO_ERROR)` 和一致的短读/短写/异步 connect 错误语义。
+- [ ] **补充常用 socket 选项**：至少覆盖 `SO_REUSEADDR`、`TCP_NODELAY` 和与非阻塞/linger 相关的查询与设置。
+- [ ] **改造示例应用的多连接调度**：TCP echo server 不应因单连接阻塞 `nrecv` 而停止 `accept`；改用公开 nonblocking + poll/ready API 或连接任务调度。
 
 
 
 
-#### P2 — ARP / ICMP / 网络层
+### P2 — 性能与资源效率
 
-
-| 功能            | 位置                                           | 说明 / 目标设计                                               |
-| ------------- | -------------------------------------------- | ------------------------------------------------------- |
-| 无故 ARP / 冲突检测 | —                                            | 无                                                       |
-| ICMP echo 负载  | [icmp.c](pro-stack/icmp.c) ~80               | reply 应回显请求负载                                           |
-| 非 echo ICMP   | [icmp.c](pro-stack/icmp.c) ~94               | destination unreachable / time exceeded 等，并向 UDP/TCP 上报 |
-| IP 分片重组       | [stack_runtime.c](pro-stack/stack_runtime.c) | 分片直送 L4。目标：IP 层重组后再交 L4                                 |
-| UDP 发送分片      | [udp.c](pro-stack/udp.c) ~204                | RX 校验和已实现；超 MTU 不分片                                     |
-| IPv6          | [stack_runtime.c](pro-stack/stack_runtime.c) | 仅 ARP + IPv4                                            |
-| 路由 / 多接口      | —                                            | 单接口、无路由表                                                |
+- [ ] **实现协议栈内部 payload 零拷贝**：在不改变现有应用缓冲区 API 的前提下，评估 TCP TX retained mbuf/引用计数、TCP RX/OFO mbuf slice 和 UDP RX 持有策略；必须带自动复制回退、资源上限、完整释放语义和可观测性。
+- [ ] **引入可扩展 timer 结构**：评估 timer wheel 或分层时间轮，替代高连接数下逐对象 timer/超时维护；先用 profile 证明收益，再改变现有 `rte_timer` 路径。
+- [ ] **移除剩余生命周期全链表扫描**：`g_sock_list` 只应承担必要的 owner-local 枚举；listener child、关闭中 TCB 和调试遍历逐步改用直接索引或专用队列。
+- [ ] **补齐延迟与容量可观测性**：增加 P50/P95/P99/最大值直方图，以及各 owner pool 的容量、当前值、峰值和失败原因，支持长测判断缓慢泄漏。
 
 
 
+### P3 — 网络协议与 traffic-gen 产品能力
 
-### B. 整体设计与开发的 TODO
+#### ARP、ICMP 与网络层
 
-本类工作将协议栈能力组织为可配置、可扩展、可复现的产品闭环；详细架构以
-[DESIGN-traffic-gen.md](docs/DESIGN-traffic-gen.md) 为准。
-
-#### P0 — 非阻塞事件模型与最小流量发生器
-
-- [ ] **落地 epoll-like 就绪模型**：提供 nonblocking socket 语义和
-  `READ` / `WRITE` / `CONNECTED` / `ERROR` / `HUP` 事件；同一 socket 的
-  ready 事件按 `{id, generation}` 合并，避免 fd 复用误唤醒和 ready ring
-  被高频事件打爆；同时定义 ready ring 满时的正确性策略（dirty bitmap、
-  重新扫描或背压），不得静默丢失 `CONNECTED` / `HUP` 等状态迁移。
-- [ ] **完成公开非阻塞 API 闭环**：transport probe 已能返回
-  `EAGAIN` / `EINPROGRESS`；补充 socket 级 nonblocking 状态、
-  `naccept4(..., SOCK_NONBLOCK)`、`ngetsockopt(SO_ERROR)` 及错误语义，
-  使应用可正确处理空 accept queue、异步 connect 成败、短读和短写。
-- [x] **提供 owner-local 热路径**：traffic-gen reactor 与 socket owner 同核，
-  通过受控 `try_*` 接口推进 flow；避免 app lcore 经 command ring +
-  `pthread_cond_wait()` 同步调用成为高并发瓶颈。
-- [ ] **确定 traffic-gen 集成方式**：明确独立二进制、`ENABLE_TRAFFIC_GEN`
-  挂入现有入口，或作为 owner worker 内 reactor task 的取舍；Phase A 可保留
-  app-lcore 兼容路径，但必须标注其只适合小规模过渡。
-- [x] **完成 Phase A traffic-gen**：剧本加载、CPS token bucket、并发水位、
-  flow/transaction 对象池、HTTP/1.1 GET 与 UDP DNS 插件、keep-alive 连接池和
-  短连接兼容路径。
-- [x] **完成可观测性与验收**：按 lcore 统计 CPS、并发、成功率、错误分类及
-  字节数；提供 `scenarios/`、启动参数和结果归档；混合剧本稳定运行至少
-  5 分钟，并记录可复现环境与实测结果。
+- [ ] **实现 Gratuitous ARP 与地址冲突检测**：启动或地址变更时主动通告，并检测重复地址。
+- [ ] **补全 ICMP echo payload**：reply 回显 request payload，而不只返回固定头部（[icmp.c](pro-stack/icmp.c)）。
+- [ ] **处理非 echo ICMP**：支持 destination unreachable、time exceeded 等，并向 UDP/TCP 上报可消费的异步错误。
+- [ ] **实现 UDP TX IPv4 分片**：当前超 MTU datagram 不分片；发送端应按 MTU 构造合法 fragment，并保持错误与部分发送语义明确。
+- [ ] **增加 IPv6 支持**：覆盖邻居发现、IPv6 输入输出和 TCP/UDP pseudo-header；当前仅支持 ARP + IPv4。
+- [ ] **增加路由与多接口**：引入路由选择、下一跳和按接口的本地身份；当前只有单接口、无路由表。
 
 
 
-#### P1 — 扩展性与工程化
 
-- [x] **per-core per-reactor 分片**：依赖 A/P2 的 per-worker socket owner、
-  registry 分片和 RSS；每个 RSS worker 同时承载协议 owner 和 traffic-gen
-  shard，四元组、flow、timer 与 L7 parser 不跨核迁移，指标低频汇总。
-- [ ] **定时器与发送路径扩展**：以 timer wheel 支撑事务超时；dirty TX
-  queue 已避免大量空闲连接的全 socket 扫描，后续仍需验证 timer wheel 的收益。
-- [x] **扩展协议与连接复用**：HTTP/1.1 keep-alive 并发连接池；Redis 或 MQTT
-  二选一仍待实现；延迟直方图和更细容量/内存预算仍待补充。
+#### traffic-gen 协议与产品闭环
 
-
-
-#### P2 — 高阶能力与规模验证
-
-- [ ] **扩展 L7 覆盖面**：可选 HTTPS（小并发或仅握手）和极简 MySQL 客户端。
-- [x] **多 worker 实测爬坡**：按 1k → 1 万 → 10 万并发逐档验证，记录硬件、
-  NIC 队列、巨页、剧本参数和瓶颈；未实测前不宣称百万连接能力。
-- [ ] **完善产品化入口**：提供启动参数/剧本样例、压测命令、结果报表和 README
-  使用说明。
+- [ ] **增加一种轻量长连接协议**：Redis 或 MQTT 二选一，复用现有 scenario、flow、连接池和统计抽象，验证 L7 插件边界不是 HTTP 专用。
+- [ ] **扩展高阶 L7 覆盖面**：可选 HTTPS（小并发或只测握手）和极简 MySQL 客户端；明确 TLS/数据库状态机带来的内存与 CPU 成本。
+- [ ] **完善产品化入口**：整理稳定的启动参数、scenario 样例、长测命令、结果报表和故障排查说明；把 benchmark 元数据与 CSV 一起归档，保证结果可复现。
 
 ---
 
 
 
-## 四、效率目标（用高效方案替换现状）（_表示已完成）
-
-下列现状可跑通演示，**不是**长期架构；实现完备 TCP 时应一并替换。
-
-
-| 现状（低效）                                                                                    | 目标（高效）                                                                                                       |
-| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| fd、UDP bind、TCP listener/4-tuple 与 ARP 已使用 `rte_hash`；`g_sock_list` 保留作生命周期索引             | ++TX 使用 owner-local dirty socket 队列++                                                                        |
-| worker 每轮遍历全部 socket 调 `tx_flush`                                                         | 仅冲洗有待发数据的 socket；ARP 等待由邻居学习事件唤醒                                                                             |
-| TCP OFO 使用 RB-tree（按 seq）+ 双向链表，插入定位 O(log n)、从 `recv_ack` drain O(1)，并限制节点、每 TCB 字节与 owner 字节 | ++增加可观测性指标；依据压力和乱序距离自适应调节上限++                                                                                  |
-| `tcp_send` → owner-local ACK-retained chunk 链（仅未确认数据占用内存）                                 | （可选）零拷贝 / mbuf 引用计数                                                                                          |
-| ARP 解析：按需 probe、缓存老化、容量淘汰与退避已实现                                                           | 全网扫描仅保留为可选、批量限速的调试手段                                                                                         |
-| 单 RX/TX queue、单 packet worker                                                             | ++多 queue + 硬件 RSS：同一四元组固定归属一个 worker；++ARP/ICMP、计时器、TX 和 socket 生命周期按 worker 分片。单 RX queue 或自定义亲和时再使用软件 RSS |
-
-TCP OFO 在正常内存状态下仍保留每 TCB 32 节点、`TCP_OFO_MAX_BYTES` 字节的原有硬上限。任一 owner-local
-OFO descriptor/payload pool 可用量不高于 64，或 owner OFO 字节达到预算 75% 时进入压力状态；仅当两个
-pool 可用量均不低于 128 且 owner OFO 字节低于预算 50% 时退出。压力状态不驱逐已缓存数据，只按当前 TCB
-本轮最大乱序距离限制后续插入：不高于 16 KiB 时为 8 节点/16 KiB，不高于 64 KiB 时为 16 节点/32 KiB，
-更远时为 24 节点/48 KiB；OFO 完全 drain 后重置本轮距离。
-
-runtime 与 traffic-gen CSV 会报告 OFO 当前/峰值节点和字节、接受/释放量、最大乱序距离、各类 drop、
-压力状态及切换次数。累计计数跨 worker 求和，当前 gauge 取各 worker 最新值后求和，峰值与最大距离取最大值。
-
-
----
-
-
-
-## 六、构建与运行
+## 四、构建与运行
 
 ```bash
 # 1. 只构建可被上层链接的协议栈静态库
