@@ -54,7 +54,10 @@ static int remote_owner_entry(void *arg) {
 
 int main(int argc, char **argv) {
         assert(rte_eal_init(argc, argv) >= 0);
-        rte_timer_subsystem_init();
+        struct owner_timer_engine timer_engine;
+        assert(owner_timer_global_init() == 0);
+        assert(owner_timer_engine_init(&timer_engine, rte_lcore_id(),
+                                       NSOCK_ID_DEFAULT_CAPACITY) == 0);
         assert(socket_registry_init() == 0);
         assert(socket_owner_init(rte_lcore_id()) == 0);
 
@@ -226,6 +229,71 @@ int main(int argc, char **argv) {
         /* nsock_free() must have removed the ARP-wait pointer. */
         nsock_tx_arp_resolved(0x01020304U);
 
+        /* Close policy: zero linger aborts immediately, while graceful and
+         * positive asynchronous linger remain visible to lifecycle census
+         * until owner-local forced cleanup. */
+        unsigned int lifecycle_release_count = 0;
+        struct nsock_handle zero_linger;
+        assert(owner_io_socket_create_local(IPPROTO_TCP, &zero_linger) == 0);
+        sk = socket_owner_resolve_local(zero_linger);
+        assert(sk != NULL);
+        sk->u.tcp.status = TCP_STATUS_ESTABLISHED;
+        sk->u.tcp.linger_enabled = true;
+        sk->u.tcp.linger_seconds = 0;
+        assert(owner_io_set_release_observer(zero_linger, count_release,
+                                             &lifecycle_release_count) == 0);
+        assert(owner_io_close(zero_linger) == 0);
+        assert(lifecycle_release_count == 1);
+
+        struct nsock_handle graceful;
+        struct nsock_handle positive_linger;
+        struct nsock_handle positive_deferred;
+        assert(owner_io_socket_create_local(IPPROTO_TCP, &graceful) == 0);
+        sk = socket_owner_resolve_local(graceful);
+        assert(sk != NULL);
+        sk->u.tcp.status = TCP_STATUS_ESTABLISHED;
+        assert(owner_io_set_release_observer(graceful, count_release,
+                                             &lifecycle_release_count) == 0);
+        assert(owner_io_close(graceful) == 0);
+
+        assert(owner_io_socket_create_local(IPPROTO_TCP, &positive_linger) ==
+               0);
+        sk = socket_owner_resolve_local(positive_linger);
+        assert(sk != NULL);
+        sk->u.tcp.status = TCP_STATUS_ESTABLISHED;
+        sk->u.tcp.linger_enabled = true;
+        sk->u.tcp.linger_seconds = 5;
+        assert(owner_io_set_release_observer(positive_linger, count_release,
+                                             &lifecycle_release_count) == 0);
+        assert(owner_io_close(positive_linger) == 0);
+        assert(owner_timer_is_armed(&sk->u.tcp.timer));
+        assert(sk->u.tcp.close_deadline_cycles != 0);
+
+        assert(owner_io_socket_create_local(IPPROTO_TCP, &positive_deferred) ==
+               0);
+        sk = socket_owner_resolve_local(positive_deferred);
+        assert(sk != NULL);
+        sk->u.tcp.status = TCP_STATUS_ESTABLISHED;
+        sk->u.tcp.linger_enabled = true;
+        sk->u.tcp.linger_seconds = 5;
+        assert(sk->ops->send(sk, "x", 1, MSG_DONTWAIT) == 1);
+        assert(owner_io_set_release_observer(positive_deferred, count_release,
+                                             &lifecycle_release_count) == 0);
+        assert(owner_io_close(positive_deferred) == 0);
+        sk = socket_owner_resolve_local(positive_deferred);
+        assert(sk != NULL);
+        assert(sk->u.tcp.fin_deferred);
+        assert(owner_timer_is_armed(&sk->u.tcp.timer));
+
+        struct owner_io_tcp_lifecycle_snapshot lifecycle = {0};
+        assert(owner_io_tcp_lifecycle_snapshot(&lifecycle) == 0);
+        assert(lifecycle.total == 3);
+        assert(lifecycle.app_closed == 3);
+        assert(lifecycle.states[TCP_STATUS_FIN_WAIT_1] == 3);
+        assert(owner_io_tcp_force_cleanup() == 3);
+        assert(lifecycle_release_count == 4);
+        assert(timer_engine.active == 0);
+
         unsigned int worker_lcore = rte_get_next_lcore(rte_lcore_id(), 1, 0);
         if (worker_lcore != RTE_MAX_LCORE && rte_eal_has_hugepages()) {
                 struct remote_owner_result remote = {0};
@@ -249,6 +317,7 @@ int main(int argc, char **argv) {
          * Capacity-aware owner initialization must reject the third live
          * socket, then reuse a retired slot with a new generation.
          */
+        owner_timer_engine_fini(&timer_engine);
         socket_owner_fini();
         socket_registry_fini();
         assert(socket_registry_init_owner_with_capacity(rte_lcore_id(), 2) ==

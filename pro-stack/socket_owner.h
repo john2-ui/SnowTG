@@ -67,6 +67,8 @@ enum sock_cmd_type {
         SOCK_CMD_RECV,
         SOCK_CMD_SENDTO,
         SOCK_CMD_RECVFROM,
+        SOCK_CMD_SETSOCKOPT,
+        SOCK_CMD_GETSOCKOPT,
         SOCK_CMD_CLOSE,
 };
 
@@ -113,6 +115,14 @@ struct sock_cmd {
                 struct {
                         int backlog;
                 } listen;
+
+                struct {
+                        int level;
+                        int optname;
+                        struct linger value;
+                        struct linger *out_value;
+                        socklen_t *out_len;
+                } sockopt;
         } args;
 
         /** Handle returned by CREATE or ACCEPT before an fd is published. */

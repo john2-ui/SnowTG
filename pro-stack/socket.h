@@ -289,6 +289,10 @@ ssize_t nsendto(int sockfd, const void *buf, size_t len, int flags,
 ssize_t nrecvfrom(int sockfd, void *buf, size_t len, int flags,
                   struct sockaddr *src_addr, socklen_t *addrlen);
 int nclose(int sockfd);
+int nsetsockopt(int sockfd, int level, int optname, const void *optval,
+                socklen_t optlen);
+int ngetsockopt(int sockfd, int level, int optname, void *optval,
+                socklen_t *optlen);
 int nconnect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 int nlisten(int sockfd, int backlog);
 int naccept(int sockfd, struct sockaddr *addr, socklen_t *addrlen);

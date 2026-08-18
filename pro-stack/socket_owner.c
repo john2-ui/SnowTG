@@ -134,6 +134,10 @@ static const char *sock_cmd_type_str(enum sock_cmd_type type) {
                 return "sendto";
         case SOCK_CMD_RECVFROM:
                 return "recvfrom";
+        case SOCK_CMD_SETSOCKOPT:
+                return "setsockopt";
+        case SOCK_CMD_GETSOCKOPT:
+                return "getsockopt";
         case SOCK_CMD_CLOSE:
                 return "close";
         default:
@@ -847,6 +851,33 @@ static void owner_process_one(struct sock_cmd *cmd) {
                                     cmd->args.io.flags,
                                     (const struct sockaddr *)&cmd->args.io.addr,
                                     cmd->args.io.addrlen));
+                return;
+        case SOCK_CMD_SETSOCKOPT:
+                if (sk->protocol != IPPROTO_TCP ||
+                    cmd->args.sockopt.level != SOL_SOCKET ||
+                    cmd->args.sockopt.optname != SO_LINGER) {
+                        socket_owner_complete(cmd, -1, ENOPROTOOPT);
+                        return;
+                }
+                sk->u.tcp.linger_enabled =
+                    cmd->args.sockopt.value.l_onoff != 0;
+                sk->u.tcp.linger_seconds =
+                    (uint32_t)cmd->args.sockopt.value.l_linger;
+                socket_owner_complete(cmd, 0, 0);
+                return;
+        case SOCK_CMD_GETSOCKOPT:
+                if (sk->protocol != IPPROTO_TCP ||
+                    cmd->args.sockopt.level != SOL_SOCKET ||
+                    cmd->args.sockopt.optname != SO_LINGER) {
+                        socket_owner_complete(cmd, -1, ENOPROTOOPT);
+                        return;
+                }
+                cmd->args.sockopt.out_value->l_onoff =
+                    sk->u.tcp.linger_enabled ? 1 : 0;
+                cmd->args.sockopt.out_value->l_linger =
+                    (int)sk->u.tcp.linger_seconds;
+                *cmd->args.sockopt.out_len = sizeof(struct linger);
+                socket_owner_complete(cmd, 0, 0);
                 return;
         case SOCK_CMD_CLOSE:
                 if (sk->app_closed) {

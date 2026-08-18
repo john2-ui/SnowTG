@@ -23,13 +23,13 @@
 #define NETARCH_TCP_H
 
 #include "list.h"
+#include "owner_timer.h"
 #include "rbtree.h"
 #include "tcp_cc.h"
 #include "tcp_sack.h"
 
 #include <rte_mbuf.h>
 #include <rte_tcp.h>
-#include <rte_timer.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -329,6 +329,11 @@ struct tcp_stream {
         bool syn_retransmitted;
         /** Close requested while congestion/window limits leave unsent data. */
         bool fin_deferred;
+        /** SOL_SOCKET/SO_LINGER policy stored on this TCP socket. */
+        bool linger_enabled;
+        uint32_t linger_seconds;
+        /** Absolute asynchronous close deadline; zero means none. */
+        uint64_t close_deadline_cycles;
 
         /** RFC 6298 RTT estimators and current data/FIN RTO, in ms. */
         uint32_t srtt_ms;
@@ -347,7 +352,7 @@ struct tcp_stream {
          * Per-TCB timer, multiplexed by @c status: SYN_SENT / SYN_RECV RTO,
          * data RTO, FIN RTO (FIN_WAIT_1 / LAST_ACK / CLOSING), TIME_WAIT 2MSL.
          */
-        struct rte_timer timer;
+        struct owner_timer timer;
         /** Retransmit count for the currently armed @c timer purpose. */
         uint8_t retries;
 
@@ -425,6 +430,11 @@ struct nsock *tcp_stream_search(uint32_t remote_ip, uint32_t local_ip,
  */
 struct nsock *tcp_stream_create(uint32_t remote_ip, uint32_t local_ip,
                                 uint16_t remote_port, uint16_t local_port);
+
+/** Initialize the embedded owner timer for a newly allocated TCP socket. */
+void tcp_timer_init(struct nsock *sk);
+/** Force terminal local cleanup from an owner-local control path. */
+void tcp_force_abort(struct nsock *sk, int error, const char *reason);
 
 /**
  * @brief Dequeue one established passive-open child without blocking.

@@ -103,7 +103,7 @@
 #define IPV4_REASSEMBLY_SWEEP_MS 1000U
 
 /**
- * How often timer-owning lcores call rte_timer_manage(), in milliseconds.
+ * How often timer-owning lcores poll their owner timer engine, in milliseconds.
  * The main lcore manages ARP infrastructure timers; the packet worker manages
  * TCP TCB timers so callbacks obey socket ownership.
  * Actual cycle threshold is computed at runtime:
@@ -162,6 +162,8 @@
 #define TCP_DATA_MAX_RETRIES 5
 /** Give up after this many SYN retransmits (not counting the first SYN). */
 #define TCP_SYN_MAX_RETRIES 5
+/** Bound the wait for a peer FIN after our FIN has been acknowledged. */
+#define TCP_FIN_WAIT_2_TIMEOUT_MS 60000U
 /** Aliases for handshake control-segment RTO (SYN / SYN+ACK share SYN_*). */
 #define TCP_CTRL_RTO_MS TCP_SYN_RTO_MS
 #define TCP_CTRL_MAX_RETRIES TCP_SYN_MAX_RETRIES

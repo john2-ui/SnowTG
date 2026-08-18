@@ -625,6 +625,8 @@ unsigned int nsock_tx_dirty_drain(struct rte_mempool *mp, unsigned int budget) {
                         registry->tx_metrics.flush_calls++;
                         flushed++;
                 }
+                if (result == SOCK_TX_FLUSH_DESTROYED)
+                        continue;
                 /*
                  * A transport may have queued fresh work while flushing
                  * (for example FIN-after-data).  Do not duplicate that entry.
@@ -870,7 +872,7 @@ struct nsock *nsock_alloc_mode(uint8_t protocol, enum nsock_io_mode io_mode) {
                 }
                 sk->u.tcp.snd_una = 0;
                 sk->u.tcp.status = TCP_STATUS_CLOSED;
-                rte_timer_init(&sk->u.tcp.timer);
+                tcp_timer_init(sk);
                 sk->u.tcp.retries = 0;
                 sk->u.tcp.rcvbuf_size = TCP_RCVBUF_SIZE;
                 sk->u.tcp.rcvbuf_used = 0;
@@ -937,7 +939,7 @@ void nsock_free(struct nsock *sk) {
 
         /* Drop any pending retransmission/TIME_WAIT callback before free. */
         if (sk->protocol == IPPROTO_TCP) {
-                rte_timer_stop(&sk->u.tcp.timer);
+                (void)owner_timer_cancel(&sk->u.tcp.timer);
                 tcp_sack_state_reset(&sk->u.tcp, sk->u.tcp.snd_una);
                 tcp_sndbuf_free(&sk->u.tcp.sndbuf);
         }
@@ -1206,6 +1208,70 @@ int nclose(int sockfd) {
         memset(&cmd, 0, sizeof(cmd));
         cmd.type = SOCK_CMD_CLOSE;
         cmd.handle = handle;
+        return socket_owner_call(&cmd);
+}
+
+int nsetsockopt(int sockfd, int level, int optname, const void *optval,
+                socklen_t optlen) {
+        struct nsock_handle handle;
+        struct linger value = {0};
+
+        if (optval == NULL) {
+                errno = EINVAL;
+                return -1;
+        }
+        if (level == SOL_SOCKET && optname == SO_LINGER) {
+                if (optlen != sizeof(value)) {
+                        errno = EINVAL;
+                        return -1;
+                }
+                memcpy(&value, optval, sizeof(value));
+                if (value.l_linger < 0) {
+                        errno = EINVAL;
+                        return -1;
+                }
+        }
+        if (fd_resolve(sockfd, &handle) != 0) {
+                errno = EBADF;
+                return -1;
+        }
+
+        struct sock_cmd cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.type = SOCK_CMD_SETSOCKOPT;
+        cmd.handle = handle;
+        cmd.args.sockopt.level = level;
+        cmd.args.sockopt.optname = optname;
+        cmd.args.sockopt.value = value;
+        return socket_owner_call(&cmd);
+}
+
+int ngetsockopt(int sockfd, int level, int optname, void *optval,
+                socklen_t *optlen) {
+        struct nsock_handle handle;
+
+        if (optval == NULL || optlen == NULL) {
+                errno = EINVAL;
+                return -1;
+        }
+        if (level == SOL_SOCKET && optname == SO_LINGER &&
+            *optlen < sizeof(struct linger)) {
+                errno = EINVAL;
+                return -1;
+        }
+        if (fd_resolve(sockfd, &handle) != 0) {
+                errno = EBADF;
+                return -1;
+        }
+
+        struct sock_cmd cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        cmd.type = SOCK_CMD_GETSOCKOPT;
+        cmd.handle = handle;
+        cmd.args.sockopt.level = level;
+        cmd.args.sockopt.optname = optname;
+        cmd.args.sockopt.out_value = optval;
+        cmd.args.sockopt.out_len = optlen;
         return socket_owner_call(&cmd);
 }
 

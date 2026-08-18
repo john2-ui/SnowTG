@@ -36,6 +36,7 @@ SACK_TEST := $(BUILD_DIR)/test_tcp_sack
 TCP_CC_TEST := $(BUILD_DIR)/test_tcp_cc
 EPHEMERAL_TEST := $(BUILD_DIR)/test_tcp_ephemeral
 OWNER_IO_TEST := $(BUILD_DIR)/test_owner_io
+OWNER_TIMER_TEST := $(BUILD_DIR)/test_owner_timer
 HTTP_CLIENT_TEST := $(BUILD_DIR)/test_http_client
 DNS_CLIENT_TEST := $(BUILD_DIR)/test_dns_client
 SCENARIO_SCHEDULER_TEST := $(BUILD_DIR)/test_scenario_scheduler
@@ -80,7 +81,7 @@ SCENARIO_SCHEDULER_OBJS := $(BUILD_DIR)/test_scenario_scheduler.o \
 	$(BUILD_DIR)/llhttp_api.o \
 	$(BUILD_DIR)/llhttp_http.o
 
-.PHONY: all test test-arp test-owner-io test-http-client test-dns-client \
+.PHONY: all test test-arp test-owner-io test-owner-timer test-http-client test-dns-client \
 	test-scenario-scheduler \
 	test-rx-dispatch test-port-topology test-flow-udp test-ipv4-reassembly \
 	test-stats-csv test-conn-pool \
@@ -89,7 +90,7 @@ SCENARIO_SCHEDULER_OBJS := $(BUILD_DIR)/test_scenario_scheduler.o \
 all: test
 
 # Compilation and execution both must succeed for the test target to pass.
-test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(SACK_TEST) $(TCP_CC_TEST) $(EPHEMERAL_TEST) $(OWNER_IO_TEST) \
+test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(SACK_TEST) $(TCP_CC_TEST) $(EPHEMERAL_TEST) $(OWNER_TIMER_TEST) $(OWNER_IO_TEST) \
 	$(HTTP_CLIENT_TEST) $(DNS_CLIENT_TEST) $(SCENARIO_SCHEDULER_TEST) $(ARP_TEST) \
 	$(RX_DISPATCH_TEST) $(PORT_TOPOLOGY_TEST) $(FLOW_UDP_TEST) \
 	$(IPV4_REASSEMBLY_TEST) $(STATS_CSV_TEST) $(CONN_POOL_TEST)
@@ -99,6 +100,7 @@ test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(SACK_TEST) $(TCP_CC_TEST) $(EPHE
 	$(SACK_TEST)
 	$(TCP_CC_TEST)
 	$(EPHEMERAL_TEST)
+	$(OWNER_TIMER_TEST) --no-huge --no-pci --file-prefix ownertimer-test
 	$(OWNER_IO_TEST) --no-huge --no-pci --file-prefix ownerio-test
 	$(HTTP_CLIENT_TEST)
 	$(DNS_CLIENT_TEST)
@@ -114,6 +116,8 @@ test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(SACK_TEST) $(TCP_CC_TEST) $(EPHE
 test-arp: $(ARP_TEST)
 
 test-owner-io: $(OWNER_IO_TEST)
+
+test-owner-timer: $(OWNER_TIMER_TEST)
 
 test-http-client: $(HTTP_CLIENT_TEST)
 
@@ -188,6 +192,11 @@ $(EPHEMERAL_TEST): test_tcp_ephemeral.c ../pro-stack/tcp.c \
 $(OWNER_IO_TEST): test_owner_io.c $(STACK_LIB) | $(BUILD_DIR)
 	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) -I../pro-stack test_owner_io.c \
 		$(STACK_LIB) -o $@ $(DPDK_LIBS) $(SANITIZER_LDFLAGS)
+
+$(OWNER_TIMER_TEST): test_owner_timer.c $(STACK_LIB) | $(BUILD_DIR)
+	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) -I../pro-stack \
+		test_owner_timer.c $(STACK_LIB) -o $@ $(DPDK_LIBS) \
+		$(SANITIZER_LDFLAGS)
 
 $(ARP_TEST): test_arp.c ../pro-stack/arp.c ../pro-stack/arp.h \
 		../pro-stack/net_context.c ../pro-stack/net_context.h | $(BUILD_DIR)

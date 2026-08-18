@@ -49,6 +49,8 @@
 
 /** @brief Scenario loaded when no application scenario path is supplied. */
 #define TG_DEFAULT_SCENARIO_PATH "scenarios/bootstrap_http.json"
+/** Last-resort bound after admissions and active transactions have stopped. */
+#define TG_DRAIN_TIMEOUT_SEC 120U
 
 /** @brief Source IPv4 address used by the current single-port test topology. */
 static const uint32_t tg_local_ip = MAKE_IPV4_ADDR(192, 168, 21, 2);
@@ -201,6 +203,12 @@ struct tg_shard {
         struct tg_runtime_control *runtime;
         bool scheduling_enabled;
         bool drained;
+        struct owner_timer drain_timer;
+        bool drain_started;
+        bool drain_deadline_expired;
+        bool drain_forced;
+        uint64_t tcp_drain_residual;
+        uint64_t tcp_forced_cleanup;
 };
 
 /** Complete application and stack context associated with one flow worker. */
@@ -214,6 +222,47 @@ struct tg_worker {
         struct stack_runtime_worker runtime;
         struct tg_stats_channel stats_channel;
 };
+
+static uint64_t tg_tcp_pool_objects_in_use(
+    const struct owner_io_memory_snapshot *memory) {
+        uint64_t in_use = 0;
+
+        if (memory == NULL)
+                return 0;
+        for (unsigned int kind = 0; kind < TCP_MEMORY_KIND_MAX; kind++) {
+                uint32_t capacity = memory->tcp.capacity[kind];
+                uint32_t available = memory->tcp.available[kind];
+                in_use += capacity >= available ? capacity - available : 0;
+        }
+        return in_use;
+}
+
+static void tg_drain_timer_cb(__attribute__((unused)) struct owner_timer *timer,
+                              void *arg,
+                              __attribute__((unused)) uint64_t now_cycles) {
+        struct tg_shard *shard = arg;
+
+        if (shard != NULL)
+                shard->drain_deadline_expired = true;
+}
+
+static const char *tg_tcp_state_name(TCP_STATUS status) {
+        static const char *const names[TCP_STATUS_MAX] = {
+            [TCP_STATUS_CLOSED] = "CLOSED",
+            [TCP_STATUS_LISTEN] = "LISTEN",
+            [TCP_STATUS_SYN_SENT] = "SYN_SENT",
+            [TCP_STATUS_SYN_RECV] = "SYN_RECV",
+            [TCP_STATUS_ESTABLISHED] = "ESTABLISHED",
+            [TCP_STATUS_CLOSE_WAIT] = "CLOSE_WAIT",
+            [TCP_STATUS_LAST_ACK] = "LAST_ACK",
+            [TCP_STATUS_TIME_WAIT] = "TIME_WAIT",
+            [TCP_STATUS_CLOSING] = "CLOSING",
+            [TCP_STATUS_FIN_WAIT_1] = "FIN_WAIT_1",
+            [TCP_STATUS_FIN_WAIT_2] = "FIN_WAIT_2",
+        };
+
+        return status < TCP_STATUS_MAX ? names[status] : "UNKNOWN";
+}
 
 /**
  * Capture one owner-local snapshot. All fields that require owner-local
@@ -235,6 +284,10 @@ static void tg_capture_stats_snapshot(struct tg_shard *shard,
             &snapshot, &shard->stats, now_cycles, ++shard->stats_sequence,
             shard->worker_index, shard->lcore_id, phase);
         snapshot.live_sockets = shard->scheduler.live_sockets;
+        snapshot.tcp_drain_residual = shard->tcp_drain_residual;
+        snapshot.tcp_forced_cleanup = shard->tcp_forced_cleanup;
+        snapshot.tcp_pool_objects_in_use =
+            tg_tcp_pool_objects_in_use(&shard->memory);
         snapshot.memory_paused = shard->scheduler.resource_paused;
         snapshot.memory_pauses = shard->scheduler.resource_pauses;
         snapshot.tx_available =
@@ -316,6 +369,8 @@ static void tg_capture_stats_snapshot(struct tg_shard *shard,
                 snapshot.ofo_segments_current = runtime.ofo_segments_current;
                 snapshot.ofo_bytes_current = runtime.ofo_bytes_current;
                 snapshot.ofo_pressure_active = runtime.ofo_pressure_active;
+                snapshot.tcp_pool_objects_in_use =
+                    tg_tcp_pool_objects_in_use(&shard->memory);
                 snapshot.tokens = shard->scheduler.cycles_per_second == 0
                                       ? 0
                                       : shard->scheduler.token_numerator /
@@ -605,7 +660,48 @@ static void tg_shard_tick(void *ctx, unsigned int budget) {
                                           now_cycles);
         if (tg_scheduler_is_stopped(&shard->scheduler) &&
             shard->scheduler.active == 0 &&
-            shard->scheduler.live_sockets == 0 && !shard->drained) {
+            shard->scheduler.live_sockets != 0 && !shard->drain_started) {
+                shard->drain_started = true;
+                if (owner_timer_arm_after_ms(
+                        &shard->drain_timer,
+                        (uint64_t)TG_DRAIN_TIMEOUT_SEC * 1000U) != 0) {
+                        LOG_ERROR("traffic-gen drain timer arm failed worker=%" PRIu64
+                                  " errno=%d; forcing cleanup",
+                                  shard->worker_index, errno);
+                        shard->drain_deadline_expired = true;
+                }
+        }
+        if (shard->drain_deadline_expired && !shard->drain_forced) {
+                struct owner_io_tcp_lifecycle_snapshot lifecycle = {0};
+
+                shard->drain_forced = true;
+                if (owner_io_tcp_lifecycle_snapshot(&lifecycle) == 0) {
+                        shard->tcp_drain_residual += lifecycle.total;
+                        for (TCP_STATUS state = TCP_STATUS_CLOSED;
+                             state < TCP_STATUS_MAX; state++) {
+                                if (lifecycle.states[state] != 0)
+                                        LOG_WARN("traffic-gen drain residual "
+                                                 "worker=%" PRIu64
+                                                 " state=%s count=%u",
+                                                 shard->worker_index,
+                                                 tg_tcp_state_name(state),
+                                                 lifecycle.states[state]);
+                        }
+                }
+                shard->tcp_forced_cleanup += owner_io_tcp_force_cleanup();
+                (void)owner_io_memory_snapshot(&shard->memory);
+                if (shard->scheduler.live_sockets != 0)
+                        LOG_ERROR("traffic-gen forced cleanup count mismatch "
+                                  "worker=%" PRIu64 " live_sockets=%u",
+                                  shard->worker_index,
+                                  shard->scheduler.live_sockets);
+        }
+        if (tg_scheduler_is_stopped(&shard->scheduler) &&
+            shard->scheduler.active == 0 &&
+            (shard->scheduler.live_sockets == 0 || shard->drain_forced) &&
+            !shard->drained) {
+                (void)owner_timer_cancel(&shard->drain_timer);
+                (void)owner_io_memory_snapshot(&shard->memory);
                 tg_capture_stats_snapshot(shard, TG_STATS_PHASE_FINAL,
                                           now_cycles);
                 shard->drained = true;
@@ -857,7 +953,7 @@ int main(int argc, char *argv[]) {
         port_topology =
             port_init_queues(0, mp, (uint16_t)worker_count, requested_mtu);
         net_context_init(0, tg_local_ip, port_topology.ipv4_mtu);
-        rte_timer_subsystem_init();
+        owner_timer_global_init();
         if (ipv4_reassembly_init(&reassembly) != 0)
                 rte_exit(EXIT_FAILURE, "IPv4 reassembly init failed\n");
 
@@ -897,6 +993,8 @@ int main(int argc, char *argv[]) {
                     stats_csv.file == NULL ? NULL : &worker->stats_channel;
                 tg_stats_channel_init(&worker->stats_channel);
                 tg_stats_init(&worker->shard.stats);
+                owner_timer_init(&worker->shard.drain_timer,
+                                 tg_drain_timer_cb, &worker->shard);
 
                 /* Initialize resources owned by this worker's lcore. */
                 if (socket_registry_init_owner_with_capacity(
@@ -940,8 +1038,8 @@ int main(int argc, char *argv[]) {
                 worker->shard.reactor = &worker->reactor;
                 if (stack_runtime_worker_init(
                         &worker->runtime, worker->lcore_id,
-                        worker->flow_queue_id, mp, worker->ring, tg_reactor_run,
-                        &worker->reactor) != 0)
+                        worker->flow_queue_id, socket_id_capacity + 1U, mp,
+                        worker->ring, tg_reactor_run, &worker->reactor) != 0)
                         rte_exit(EXIT_FAILURE,
                                  "worker %u runtime initialization failed\n",
                                  index);

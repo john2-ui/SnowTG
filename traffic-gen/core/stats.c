@@ -282,6 +282,10 @@ void tg_stats_snapshot_add(struct tg_stats_snapshot *aggregate,
         aggregate->http_rps_total += sample->http_rps_total;
         aggregate->concurrency += sample->concurrency;
         aggregate->live_sockets += sample->live_sockets;
+        aggregate->tcp_drain_residual += sample->tcp_drain_residual;
+        aggregate->tcp_forced_cleanup += sample->tcp_forced_cleanup;
+        aggregate->tcp_pool_objects_in_use +=
+            sample->tcp_pool_objects_in_use;
         aggregate->connections_created += sample->connections_created;
         aggregate->connections_reused += sample->connections_reused;
         aggregate->connect_samples += sample->connect_samples;

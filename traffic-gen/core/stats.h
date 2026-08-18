@@ -61,6 +61,12 @@ struct tg_stats_snapshot {
         uint64_t concurrency;
         /** Current live socket count. */
         uint64_t live_sockets;
+        /** TCP sockets present when the bounded drain fallback fired. */
+        uint64_t tcp_drain_residual;
+        /** TCP sockets reclaimed by the bounded drain fallback. */
+        uint64_t tcp_forced_cleanup;
+        /** Current checked-out objects summed across TCP owner pools. */
+        uint64_t tcp_pool_objects_in_use;
         /** Physical TCP connections created for this shard. */
         uint64_t connections_created;
         /** Logical transactions assigned to an existing TCP connection. */

@@ -6,6 +6,10 @@
 #include <errno.h>
 #include <netinet/in.h>
 #include <rte_lcore.h>
+#include <string.h>
+
+_Static_assert(OWNER_IO_TCP_STATE_MAX == TCP_STATUS_MAX,
+               "owner I/O TCP state census must cover every TCP state");
 
 static struct nsock *owner_io_resolve(struct nsock_handle handle) {
         return socket_owner_resolve_local(handle);
@@ -209,4 +213,47 @@ int owner_io_memory_snapshot(struct owner_io_memory_snapshot *snapshot) {
         snapshot->below_low_water = socket_owner_tcp_memory_below_low_water();
         snapshot->above_high_water = socket_owner_tcp_memory_above_high_water();
         return 0;
+}
+
+int owner_io_tcp_lifecycle_snapshot(
+    struct owner_io_tcp_lifecycle_snapshot *snapshot) {
+        struct nsock *sk;
+
+        if (snapshot == NULL || owner_timer_engine_current() == NULL) {
+                errno = EPERM;
+                return -1;
+        }
+        memset(snapshot, 0, sizeof(*snapshot));
+        for (sk = nsock_list_local(); sk != NULL; sk = sk->next) {
+                if (sk->protocol != IPPROTO_TCP)
+                        continue;
+                snapshot->total++;
+                if (sk->app_closed)
+                        snapshot->app_closed++;
+                if (sk->u.tcp.status < TCP_STATUS_MAX)
+                        snapshot->states[sk->u.tcp.status]++;
+        }
+        return 0;
+}
+
+uint32_t owner_io_tcp_force_cleanup(void) {
+        struct nsock *sk = nsock_list_local();
+        uint32_t cleaned = 0;
+
+        if (owner_timer_engine_current() == NULL) {
+                errno = EPERM;
+                return 0;
+        }
+        while (sk != NULL) {
+                struct nsock *next = sk->next;
+
+                if (sk->protocol == IPPROTO_TCP) {
+                        sk->app_closed = true;
+                        socket_owner_abort_waiters(sk, ECANCELED);
+                        tcp_force_abort(sk, ECANCELED, "owner-force-cleanup");
+                        cleaned++;
+                }
+                sk = next;
+        }
+        return cleaned;
 }

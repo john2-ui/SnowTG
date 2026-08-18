@@ -14,6 +14,7 @@ pro-stack/
 ├── socket.h / socket.c 统一 socket、fd→handle 表、端点注册表、BSD API 命令入口
 ├── socket_owner.h / .c 代际句柄、应用命令环、阻塞操作 waiter 与 owner 生命周期
 ├── owner_io.h / .c     owner-local 非阻塞 transport API 与 ready-event 消费
+├── owner_timer.h / .c  owner-local 通用定时器接口（当前后端为 rte_timer）
 ├── sock_ops.h          每协议 ops 向量 + sock_ops_lookup
 ├── pkt_frame.h / .c    共享 Ethernet+IPv4 组帧 helper (eth_ipv4_build)
 ├── tcp.h / tcp.c       TCP：表驱动状态机、tcp_ops、编解码/egress、定时器
@@ -46,6 +47,7 @@ test/
 ├── test_tcp_sack.c     TCP SACK/恢复单元测试
 ├── test_tcp_cc.c       拥塞控制单元测试
 ├── test_owner_io.c     owner_io / ready queue 回归测试
+├── test_owner_timer.c  owner timer、容量、owner 约束与回调生命周期测试
 ├── test_flow_udp.c     UDP flow 与 owner-local API 回归测试
 ├── test_*              RSS、IPv4 重组、scenario、CSV 等测试
 └── Makefile            统一测试构建目标
@@ -96,7 +98,7 @@ flowchart LR
 ### 三线程模型
 
 - **main lcore**：NIC RX → `ring->in`；`ring->out` → NIC TX；只管理 ARP 等基础设施 timer。
-- **worker lcore（socket owner）**：处理 command ring、`ring->in`、协议状态机、TCP timer 和最终释放；TX 通过 owner-local dirty queue 只冲洗有发送工作的 socket。
+- **worker lcore（socket owner）**：处理 command ring、`ring->in`、协议状态机、owner timer 和最终释放；TX 通过 owner-local dirty queue 只冲洗有发送工作的 socket。
 - **app lcore**：示例 echo app 只持有整数 fd；其 API 调用通过 command ring 阻塞等待结果，不直接访问 TCB。高并发 `traffic-gen` 则注册在 owner worker 的 reactor callback 中。
 
 
@@ -131,7 +133,7 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 - 全局本端身份 `g_net`（[net_context.c](pro-stack/net_context.c)）
 - 分级日志 + IP/MAC 格式化（[log.h](pro-stack/log.h)）
 - 编译期功能开关 `ENABLE_*`（[config.h](pro-stack/config.h)）
-- `rte_timer`：TCP SYN_SENT RTO（指数退避）与 TIME_WAIT 2MSL；packet worker 周期维护 ARP 缓存
+- `owner_timer`：每 worker 独立 engine、严格 owner-lcore arm/cancel/callback、容量与残留检查；当前封装 `rte_timer`，TCP 与 traffic-gen 不依赖具体后端
 - IPv4、TCP 和 UDP RX 软件校验；IPv4 UDP 零校验和按 RFC 768 接受
 - IPv4 分片在进入 L4 前通过 `rte_ip_frag` 重组，并对表项执行定期过期维护（[ipv4_reassembly.c](pro-stack/ipv4_reassembly.c)）
 - 多 RX/TX queue；优先使用硬件 RSS 固定四元组 owner，能力不足时回退到单 RX queue 软件分发
@@ -152,7 +154,7 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 - traffic-gen owner socket 容量按 scenario 和 shard 自动计算，并支持 `--socket-id-max`；app-visible fd 与 TCP 缓冲预算独立配置
 - BSD/app-visible socket 使用唯一命名的 recv/send 环
 `sock_recv_%u / sock_send_%u`；traffic-gen owner-local socket 不创建这两个环
-- BSD 风格 API：`nsocket / nbind / nsend / nrecv / nsendto / nrecvfrom / nclose / nconnect / nlisten / naccept`
+- BSD 风格 API：`nsocket / nbind / nsend / nrecv / nsendto / nrecvfrom / nclose / nconnect / nlisten / naccept / nsetsockopt / ngetsockopt`；当前 socket option 支持 TCP `SO_LINGER`
 - `sock_ops` + `sock_ops_lookup`；TCP 已接线 `connect/listen/accept/close`
 
 
@@ -197,6 +199,8 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 - **发送侧应用背压**：本地高水位与对端窗口共同限制写入；阻塞请求停放在 owner waiter 队列，`MSG_DONTWAIT` 返回 `EAGAIN`
 - **被动拆除**：ESTABLISHED → CLOSE_WAIT → LAST_ACK → CLOSED
 - **主动拆除**：FIN_WAIT_1/2、CLOSING、TIME_WAIT（2MSL 定时器）
+- **有界关闭**：FIN_WAIT_2 具有 60 秒 hard deadline；data/FIN RTO 耗尽、FIN 入队失败和 linger deadline 统一进入 owner-local abort，best-effort RST 不阻塞本地资源回收
+- **linger 策略**：默认异步 graceful FIN；zero linger 立即 abortive close；positive linger 异步启动 graceful close并以配置时间为 hard deadline
 - ISN 生成器；统一 mbuf 归属：ingress 一律消费 mbuf
 - 演示应用：[apps/tcp-echo/](apps/tcp-echo/)（server / client）
 
@@ -215,6 +219,7 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 - HTTP/1.1 GET、HTTP keep-alive 连接池、短连接，以及 UDP DNS 插件
 - per-worker shard、硬件 RSS/软件分发、四元组固定归属和 owner-local L7 parser
 - 按 worker 采集吞吐、并发、延迟、错误分类、内存、dirty TX、ring/NIC drop 和 OFO 指标；低频汇总并写入 CSV
+- 停止发车且 active 归零后启动 120 秒 owner-local drain timer；超时输出 TCP 状态直方图并仅清理当前 owner，CSV 保留残留数、强制清理数和 TCP pool in-use
 - 已完成 1k → 1 万 → 10 万并发的多 worker 爬坡记录；环境、参数和瓶颈归档于 [PERFORMANCE.md](docs/PERFORMANCE.md)
 
 
@@ -236,8 +241,6 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 
 ### P0 — TCP 正确性与可靠退出
 
-- [ ] **修复长测结束后的 TCP 排空永久等待**：六小时 `http-long-run` 在停止发车并完成全部事务后，仍有 435 个 `live_sockets`，owner TCP TX 池中还有 75 个对象至少八小时未归还。为 `FIN_WAIT_2` 增加有限超时；数据或 FIN RTO 达到上限时，对已经 `app_closed` 的 TCB 执行 abort 和完整回收；traffic-gen 排空阶段增加总 deadline、残留 TCP 状态统计和可计数的强制清理。验收要求正常输出 `final`/`aggregate`，所有 worker 的 `active`、`live_sockets` 归零，TCP/OFO 缓冲区与 owner pool 恢复到基线容量。
-- [ ] **定义完整 TCP 关闭策略**：实现并验证 graceful close、abortive close、`SO_LINGER`，以及 FIN 分配/入队失败、对端长期不发 FIN 和重传耗尽时的 RST 或本地终止策略。
 - [ ] **统一拆除态接收交付**：ESTABLISHED 已使用 `tcp_rx_blob`；FIN_WAIT/CLOSE_WAIT 等携带 payload 的路径也应统一经过 stream 重组、接收窗口和 EOF 交付，不保留状态专用旁路。
 
 
@@ -248,7 +251,7 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 - [ ] **改进 command ring 背压**：当前 ring 满时 app lcore 通过 `rte_pause()` 忙等；评估 per-app ring、控制命令保留容量、eventfd/futex 或高低水位，同时保证 CLOSE 等生命周期命令绝不丢失。
 - [ ] **落地公开 epoll-like 就绪模型**：提供 `READ` / `WRITE` / `CONNECTED` / `ERROR` / `HUP` 事件；同一 socket 按 `{id, generation}` 合并，并为 ready ring 满定义可恢复策略，不能静默丢失状态迁移。
 - [ ] **完成公开非阻塞 API 闭环**：补充 socket 级 nonblocking 状态、`naccept4(..., SOCK_NONBLOCK)`、`ngetsockopt(SO_ERROR)` 和一致的短读/短写/异步 connect 错误语义。
-- [ ] **补充常用 socket 选项**：至少覆盖 `SO_REUSEADDR`、`TCP_NODELAY` 和与非阻塞/linger 相关的查询与设置。
+- [ ] **补充常用 socket 选项**：至少覆盖 `SO_REUSEADDR`、`TCP_NODELAY` 和非阻塞状态查询与设置。
 - [ ] **改造示例应用的多连接调度**：TCP echo server 不应因单连接阻塞 `nrecv` 而停止 `accept`；改用公开 nonblocking + poll/ready API 或连接任务调度。
 
 
@@ -257,7 +260,7 @@ TCP ESTABLISHED 已改为 `tcp_rx_blob`（纯 payload）+ `ofo` 乱序队列，`
 ### P2 — 性能与资源效率
 
 - [ ] **实现协议栈内部 payload 零拷贝**：在不改变现有应用缓冲区 API 的前提下，评估 TCP TX retained mbuf/引用计数、TCP RX/OFO mbuf slice 和 UDP RX 持有策略；必须带自动复制回退、资源上限、完整释放语义和可观测性。
-- [ ] **引入可扩展 timer 结构**：评估 timer wheel 或分层时间轮，替代高连接数下逐对象 timer/超时维护；先用 profile 证明收益，再改变现有 `rte_timer` 路径。
+- [ ] **实现 owner_timer 时间轮后端**：先用 profile 证明收益，再以时间轮或分层时间轮替换当前 `rte_timer` backend；TCP/traffic-gen 保持公共接口不变，随后为 `tg_flow` 嵌入 timer node 并删除 `tg_flow_expire()` 每轮全表扫描。
 - [ ] **移除剩余生命周期全链表扫描**：`g_sock_list` 只应承担必要的 owner-local 枚举；listener child、关闭中 TCB 和调试遍历逐步改用直接索引或专用队列。
 - [ ] **补齐延迟与容量可观测性**：增加 P50/P95/P99/最大值直方图，以及各 owner pool 的容量、当前值、峰值和失败原因，支持长测判断缓慢泄漏。
 

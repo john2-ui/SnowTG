@@ -36,6 +36,8 @@ enum sock_tx_flush_result {
         SOCK_TX_FLUSH_IDLE = 0,
         SOCK_TX_FLUSH_RETRY = 1,
         SOCK_TX_FLUSH_ARP_WAIT = 2,
+        /** Transport destroyed the socket while handling terminal failure. */
+        SOCK_TX_FLUSH_DESTROYED = 3,
 };
 
 /**

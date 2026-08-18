@@ -36,6 +36,9 @@ int main(void) {
         snapshot.udp_tx_queue_drops = 77;
         snapshot.ofo_drop_pressure = 88;
         snapshot.ofo_pressure_active = 1;
+        snapshot.tcp_drain_residual = 9;
+        snapshot.tcp_forced_cleanup = 7;
+        snapshot.tcp_pool_objects_in_use = 5;
         assert(tg_stats_csv_write(&csv, &snapshot) == 0);
         assert(tg_stats_csv_close(&csv) == 0);
 
@@ -56,6 +59,9 @@ int main(void) {
         bool found_udp = false;
         bool found_ofo_drop = false;
         bool found_ofo_pressure = false;
+        bool found_drain_residual = false;
+        bool found_forced_cleanup = false;
+        bool found_pool_in_use = false;
         for (unsigned int i = 0; i < header_count; i++) {
                 if (strcmp(header_columns[i], "udp_tx_queue_drops") == 0) {
                         assert(strcmp(record_columns[i], "77") == 0);
@@ -69,9 +75,25 @@ int main(void) {
                         assert(strcmp(record_columns[i], "1") == 0);
                         found_ofo_pressure = true;
                 }
+                if (strcmp(header_columns[i], "tcp_drain_residual") == 0) {
+                        assert(strcmp(record_columns[i], "9") == 0);
+                        found_drain_residual = true;
+                }
+                if (strcmp(header_columns[i], "tcp_forced_cleanup") == 0) {
+                        assert(strcmp(record_columns[i], "7") == 0);
+                        found_forced_cleanup = true;
+                }
+                if (strcmp(header_columns[i],
+                           "tcp_pool_objects_in_use") == 0) {
+                        assert(strcmp(record_columns[i], "5") == 0);
+                        found_pool_in_use = true;
+                }
         }
         assert(found_udp);
         assert(found_ofo_drop);
         assert(found_ofo_pressure);
+        assert(found_drain_residual);
+        assert(found_forced_cleanup);
+        assert(found_pool_in_use);
         return 0;
 }

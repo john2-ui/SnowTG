@@ -4,6 +4,7 @@
 #include "config.h"
 #include "icmp.h"
 #include "log.h"
+#include "owner_timer.h"
 #include "ring.h"
 #include "socket.h"
 #include "tcp.h"
@@ -14,7 +15,6 @@
 #include <rte_lcore.h>
 #include <rte_mbuf.h>
 #include <rte_ring.h>
-#include <rte_timer.h>
 
 #include <stdatomic.h>
 #include <string.h>
@@ -24,12 +24,12 @@ static struct stack_runtime_worker *g_workers[RTE_MAX_LCORE];
 
 int stack_runtime_worker_init(struct stack_runtime_worker *worker,
                               unsigned int lcore_id, uint16_t queue_id,
-                              struct rte_mempool *mp,
+                              uint32_t timer_capacity, struct rte_mempool *mp,
                               struct inout_ring *ring,
                               stack_runtime_reactor_fn reactor,
                               void *reactor_ctx) {
         if (worker == NULL || mp == NULL || ring == NULL ||
-            lcore_id >= RTE_MAX_LCORE)
+            lcore_id >= RTE_MAX_LCORE || timer_capacity == 0)
                 return -1;
 
         memset(worker, 0, sizeof(*worker));
@@ -39,6 +39,9 @@ int stack_runtime_worker_init(struct stack_runtime_worker *worker,
         worker->ring = ring;
         worker->reactor = reactor;
         worker->reactor_ctx = reactor_ctx;
+        if (owner_timer_engine_init(&worker->timer_engine, lcore_id,
+                                    timer_capacity) != 0)
+                return -1;
         g_workers[lcore_id] = worker;
         atomic_store(&g_stop_requested, false);
         return 0;
@@ -224,7 +227,7 @@ int stack_runtime_worker_entry(void *arg) {
                 phase_start = rte_get_timer_cycles();
                 uint64_t now = rte_get_timer_cycles();
                 if (now - worker->last_timer_tsc >= timer_interval) {
-                        rte_timer_manage();
+                        (void)owner_timer_poll(&worker->timer_engine);
                         worker->last_timer_tsc = now;
                 }
                 if (now - worker->last_arp_maintenance_tsc >=
@@ -259,5 +262,6 @@ int stack_runtime_worker_entry(void *arg) {
                 metrics->worker_turns++;
                 metrics->turn_cycles += rte_get_timer_cycles() - turn_start;
         }
+        owner_timer_engine_fini(&worker->timer_engine);
         return 0;
 }

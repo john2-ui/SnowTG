@@ -12,6 +12,7 @@
 #include "log.h"
 #include "net_context.h"
 #include "owner_io.h"
+#include "owner_timer.h"
 #include "pkt_frame.h"
 #include "port.h"
 #include "rbtree.h"
@@ -42,7 +43,6 @@
 #include <rte_random.h>
 #include <rte_ring.h>
 #include <rte_tcp.h>
-#include <rte_timer.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -74,6 +74,10 @@ static inline void tcp_mark_tx_dirty(struct nsock *sk) {
 
 static void tcp_drain_send(struct nsock *sk);
 static void tcp_drain_recv(struct nsock *sk);
+static void tcp_abort_stream(struct nsock *sk, int error, bool send_reset,
+                             const char *reason);
+static void tcp_timer_cb(struct owner_timer *timer, void *arg,
+                         uint64_t now_cycles);
 
 /*
  * Production TCP allocation occurs only on a socket owner.  TCP_TESTING also
@@ -892,24 +896,14 @@ static struct tcp_fragment *tcp_make_fragment(struct nsock *sk, uint8_t flags,
 }
 
 /**
- * @brief Return the lcore responsible for TCP timers.
+ * @brief Initialize the protocol-independent timer node embedded in one TCB.
  *
- * rte_timer callbacks mutate the TCB and may retire it.  They must therefore
- * execute on the same packet worker that owns packet ingress and socket
- * commands; running them on the main I/O lcore would reintroduce the exact
- * close/free race the owner model is intended to remove.
- * @return Owning packet-worker lcore identifier.
+ * The node binds to its engine on first arm, from the worker that owns packet
+ * ingress, socket commands, state transitions, and final reclamation.
  */
-static unsigned int tcp_timer_lcore(const struct nsock *sk) {
-        return sk->owner_lcore;
-}
-
-/** @brief Convert milliseconds to the DPDK timer cycle domain.
- * @param ms Duration in milliseconds.
- * @return Equivalent duration in timer cycles.
- */
-static uint64_t tcp_ms_to_cycles(uint64_t ms) {
-        return rte_get_timer_hz() * ms / 1000;
+void tcp_timer_init(struct nsock *sk) {
+        if (sk != NULL)
+                owner_timer_init(&sk->u.tcp.timer, tcp_timer_cb, sk);
 }
 
 /**
@@ -986,8 +980,8 @@ static uint16_t tcp_alloc_ephemeral_port(const struct nsock *sk) {
         return 0;
 }
 
-static void tcp_arm_syn_timer(struct nsock *sk, uint64_t delay_ms);
-static void tcp_arm_data_rto(struct nsock *sk, uint64_t delay_ms);
+static int tcp_arm_syn_timer(struct nsock *sk, uint64_t delay_ms);
+static int tcp_arm_data_rto(struct nsock *sk, uint64_t delay_ms);
 
 /** Clear advisory sender SACK state on the socket's owner lcore. */
 static void tcp_sack_score_clear(struct nsock *sk) {
@@ -1034,7 +1028,7 @@ void tcp_test_sack_score_clear(struct nsock *sk) {
 /**
  * @brief Handle a per-TCB retransmission or TIME_WAIT timer expiry.
  *
- * One rte_timer is multiplexed by @c status:
+ * One owner timer node is multiplexed by @c status:
  *
  *   SYN_SENT      -- retransmit SYN (same ISN); give up -> CLOSED + wake
  * connect SYN_RECV      -- retransmit SYN+ACK (same ISN/ack); give up -> free
@@ -1048,12 +1042,17 @@ void tcp_test_sack_score_clear(struct nsock *sk) {
  * candidate and therefore never rewinds snd_nxt.
  * Timer callbacks execute on the socket's owner lcore, serialized with
  * command handling, packet ingress, ACK processing, and TX flushing.
- * @param timer Expired DPDK timer (unused).
+ * @param timer Expired owner timer node (unused).
  * @param arg Owning @ref nsock.
  */
-static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
-                         void *arg) {
+static void tcp_timer_cb(__attribute__((unused)) struct owner_timer *timer,
+                         void *arg, uint64_t now_cycles) {
         struct nsock *sk = (struct nsock *)arg;
+        if (sk->u.tcp.close_deadline_cycles != 0 &&
+            now_cycles >= sk->u.tcp.close_deadline_cycles) {
+                tcp_abort_stream(sk, ETIMEDOUT, true, "close-deadline");
+                return;
+        }
         if (sk->u.tcp.status == TCP_STATUS_SYN_SENT) {
                 /* Active-open SYN RTO.  Completion wakes the parked CONNECT
                  * command; the application may then close the still-published
@@ -1079,7 +1078,9 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                                              TCP_SK_ARG(sk), sk->u.tcp.retries,
                                              delay_ms);
                         }
-                        tcp_arm_syn_timer(sk, delay_ms);
+                        if (tcp_arm_syn_timer(sk, delay_ms) != 0)
+                                tcp_abort_stream(sk, ENOBUFS, false,
+                                                 "timer-arm-failed");
                         return;
                 }
 
@@ -1116,7 +1117,8 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                                      "nxt=%u retry=%u",
                                      TCP_SK_ARG(sk), sk->u.tcp.snd_una,
                                      sk->u.tcp.sent_seq, sk->u.tcp.retries);
-                        /* Optional: RST / CLOSED; minimal: stop retrying */
+                        tcp_abort_stream(sk, ETIMEDOUT, true,
+                                         "data-rto-exhausted");
                         return;
                 }
                 sk->u.tcp.retries++;
@@ -1148,7 +1150,11 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                              sk->u.tcp.sack.pending.seq,
                              sk->u.tcp.sack.pending.end,
                              sk->u.tcp.rto_ms);
-                tcp_arm_data_rto(sk, sk->u.tcp.rto_ms);
+                if (tcp_arm_data_rto(sk, sk->u.tcp.rto_ms) != 0) {
+                        tcp_abort_stream(sk, ENOBUFS, true,
+                                         "timer-arm-failed");
+                        return;
+                }
                 tcp_mark_tx_dirty(sk);
         } else if (sk->u.tcp.status == TCP_STATUS_SYN_RECV) {
                 /*
@@ -1178,7 +1184,9 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                                              sk->u.tcp.sent_seq,
                                              sk->u.tcp.recv_ack, delay_ms);
                         }
-                        tcp_arm_syn_timer(sk, delay_ms);
+                        if (tcp_arm_syn_timer(sk, delay_ms) != 0)
+                                tcp_abort_stream(sk, ENOBUFS, false,
+                                                 "timer-arm-failed");
                         return;
                 }
                 /* Give up: release half-open child and backlog credit. */
@@ -1188,7 +1196,7 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                     sk->u.tcp.listener->u.tcp.syn_pending > 0) {
                         sk->u.tcp.listener->u.tcp.syn_pending--;
                 }
-                rte_timer_stop(&sk->u.tcp.timer);
+                (void)owner_timer_cancel(&sk->u.tcp.timer);
                 tcp_drain_recv(sk);
                 tcp_drain_send(sk);
                 nsock_free(sk);
@@ -1216,6 +1224,8 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                                      "nxt=%u retry=%u",
                                      TCP_SK_ARG(sk), sk->u.tcp.snd_una,
                                      sk->u.tcp.sent_seq, sk->u.tcp.retries);
+                        tcp_abort_stream(sk, ETIMEDOUT, true,
+                                         "fin-rto-exhausted");
                         return;
                 }
                 sk->u.tcp.retries++;
@@ -1262,7 +1272,11 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
                         }
                 }
 
-                tcp_arm_data_rto(sk, sk->u.tcp.rto_ms);
+                if (tcp_arm_data_rto(sk, sk->u.tcp.rto_ms) != 0) {
+                        tcp_abort_stream(sk, ENOBUFS, true,
+                                         "timer-arm-failed");
+                        return;
+                }
                 if (retransmit_data)
                         tcp_mark_tx_dirty(sk);
         }
@@ -1272,9 +1286,15 @@ static void tcp_timer_cb(__attribute__((unused)) struct rte_timer *timer,
  * @param sk Stream whose timer is armed.
  * @param delay_ms Expiry delay in milliseconds.
  */
-static void tcp_arm_data_rto(struct nsock *sk, uint64_t delay_ms) {
-        rte_timer_reset(&sk->u.tcp.timer, tcp_ms_to_cycles(delay_ms), SINGLE,
-                        tcp_timer_lcore(sk), tcp_timer_cb, sk);
+static int tcp_arm_data_rto(struct nsock *sk, uint64_t delay_ms) {
+        uint64_t now = owner_timer_now();
+        uint64_t delay = owner_timer_ms_to_cycles(delay_ms);
+        uint64_t deadline = delay > UINT64_MAX - now ? UINT64_MAX : now + delay;
+
+        if (sk->u.tcp.close_deadline_cycles != 0 &&
+            sk->u.tcp.close_deadline_cycles < deadline)
+                deadline = sk->u.tcp.close_deadline_cycles;
+        return owner_timer_arm_at(&sk->u.tcp.timer, deadline);
 }
 
 /** Owner-local implementation used to commit a peer-window update. */
@@ -1299,7 +1319,7 @@ static bool tcp_update_snd_wnd_local(struct nsock *sk, uint32_t seg_seq,
  * @param seg_wnd Unscaled 16-bit advertised window in host order.
  * @param scale Negotiated shift used to decode @p seg_wnd.
  */
-static void tcp_process_peer_ack_ex(struct nsock *sk, uint32_t ack,
+static bool tcp_process_peer_ack_ex(struct nsock *sk, uint32_t ack,
                                     bool classic_dup_candidate,
                                     bool apply_window, uint32_t seg_seq,
                                     uint16_t seg_wnd, uint8_t scale) {
@@ -1312,7 +1332,7 @@ static void tcp_process_peer_ack_ex(struct nsock *sk, uint32_t ack,
                 LOG_TCP_TRACE(
                     TCP_SK_FMT " event=peer-ack-ignored ack=%u una=%u nxt=%u",
                     TCP_SK_ARG(sk), ack, sk->u.tcp.snd_una, sk->u.tcp.sent_seq);
-                return;
+                return true;
         }
         window_accepted =
             apply_window && tcp_update_snd_wnd_local(
@@ -1465,7 +1485,7 @@ static void tcp_process_peer_ack_ex(struct nsock *sk, uint32_t ack,
                 if (sk->u.tcp.status != TCP_STATUS_TIME_WAIT &&
                     sk->u.tcp.status != TCP_STATUS_SYN_SENT &&
                     sk->u.tcp.status != TCP_STATUS_SYN_RECV)
-                        rte_timer_stop(&sk->u.tcp.timer);
+                        (void)owner_timer_cancel(&sk->u.tcp.timer);
 #endif
                 sk->u.tcp.retries = 0;
                 tcp_rtt_on_flight_acked(sk);
@@ -1474,7 +1494,11 @@ static void tcp_process_peer_ack_ex(struct nsock *sk, uint32_t ack,
                  */
                 sk->u.tcp.retries = 0;
 #ifndef TCP_TESTING
-                tcp_arm_data_rto(sk, sk->u.tcp.rto_ms);
+                if (tcp_arm_data_rto(sk, sk->u.tcp.rto_ms) != 0) {
+                        tcp_abort_stream(sk, ENOBUFS, true,
+                                         "timer-arm-failed");
+                        return false;
+                }
 #endif
         }
 
@@ -1513,17 +1537,19 @@ static void tcp_process_peer_ack_ex(struct nsock *sk, uint32_t ack,
         }
         if (need_tx || window_need_tx)
                 tcp_mark_tx_dirty(sk);
+        return true;
 }
 
 /** Process an ACK in states that do not consume its window advertisement. */
-static void tcp_process_peer_ack(struct nsock *sk, uint32_t ack) {
-        tcp_process_peer_ack_ex(sk, ack, false, false, 0, 0, 0);
+static bool tcp_process_peer_ack(struct nsock *sk, uint32_t ack) {
+        return tcp_process_peer_ack_ex(sk, ack, false, false, 0, 0, 0);
 }
 
 #ifdef TCP_TESTING
 void tcp_test_process_peer_ack(struct nsock *sk, uint32_t ack,
                                bool classic_duplicate) {
-        tcp_process_peer_ack_ex(sk, ack, classic_duplicate, false, 0, 0, 0);
+        (void)tcp_process_peer_ack_ex(sk, ack, classic_duplicate, false, 0, 0,
+                                      0);
 }
 #endif
 
@@ -1613,9 +1639,8 @@ void tcp_test_update_snd_wnd(struct nsock *sk, uint32_t seg_seq,
  * @param sk Stream whose timer is armed.
  * @param delay_ms Expiry delay in milliseconds.
  */
-static void tcp_arm_syn_timer(struct nsock *sk, uint64_t delay_ms) {
-        rte_timer_reset(&sk->u.tcp.timer, tcp_ms_to_cycles(delay_ms), SINGLE,
-                        tcp_timer_lcore(sk), tcp_timer_cb, sk);
+static int tcp_arm_syn_timer(struct nsock *sk, uint64_t delay_ms) {
+        return owner_timer_arm_after_ms(&sk->u.tcp.timer, delay_ms);
 }
 
 /** @brief Enter TIME_WAIT and arm the 2MSL expiry timer.
@@ -1624,8 +1649,9 @@ static void tcp_arm_syn_timer(struct nsock *sk, uint64_t delay_ms) {
 static void tcp_enter_time_wait(struct nsock *sk) {
         tcp_stream_set_status(sk, TCP_STATUS_TIME_WAIT);
         sk->u.tcp.retries = 0;
-        rte_timer_reset(&sk->u.tcp.timer, tcp_ms_to_cycles(TCP_2MSL_MS), SINGLE,
-                        tcp_timer_lcore(sk), tcp_timer_cb, sk);
+        sk->u.tcp.close_deadline_cycles = 0;
+        if (owner_timer_arm_after_ms(&sk->u.tcp.timer, TCP_2MSL_MS) != 0)
+                tcp_abort_stream(sk, ENOBUFS, false, "timer-arm-failed");
 }
 
 /**
@@ -1719,7 +1745,10 @@ static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
         }
         /* Independent SYN+ACK RTO; stopped when the final ACK arrives. */
         child->u.tcp.retries = 0;
-        tcp_arm_syn_timer(child, TCP_SYN_RTO_MS);
+        if (tcp_arm_syn_timer(child, TCP_SYN_RTO_MS) != 0) {
+                tcp_abort_stream(child, ENOBUFS, false, "timer-arm-failed");
+                return 0;
+        }
 
         LOG_INFO("tcp handshake [1/3] SYN rx " IP_FMT ":%u -> " IP_FMT
                  ":%u seq=%u; reply SYN+ACK seq=%u ack=%u syn_pending=%u",
@@ -1782,7 +1811,7 @@ static int tcp_state_syn_sent(struct nsock *sk, struct rte_tcp_hdr *hdr,
                 return 0;
         }
 
-        rte_timer_stop(&sk->u.tcp.timer);
+        (void)owner_timer_cancel(&sk->u.tcp.timer);
         tcp_update_snd_wnd(sk, ntohl(hdr->sent_seq), ntohl(hdr->recv_ack),
                            ntohs(hdr->rx_win), 0);
         tcp_rtt_reset(sk);
@@ -1837,7 +1866,9 @@ static int tcp_state_syn_recv(struct nsock *sk, struct rte_tcp_hdr *hdr,
                                  sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
 
                 sk->u.tcp.retries = 0;
-                tcp_arm_syn_timer(sk, TCP_SYN_RTO_MS);
+                if (tcp_arm_syn_timer(sk, TCP_SYN_RTO_MS) != 0)
+                        tcp_abort_stream(sk, ENOBUFS, false,
+                                         "timer-arm-failed");
                 return 0;
         }
 
@@ -1873,7 +1904,7 @@ static int tcp_state_syn_recv(struct nsock *sk, struct rte_tcp_hdr *hdr,
 
         /* Handshake done: stop SYN+ACK RTO before ESTABLISHED / accept_queue.
          */
-        rte_timer_stop(&sk->u.tcp.timer);
+        (void)owner_timer_cancel(&sk->u.tcp.timer);
         sk->u.tcp.retries = 0;
 
         tcp_update_snd_wnd(sk, ntohl(hdr->sent_seq), ntohl(hdr->recv_ack),
@@ -1948,8 +1979,10 @@ static int tcp_state_established(struct nsock *sk, struct rte_tcp_hdr *hdr,
                                    sk->u.tcp.snd_wnd_valid &&
                                    advertised == sk->u.tcp.snd_wnd;
 
-                tcp_process_peer_ack_ex(sk, seg_ack, classic_dup, true,
-                                        seg_seq, ntohs(hdr->rx_win), scale);
+                if (!tcp_process_peer_ack_ex(sk, seg_ack, classic_dup, true,
+                                             seg_seq, ntohs(hdr->rx_win),
+                                             scale))
+                        return 0;
         }
 
         /* ACK and advertised-window state were committed atomically above. */
@@ -2106,7 +2139,8 @@ static int tcp_state_last_ack(struct nsock *sk, struct rte_tcp_hdr *hdr,
         uint32_t acknum = ntohl(hdr->recv_ack);
         /* Retire any still-unacked data (and FIN seq) before the final check.
          */
-        tcp_process_peer_ack(sk, acknum);
+        if (!tcp_process_peer_ack(sk, acknum))
+                return 0;
 
         if (acknum != sk->u.tcp.sent_seq) {
                 LOG_DEBUG(
@@ -2188,7 +2222,8 @@ static int tcp_state_closing(struct nsock *sk, struct rte_tcp_hdr *hdr,
                 return 0;
 
         uint32_t acknum = ntohl(hdr->recv_ack);
-        tcp_process_peer_ack(sk, acknum);
+        if (!tcp_process_peer_ack(sk, acknum))
+                return 0;
 
         if (acknum != sk->u.tcp.sent_seq) {
                 LOG_DEBUG(
@@ -2217,8 +2252,8 @@ static int tcp_state_fin_wait_1(struct nsock *sk, struct rte_tcp_hdr *hdr,
         uint32_t acknum = has_ack ? ntohl(hdr->recv_ack) : 0;
 
         /* Retire unacked sndbuf data (and FIN) before state transitions. */
-        if (has_ack)
-                tcp_process_peer_ack(sk, acknum);
+        if (has_ack && !tcp_process_peer_ack(sk, acknum))
+                return 0;
 
         int ack_ok = has_ack && (acknum == sk->u.tcp.sent_seq);
         uint32_t seq = ntohl(hdr->sent_seq);
@@ -2252,6 +2287,19 @@ static int tcp_state_fin_wait_1(struct nsock *sk, struct rte_tcp_hdr *hdr,
 
         if (ack_ok) {
                 tcp_stream_set_status(sk, TCP_STATUS_FIN_WAIT_2);
+                uint64_t now = owner_timer_now();
+                uint64_t timeout =
+                    owner_timer_ms_to_cycles(TCP_FIN_WAIT_2_TIMEOUT_MS);
+                uint64_t deadline = timeout > UINT64_MAX - now
+                                        ? UINT64_MAX
+                                        : now + timeout;
+                if (sk->u.tcp.close_deadline_cycles == 0 ||
+                    deadline < sk->u.tcp.close_deadline_cycles)
+                        sk->u.tcp.close_deadline_cycles = deadline;
+                if (owner_timer_arm_at(&sk->u.tcp.timer,
+                                       sk->u.tcp.close_deadline_cycles) != 0)
+                        tcp_abort_stream(sk, ENOBUFS, true,
+                                         "timer-arm-failed");
                 return 0;
         }
 
@@ -2276,8 +2324,9 @@ static int tcp_state_fin_wait_2(struct nsock *sk, struct rte_tcp_hdr *hdr,
                 return 0;
 
         /* Harmless if already fully ACKed; covers late/dup data ACKs. */
-        if (hdr->tcp_flags & RTE_TCP_ACK_FLAG)
-                tcp_process_peer_ack(sk, ntohl(hdr->recv_ack));
+        if ((hdr->tcp_flags & RTE_TCP_ACK_FLAG) &&
+            !tcp_process_peer_ack(sk, ntohl(hdr->recv_ack)))
+                return 0;
 
         /* Only peer FIN advances us. */
         if (!(hdr->tcp_flags & RTE_TCP_FIN_FLAG))
@@ -2351,8 +2400,9 @@ static int tcp_state_close_wait(struct nsock *sk, struct rte_tcp_hdr *hdr,
                 return 0;
 
         /* App may still have unacked data sent before peer FIN. */
-        if (hdr->tcp_flags & RTE_TCP_ACK_FLAG)
-                tcp_process_peer_ack(sk, ntohl(hdr->recv_ack));
+        if ((hdr->tcp_flags & RTE_TCP_ACK_FLAG) &&
+            !tcp_process_peer_ack(sk, ntohl(hdr->recv_ack)))
+                return 0;
 
         if (hdr->tcp_flags & RTE_TCP_FIN_FLAG) {
                 struct tcp_fragment *ack_f =
@@ -2731,6 +2781,81 @@ static void tcp_send_reset_for_stream(const struct nsock *sk,
                      TCP_SK_ARG(sk), rst.sent_seq, rst.recv_ack);
 }
 
+/** Best-effort locally initiated reset; local teardown never depends on it. */
+static const char *tcp_try_send_abort_reset(const struct nsock *sk) {
+        struct inout_ring *ring;
+        const uint8_t *dst_mac;
+        struct tcp_fragment rst;
+        struct rte_mbuf *out;
+
+        if (g_net.mp == NULL)
+                return "no-mbuf-pool";
+        ring = ring_instance();
+        if (ring == NULL || ring->out == NULL)
+                return "no-output-ring";
+        dst_mac = arp_resolve(g_net.mp, ring->out, sk->u.tcp.remote_ip,
+                              owner_timer_now());
+        if (dst_mac == NULL)
+                return "arp-unresolved";
+
+        memset(&rst, 0, sizeof(rst));
+        rst.src_port = sk->local_port;
+        rst.dst_port = sk->u.tcp.remote_port;
+        rst.sent_seq = sk->u.tcp.sent_seq;
+        rst.recv_ack = sk->u.tcp.recv_ack;
+        rst.data_off = (5 << 4);
+        rst.tcp_flags = RTE_TCP_RST_FLAG | RTE_TCP_ACK_FLAG;
+        out = tcp_build_pkt(g_net.mp, sk->local_ip, sk->u.tcp.remote_ip,
+                            dst_mac, &rst);
+        if (out == NULL)
+                return "mbuf-allocation";
+        if (rte_ring_sp_enqueue(ring->out, out) != 0) {
+                rte_pktmbuf_free(out);
+                return "output-ring-full";
+        }
+        return "sent";
+}
+
+static void tcp_abort_stream(struct nsock *sk, int error, bool send_reset,
+                             const char *reason) {
+        TCP_STATUS old;
+        const char *rst_result = "skipped";
+
+        if (sk == NULL)
+                return;
+        old = sk->u.tcp.status;
+        (void)owner_timer_cancel(&sk->u.tcp.timer);
+        sk->u.tcp.close_deadline_cycles = 0;
+
+        if (send_reset && old != TCP_STATUS_CLOSED &&
+            old != TCP_STATUS_LISTEN && old != TCP_STATUS_SYN_SENT &&
+            old != TCP_STATUS_TIME_WAIT)
+                rst_result = tcp_try_send_abort_reset(sk);
+
+        if (old == TCP_STATUS_SYN_RECV && sk->u.tcp.listener != NULL &&
+            sk->u.tcp.listener->u.tcp.syn_pending > 0)
+                sk->u.tcp.listener->u.tcp.syn_pending--;
+
+        tcp_stream_set_status(sk, TCP_STATUS_CLOSED);
+        tcp_drain_send(sk);
+        tcp_drain_recv(sk);
+        socket_owner_abort_waiters(sk, error);
+        socket_owner_ready_post(sk, OWNER_IO_EV_ERROR | OWNER_IO_EV_HUP);
+        LOG_TCP_WARN(TCP_SK_FMT
+                     " event=abort reason=%s from=%s error=%d rst=%s",
+                     TCP_SK_ARG(sk), reason == NULL ? "unknown" : reason,
+                     tcp_status_str(old), error, rst_result);
+
+        /* Half-open children are not queued for accept; closed established
+         * children remain queued until accept removes their reference. */
+        if (sk->app_closed || old == TCP_STATUS_SYN_RECV)
+                nsock_free(sk);
+}
+
+void tcp_force_abort(struct nsock *sk, int error, const char *reason) {
+        tcp_abort_stream(sk, error, true, reason);
+}
+
 /*
  * SYN_SENT validates RST by ACKing our SYN.
  * Synchronized states (SYN_RECV, ESTABLISHED, etc.) use an exact
@@ -2766,29 +2891,7 @@ static void tcp_abort_on_rst(struct nsock *sk) {
                  TCP_ID_ARG(sk), tcp_status_str(old),
                  IP_ARG(sk->u.tcp.remote_ip),
                  rte_be_to_cpu_16(sk->u.tcp.remote_port));
-        rte_timer_stop(&sk->u.tcp.timer);
-
-        if (old == TCP_STATUS_SYN_RECV) {
-                struct nsock *listener = sk->u.tcp.listener;
-                if (listener != NULL && listener->u.tcp.syn_pending > 0) {
-                        listener->u.tcp.syn_pending--;
-                }
-
-                tcp_drain_send(sk);
-                tcp_drain_recv(sk);
-                nsock_free(sk);
-                return;
-        }
-
-        tcp_stream_set_status(sk, TCP_STATUS_CLOSED);
-        tcp_drain_send(sk);
-        tcp_drain_recv(sk);
-
-        /* RST completes every command parked on this owner-side socket. */
-        socket_owner_abort_waiters(sk, ECONNRESET);
-        socket_owner_ready_post(sk, OWNER_IO_EV_ERROR | OWNER_IO_EV_HUP);
-        if (sk->app_closed)
-                nsock_free(sk);
+        tcp_abort_stream(sk, ECONNRESET, false, "peer-rst");
 }
 
 /**
@@ -2808,6 +2911,7 @@ enum tcp_sndbuf_flush_result {
         TCP_SNDBUF_SENT,
         TCP_SNDBUF_RETRY,
         TCP_SNDBUF_ARP_WAIT,
+        TCP_SNDBUF_DESTROYED,
 };
 
 /**
@@ -3081,7 +3185,11 @@ tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
         /* Data stays in sndbuf until ACK. */
         if (was_idle) {
                 sk->u.tcp.retries = 0;
-                tcp_arm_data_rto(sk, sk->u.tcp.rto_ms);
+                if (tcp_arm_data_rto(sk, sk->u.tcp.rto_ms) != 0) {
+                        tcp_abort_stream(sk, ENOBUFS, true,
+                                         "timer-arm-failed");
+                        return TCP_SNDBUF_DESTROYED;
+                }
         }
         result = TCP_SNDBUF_SENT;
 
@@ -3217,6 +3325,8 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
                         return SOCK_TX_FLUSH_ARP_WAIT;
                 if (sndbuf_result == TCP_SNDBUF_RETRY)
                         return SOCK_TX_FLUSH_RETRY;
+                if (sndbuf_result == TCP_SNDBUF_DESTROYED)
+                        return SOCK_TX_FLUSH_DESTROYED;
                 if (sndbuf_result == TCP_SNDBUF_SENT)
                         continue;
 
@@ -3234,13 +3344,22 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
                         if (tcp_enqueue_fragment(sk, fin_f) == 0) {
                                 sk->u.tcp.sent_seq += 1;
                                 sk->u.tcp.fin_deferred = false;
-                                tcp_arm_data_rto(sk, sk->u.tcp.rto_ms);
+                                if (tcp_arm_data_rto(
+                                        sk, sk->u.tcp.rto_ms) != 0) {
+                                        tcp_abort_stream(
+                                            sk, ENOBUFS, true,
+                                            "timer-arm-failed");
+                                        return SOCK_TX_FLUSH_DESTROYED;
+                                }
                                 LOG_INFO("tcp FIN queue after data " TCP_ID_FMT
                                          " seq=%u",
                                          TCP_ID_ARG(sk),
                                          sk->u.tcp.sent_seq - 1);
                                 continue;
                         }
+                        tcp_abort_stream(sk, ENOBUFS, true,
+                                         "deferred-fin-enqueue");
+                        return SOCK_TX_FLUSH_DESTROYED;
                 }
                 return SOCK_TX_FLUSH_IDLE;
         }
@@ -3473,13 +3592,27 @@ int tcp_close(struct nsock *sk) {
         }
 
         if (status == TCP_STATUS_SYN_SENT) {
-                rte_timer_stop(&sk->u.tcp.timer);
+                (void)owner_timer_cancel(&sk->u.tcp.timer);
                 tcp_stream_set_status(sk, TCP_STATUS_CLOSED);
                 socket_owner_complete_connect(sk, ECANCELED);
                 tcp_drain_send(sk);
                 tcp_drain_recv(sk);
                 nsock_free(sk);
                 return 0;
+        }
+
+        if (sk->u.tcp.linger_enabled && sk->u.tcp.linger_seconds == 0) {
+                tcp_abort_stream(sk, ECONNRESET, true, "zero-linger");
+                return 0;
+        }
+        if (sk->u.tcp.linger_enabled &&
+            sk->u.tcp.close_deadline_cycles == 0) {
+                uint64_t milliseconds =
+                    (uint64_t)sk->u.tcp.linger_seconds * 1000U;
+                uint64_t delay = owner_timer_ms_to_cycles(milliseconds);
+                uint64_t now = owner_timer_now();
+                sk->u.tcp.close_deadline_cycles =
+                    delay > UINT64_MAX - now ? UINT64_MAX : now + delay;
         }
 
         if (status == TCP_STATUS_ESTABLISHED || status == TCP_STATUS_SYN_RECV) {
@@ -3501,9 +3634,23 @@ int tcp_close(struct nsock *sk) {
                         sk->u.tcp.sent_seq++;
                 }
                 sk->u.tcp.retries = 0;
-                if (sk->u.tcp.snd_una != sk->u.tcp.sent_seq)
-                        tcp_arm_data_rto(sk, sk->u.tcp.rto_ms);
                 tcp_stream_set_status(sk, TCP_STATUS_FIN_WAIT_1);
+                if (sk->u.tcp.snd_una != sk->u.tcp.sent_seq &&
+                    tcp_arm_data_rto(sk, sk->u.tcp.rto_ms) != 0) {
+                        tcp_abort_stream(sk, ENOBUFS, true,
+                                         "timer-arm-failed");
+                        errno = ENOBUFS;
+                        return -1;
+                }
+                if (sk->u.tcp.snd_una == sk->u.tcp.sent_seq &&
+                    sk->u.tcp.close_deadline_cycles != 0 &&
+                    owner_timer_arm_at(&sk->u.tcp.timer,
+                                       sk->u.tcp.close_deadline_cycles) != 0) {
+                        tcp_abort_stream(sk, ENOBUFS, true,
+                                         "timer-arm-failed");
+                        errno = ENOBUFS;
+                        return -1;
+                }
                 if (sk->u.tcp.fin_deferred)
                         tcp_mark_tx_dirty(sk);
                 return 0;
@@ -3523,9 +3670,23 @@ int tcp_close(struct nsock *sk) {
                         sk->u.tcp.sent_seq++;
                 }
                 sk->u.tcp.retries = 0;
-                if (sk->u.tcp.snd_una != sk->u.tcp.sent_seq)
-                        tcp_arm_data_rto(sk, sk->u.tcp.rto_ms);
                 tcp_stream_set_status(sk, TCP_STATUS_LAST_ACK);
+                if (sk->u.tcp.snd_una != sk->u.tcp.sent_seq &&
+                    tcp_arm_data_rto(sk, sk->u.tcp.rto_ms) != 0) {
+                        tcp_abort_stream(sk, ENOBUFS, true,
+                                         "timer-arm-failed");
+                        errno = ENOBUFS;
+                        return -1;
+                }
+                if (sk->u.tcp.snd_una == sk->u.tcp.sent_seq &&
+                    sk->u.tcp.close_deadline_cycles != 0 &&
+                    owner_timer_arm_at(&sk->u.tcp.timer,
+                                       sk->u.tcp.close_deadline_cycles) != 0) {
+                        tcp_abort_stream(sk, ENOBUFS, true,
+                                         "timer-arm-failed");
+                        errno = ENOBUFS;
+                        return -1;
+                }
                 tcp_drain_recv(sk);
                 if (sk->u.tcp.fin_deferred)
                         tcp_mark_tx_dirty(sk);
@@ -3546,10 +3707,7 @@ fin_enqueue_failed:
          * enhancement can notify the peer explicitly.
          */
         LOG_ERROR("tcp_close: FIN enqueue failed socket=%u; abort", sk->id);
-        tcp_stream_set_status(sk, TCP_STATUS_CLOSED);
-        tcp_drain_send(sk);
-        tcp_drain_recv(sk);
-        nsock_free(sk);
+        tcp_abort_stream(sk, ENOBUFS, true, "fin-enqueue");
         errno = ENOBUFS;
         return -1;
 }
@@ -3642,7 +3800,11 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
         }
 
         tcp_stream_set_status(sk, TCP_STATUS_SYN_SENT);
-        tcp_arm_syn_timer(sk, TCP_SYN_RTO_MS);
+        if (tcp_arm_syn_timer(sk, TCP_SYN_RTO_MS) != 0) {
+                tcp_abort_stream(sk, ENOBUFS, false, "timer-arm-failed");
+                errno = ENOBUFS;
+                return -1;
+        }
 
         LOG_TCP_INFO("tcp connect SYN_SENT " TCP_ID_FMT " " IP_FMT
                      ":%u -> " IP_FMT ":%u",

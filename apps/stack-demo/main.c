@@ -80,7 +80,7 @@ int main(int argc, char *argv[]) {
         net_context_set_mempool(mp);
         struct port_topology topology = port_init(0, mp, requested_mtu);
         net_context_init(0, demo_local_ip, topology.ipv4_mtu);
-        rte_timer_subsystem_init();
+        owner_timer_global_init();
         struct ipv4_reassembly reassembly = {0};
         if (ipv4_reassembly_init(&reassembly) != 0)
                 rte_exit(EXIT_FAILURE, "IPv4 reassembly init failed\n");
@@ -97,8 +97,9 @@ int main(int argc, char *argv[]) {
                 rte_exit(EXIT_FAILURE, "stack owner shard init failed\n");
         struct inout_ring *ring = ring_for_lcore(worker_lcore);
         struct stack_runtime_worker runtime;
-        if (stack_runtime_worker_init(&runtime, worker_lcore, 0, mp, ring, NULL,
-                                      NULL) != 0)
+        if (stack_runtime_worker_init(&runtime, worker_lcore, 0,
+                                      NSOCK_ID_DEFAULT_CAPACITY, mp, ring,
+                                      NULL, NULL) != 0)
                 rte_exit(EXIT_FAILURE, "stack runtime init failed\n");
 
         unsigned int next_app_lcore = worker_lcore;

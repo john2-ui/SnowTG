@@ -1,6 +1,8 @@
 #ifndef NETARCH_STACK_RUNTIME_H
 #define NETARCH_STACK_RUNTIME_H
 
+#include "owner_timer.h"
+
 /**
  * @file stack_runtime.h
  * @brief Owner-worker loop integration point for upper-layer reactors.
@@ -70,6 +72,7 @@ struct stack_runtime_worker {
         stack_runtime_reactor_fn reactor;
         void *reactor_ctx;
         struct stack_runtime_metrics metrics;
+        struct owner_timer_engine timer_engine;
         uint64_t last_timer_tsc;
         uint64_t last_arp_maintenance_tsc;
         uint64_t last_arp_sweep_tsc;
@@ -81,7 +84,7 @@ struct stack_runtime_worker {
  */
 int stack_runtime_worker_init(struct stack_runtime_worker *worker,
                               unsigned int lcore_id, uint16_t queue_id,
-                              struct rte_mempool *mp,
+                              uint32_t timer_capacity, struct rte_mempool *mp,
                               struct inout_ring *ring,
                               stack_runtime_reactor_fn reactor,
                               void *reactor_ctx);

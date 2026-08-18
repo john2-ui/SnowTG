@@ -41,6 +41,14 @@ struct owner_io_memory_snapshot {
         bool above_high_water; /**< Paused admission may resume while true. */
 };
 
+#define OWNER_IO_TCP_STATE_MAX 11U
+/** Owner-local TCP state census used by shutdown diagnostics. */
+struct owner_io_tcp_lifecycle_snapshot {
+        uint32_t states[OWNER_IO_TCP_STATE_MAX];
+        uint32_t total;
+        uint32_t app_closed;
+};
+
 /**
  * Create a UDP or TCP socket directly on its owning packet-worker lcore.
  *
@@ -100,5 +108,10 @@ unsigned int owner_io_ready_burst(struct owner_io_event *events,
 /** Read owner-local TCP pool availability; callable only on that owner lcore.
  */
 int owner_io_memory_snapshot(struct owner_io_memory_snapshot *snapshot);
+/** Count TCP sockets on the calling owner without crossing lcore boundaries. */
+int owner_io_tcp_lifecycle_snapshot(
+    struct owner_io_tcp_lifecycle_snapshot *snapshot);
+/** Abort and release every TCP socket on the calling owner. */
+uint32_t owner_io_tcp_force_cleanup(void);
 
 #endif /* NETARCH_OWNER_IO_H */

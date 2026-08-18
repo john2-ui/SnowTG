@@ -443,11 +443,17 @@ static int test_stats(void) {
         first.ofo_accepted_segments = 5;
         first.ofo_reorder_distance_max = 100;
         first.ofo_pressure_active = 1;
+        first.tcp_drain_residual = 3;
+        first.tcp_forced_cleanup = 2;
+        first.tcp_pool_objects_in_use = 1;
         second.ofo_segments_current = 2;
         second.ofo_segments_peak = 7;
         second.ofo_accepted_segments = 6;
         second.ofo_reorder_distance_max = 80;
         second.ofo_pressure_active = 0;
+        second.tcp_drain_residual = 4;
+        second.tcp_forced_cleanup = 3;
+        second.tcp_pool_objects_in_use = 2;
         tg_stats_snapshot_add_runtime(&interval, &first);
         tg_stats_snapshot_add_runtime(&interval, &second);
         ASSERT_TRUE(interval.ofo_segments_current == 2);
@@ -467,6 +473,9 @@ static int test_stats(void) {
         ASSERT_TRUE(aggregate.ofo_accepted_segments == 11);
         ASSERT_TRUE(aggregate.ofo_reorder_distance_max == 100);
         ASSERT_TRUE(aggregate.ofo_pressure_active == 2);
+        ASSERT_TRUE(aggregate.tcp_drain_residual == 7);
+        ASSERT_TRUE(aggregate.tcp_forced_cleanup == 5);
+        ASSERT_TRUE(aggregate.tcp_pool_objects_in_use == 3);
         return 0;
 }
 
