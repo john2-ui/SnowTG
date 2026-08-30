@@ -8,6 +8,7 @@
  * software-dispatching RX packets when hardware RSS is unavailable.
  */
 
+#include "app_args.h"
 #include "core/flow.h"
 #include "core/flow_pool.h"
 #include "core/conn_pool.h"
@@ -47,124 +48,8 @@
 #include <string.h>
 #include <sys/socket.h>
 
-/** @brief Scenario loaded when no application scenario path is supplied. */
-#define TG_DEFAULT_SCENARIO_PATH "scenarios/bootstrap_http.json"
 /** Last-resort bound after admissions and active transactions have stopped. */
 #define TG_DRAIN_TIMEOUT_SEC 120U
-
-/** @brief Source IPv4 address used by the current single-port test topology. */
-static const uint32_t tg_local_ip = MAKE_IPV4_ADDR(192, 168, 21, 2);
-
-/**
- * Parse application arguments after EAL has consumed its arguments.
- *
- * The worker count selects protocol-owner shards. The port setup may use fewer
- * RX queues and software-dispatch packets to those shards when RSS is absent.
- */
-static int tg_parse_app_args(int argc, char *argv[], unsigned int *workers_out,
-                             const char **scenario_out,
-                             uint32_t *socket_id_max_out,
-                             const char **stats_csv_out, uint16_t *mtu_out) {
-        bool workers_seen = false;
-        bool socket_id_max_seen = false;
-        bool stats_csv_seen = false;
-        bool mtu_seen = false;
-        const char *scenario_path = NULL;
-        const char *stats_csv_path = NULL;
-        unsigned int workers = 1;
-        uint32_t socket_id_max = 0;
-        uint16_t requested_mtu = 0;
-
-        if (workers_out == NULL || scenario_out == NULL ||
-            socket_id_max_out == NULL || stats_csv_out == NULL ||
-            mtu_out == NULL) {
-                errno = EINVAL;
-                return -1;
-        }
-
-        for (int i = 1; i < argc; i++) {
-                if (strcmp(argv[i], "--workers") == 0) {
-                        char *end = NULL;
-                        unsigned long value;
-
-                        if (workers_seen || ++i == argc) {
-                                errno = EINVAL;
-                                return -1;
-                        }
-                        errno = 0;
-                        value = strtoul(argv[i], &end, 10);
-                        if (errno != 0 || end == argv[i] || *end != '\0' ||
-                            value == 0 || value > UINT_MAX) {
-                                errno = EINVAL;
-                                return -1;
-                        }
-                        workers = (unsigned int)value;
-                        workers_seen = true;
-                        continue;
-                }
-                if (strcmp(argv[i], "--socket-id-max") == 0) {
-                        char *end = NULL;
-                        unsigned long value;
-
-                        if (socket_id_max_seen || ++i == argc) {
-                                errno = EINVAL;
-                                return -1;
-                        }
-                        errno = 0;
-                        value = strtoul(argv[i], &end, 10);
-                        if (errno != 0 || end == argv[i] || *end != '\0' ||
-                            value == 0 || value > UINT32_MAX) {
-                                errno = EINVAL;
-                                return -1;
-                        }
-                        socket_id_max = (uint32_t)value;
-                        socket_id_max_seen = true;
-                        continue;
-                }
-                if (strcmp(argv[i], "--stats-csv") == 0) {
-                        if (stats_csv_seen || ++i == argc ||
-                            argv[i][0] == '\0') {
-                                errno = EINVAL;
-                                return -1;
-                        }
-                        stats_csv_path = argv[i];
-                        stats_csv_seen = true;
-                        continue;
-                }
-                if (strcmp(argv[i], "--mtu") == 0) {
-                        char *end = NULL;
-                        unsigned long value;
-
-                        if (mtu_seen || ++i == argc) {
-                                errno = EINVAL;
-                                return -1;
-                        }
-                        errno = 0;
-                        value = strtoul(argv[i], &end, 10);
-                        if (errno != 0 || end == argv[i] || *end != '\0' ||
-                            value < IPV4_MIN_MTU || value > UINT16_MAX) {
-                                errno = EINVAL;
-                                return -1;
-                        }
-                        requested_mtu = (uint16_t)value;
-                        mtu_seen = true;
-                        continue;
-                }
-                if (argv[i][0] == '-' || scenario_path != NULL) {
-                        errno = EINVAL;
-                        return -1;
-                }
-                scenario_path = argv[i];
-        }
-
-        *workers_out = workers;
-        *scenario_out =
-            scenario_path == NULL ? TG_DEFAULT_SCENARIO_PATH : scenario_path;
-        *socket_id_max_out = socket_id_max;
-        *stats_csv_out = stats_csv_path;
-        *mtu_out = requested_mtu;
-        return 0;
-}
 
 /**
  * Per-packet-worker traffic-generator state.
@@ -873,6 +758,7 @@ static void tg_report_aggregate(struct tg_worker *workers,
  * @return EXIT_SUCCESS after clean shutdown; failures exit through DPDK.
  */
 int main(int argc, char *argv[]) {
+        struct tg_app_config app_config;
         const char *scenario_path;
         const char *stats_csv_path;
         int eal_args;
@@ -898,13 +784,20 @@ int main(int argc, char *argv[]) {
         argv += eal_args;
 
         /* Stage 2: Parse application options and locate the scenario file. */
-        if (tg_parse_app_args(argc, argv, &worker_count, &scenario_path,
-                              &socket_id_max_override, &stats_csv_path,
-                              &requested_mtu) != 0)
+        if (tg_app_config_parse(argc, argv, &app_config) != 0)
                 rte_exit(EXIT_FAILURE, "usage: traffic-gen [--workers N] "
                                        "[--socket-id-max N] "
                                        "[--stats-csv PATH] [--mtu BYTES] "
+                                       "[--local-ip IPv4] [--port-id N] "
                                        "[scenario.json]\n");
+        worker_count = app_config.worker_count;
+        scenario_path = app_config.scenario_path;
+        socket_id_max_override = app_config.socket_id_max_override;
+        stats_csv_path = app_config.stats_csv_path;
+        requested_mtu = app_config.requested_mtu;
+        if (!rte_eth_dev_is_valid_port(app_config.port_id))
+                rte_exit(EXIT_FAILURE, "DPDK port id %u is not available\n",
+                         app_config.port_id);
 
         /* Stage 3: Load the scenario and validate its shard constraints. */
         if (worker_count > RTE_MAX_LCORE)
@@ -950,9 +843,11 @@ int main(int argc, char *argv[]) {
                 rte_exit(EXIT_FAILURE, "rte_pktmbuf_pool_create() failed\n");
 
         net_context_set_mempool(mp);
-        port_topology =
-            port_init_queues(0, mp, (uint16_t)worker_count, requested_mtu);
-        net_context_init(0, tg_local_ip, port_topology.ipv4_mtu);
+        port_topology = port_init_queues(app_config.port_id, mp,
+                                         (uint16_t)worker_count,
+                                         requested_mtu);
+        net_context_init(app_config.port_id, app_config.local_ip,
+                         port_topology.ipv4_mtu);
         owner_timer_global_init();
         if (ipv4_reassembly_init(&reassembly) != 0)
                 rte_exit(EXIT_FAILURE, "IPv4 reassembly init failed\n");

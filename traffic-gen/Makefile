@@ -17,6 +17,7 @@ LOG_LEVEL ?= LOG_LVL_WARN
 LLHTTP_DIR := ../third_party/llhttp
 # @brief Application and parser sources compiled into the executable.
 SRCS := main_tg.c \
+	app_args.c \
 	core/reactor.c \
 	core/conn_pool.c \
 	core/flow.c \

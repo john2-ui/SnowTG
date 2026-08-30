@@ -49,6 +49,7 @@ FLOW_UDP_TEST := $(BUILD_DIR)/test_flow_udp
 IPV4_REASSEMBLY_TEST := $(BUILD_DIR)/test_ipv4_reassembly
 STATS_CSV_TEST := $(BUILD_DIR)/test_stats_csv
 CONN_POOL_TEST := $(BUILD_DIR)/test_conn_pool
+APP_ARGS_TEST := $(BUILD_DIR)/test_app_args
 LLHTTP_DIR := ../third_party/llhttp
 HTTP_CLIENT_CFLAGS := $(TEST_CFLAGS) -I../traffic-gen/core \
 	-I../traffic-gen/proto -I../traffic-gen/proto/http \
@@ -84,7 +85,7 @@ SCENARIO_SCHEDULER_OBJS := $(BUILD_DIR)/test_scenario_scheduler.o \
 .PHONY: all test test-arp test-owner-io test-owner-timer test-http-client test-dns-client \
 	test-scenario-scheduler \
 	test-rx-dispatch test-port-topology test-flow-udp test-ipv4-reassembly \
-	test-stats-csv test-conn-pool \
+	test-stats-csv test-conn-pool test-app-args \
 	test-tcp-ephemeral test-tcp-sack test-tcp-cc clean
 
 all: test
@@ -93,7 +94,8 @@ all: test
 test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(SACK_TEST) $(TCP_CC_TEST) $(EPHEMERAL_TEST) $(OWNER_TIMER_TEST) $(OWNER_IO_TEST) \
 	$(HTTP_CLIENT_TEST) $(DNS_CLIENT_TEST) $(SCENARIO_SCHEDULER_TEST) $(ARP_TEST) \
 	$(RX_DISPATCH_TEST) $(PORT_TOPOLOGY_TEST) $(FLOW_UDP_TEST) \
-	$(IPV4_REASSEMBLY_TEST) $(STATS_CSV_TEST) $(CONN_POOL_TEST)
+	$(IPV4_REASSEMBLY_TEST) $(STATS_CSV_TEST) $(CONN_POOL_TEST) \
+	$(APP_ARGS_TEST)
 	$(RBTREE_TEST)
 	$(OFO_TEST)
 	$(PAWS_TEST)
@@ -112,6 +114,7 @@ test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(SACK_TEST) $(TCP_CC_TEST) $(EPHE
 	$(IPV4_REASSEMBLY_TEST) --no-huge --no-pci --file-prefix ipv4-reassembly-test
 	$(STATS_CSV_TEST)
 	$(CONN_POOL_TEST)
+	$(APP_ARGS_TEST)
 
 test-arp: $(ARP_TEST)
 
@@ -142,6 +145,8 @@ test-ipv4-reassembly: $(IPV4_REASSEMBLY_TEST)
 test-stats-csv: $(STATS_CSV_TEST)
 
 test-conn-pool: $(CONN_POOL_TEST)
+
+test-app-args: $(APP_ARGS_TEST)
 
 $(RBTREE_TEST): test_rbtree.c ../pro-stack/rbtree.c ../pro-stack/rbtree.h | $(BUILD_DIR)
 	$(CC) $(TEST_CFLAGS) test_rbtree.c ../pro-stack/rbtree.c -o $@
@@ -244,6 +249,11 @@ $(CONN_POOL_TEST): test_conn_pool.c ../traffic-gen/core/conn_pool.c \
 	$(CC) $(TEST_CFLAGS) -I../pro-stack -I../traffic-gen/core \
 		-I../traffic-gen/proto test_conn_pool.c \
 		../traffic-gen/core/conn_pool.c -o $@
+
+$(APP_ARGS_TEST): test_app_args.c ../traffic-gen/app_args.c \
+		../traffic-gen/app_args.h ../pro-stack/config.h | $(BUILD_DIR)
+	$(CC) $(TEST_CFLAGS) -I../traffic-gen -I../pro-stack \
+		test_app_args.c ../traffic-gen/app_args.c -o $@
 
 $(HTTP_CLIENT_TEST): $(HTTP_CLIENT_OBJS)
 	$(CC) $(HTTP_CLIENT_OBJS) -o $@ $(SANITIZER_LDFLAGS)
