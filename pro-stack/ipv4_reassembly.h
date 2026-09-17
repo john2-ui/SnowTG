@@ -3,7 +3,7 @@
 
 /**
  * @file ipv4_reassembly.h
- * @brief Main-lcore IPv4 fragment reassembly before owner dispatch.
+ * @brief Single-owner IPv4 fragment reassembly before socket dispatch.
  */
 
 #include <rte_ip_frag.h>
@@ -18,7 +18,7 @@ struct ipv4_reassembly {
         uint64_t last_sweep_cycles;
 };
 
-/** Initialize one main-lcore reassembly context. */
+/** Initialize one reassembly context; access it from one lcore only. */
 int ipv4_reassembly_init(struct ipv4_reassembly *ctx);
 /**
  * Process one Ethernet frame. Unfragmented frames pass through unchanged.

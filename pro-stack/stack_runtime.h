@@ -11,14 +11,16 @@
 #include <stdint.h>
 
 struct rte_mempool;
+struct rte_mbuf;
 struct inout_ring;
+struct ipv4_reassembly;
 
 typedef void (*stack_runtime_reactor_fn)(void *ctx, unsigned int budget);
 
 /** Owner-local counters accumulated between traffic-generator reports. */
 struct stack_runtime_metrics {
         uint64_t worker_turns;       /**< Completed worker-loop iterations. */
-        uint64_t rx_packets;         /**< Packets dispatched from ring->in. */
+        uint64_t rx_packets;         /**< Frames delivered to the local protocol stack. */
         uint64_t tx_flush_calls;     /**< Dirty-socket transport flush calls. */
         /** Dirty queue entries dequeued; retained under the old log name. */
         uint64_t socket_scans;
@@ -31,7 +33,7 @@ struct stack_runtime_metrics {
         uint64_t dirty_tx_budget_exhausted;
         uint64_t udp_tx_queue_drops; /**< Owner-local UDP queue drops. */
         uint64_t turn_cycles;        /**< End-to-end worker-loop time. */
-        uint64_t rx_cycles;          /**< ring->in dequeue plus ingress time. */
+        uint64_t rx_cycles;          /**< Ring/NIC receive plus ingress time. */
         uint64_t maintenance_cycles; /**< Timer and ARP maintenance time. */
         uint64_t reactor_cycles;     /**< Upper-layer reactor callback time. */
         uint64_t tx_flush_cycles;    /**< Dirty queue drain time. */
@@ -41,6 +43,12 @@ struct stack_runtime_metrics {
         uint64_t nic_tx_cycles;      /**< Sampled NIC calls only. */
         uint64_t nic_tx_sampled_packets;
         uint64_t nic_tx_sampled_bursts;
+        uint64_t nic_rx_packets;
+        uint64_t rx_burst_calls;
+        uint64_t rx_empty_bursts;
+        uint64_t rx_full_bursts;
+        uint64_t rx_handoffs;
+        uint64_t rx_handoff_drops;
         uint32_t
             in_ring_high_water; /**< Largest observed NIC-to-worker depth. */
         uint32_t
@@ -76,6 +84,10 @@ struct stack_runtime_worker {
         uint16_t port_id;
         uint16_t tx_queue_id;
         bool direct_tx_enabled;
+        bool direct_rx_enabled;
+        uint16_t rx_queue_id;
+        /** Only queue zero owns fragmented/control-plane packet assembly. */
+        struct ipv4_reassembly *reassembly;
         uint32_t tx_sample_every;
         uint32_t tx_until_sample;
         struct rte_mempool *mp;
@@ -116,6 +128,10 @@ void stack_runtime_metrics_take(struct stack_runtime_metrics *out);
 /** Owner-only, bounded TX. UINT_MAX drains to empty after producers stop. */
 void stack_runtime_tx_drain(struct stack_runtime_worker *worker,
                             unsigned int burst_budget, bool sample);
+
+/** Consume one direct-RX/forwarded frame on its current owner lcore. */
+void stack_runtime_rx_process(struct stack_runtime_worker *worker,
+                              struct rte_mbuf *mbuf, uint64_t now_cycles);
 
 /** DPDK lcore entry point: packet ingress, timers, reactor, and TX flush. */
 int stack_runtime_worker_entry(void *arg);

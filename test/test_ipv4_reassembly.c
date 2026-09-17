@@ -8,6 +8,9 @@
 #include "../pro-stack/socket.h"
 #include "../pro-stack/socket_owner_internal.h"
 #include "../pro-stack/udp.h"
+#include "../pro-stack/stack_runtime.h"
+#include <rte_arp.h>
+#include <rte_launch.h>
 
 #include <assert.h>
 #include <errno.h>
@@ -138,8 +141,9 @@ static void test_order_duplicate_and_dispatch(struct ipv4_reassembly *ctx,
         rte_pktmbuf_free(whole);
 
         assert(ipv4_reassembly_process(ctx, last, now) == NULL);
-        assert(ipv4_reassembly_process(ctx, duplicate, now + 1) == NULL);
-        result = ipv4_reassembly_process(ctx, first, now + 2);
+        /* A whole RX burst can share one timestamp, including duplicates. */
+        assert(ipv4_reassembly_process(ctx, duplicate, now) == NULL);
+        result = ipv4_reassembly_process(ctx, first, now);
         assert(result != NULL);
         assert_reassembled_udp(result, payload, sizeof(payload));
 
@@ -308,6 +312,115 @@ static void test_udp_ingress_chained(struct ipv4_reassembly *ctx,
         assert(rte_mempool_avail_count(mp) == available);
 }
 
+
+struct rx_test_call {
+        struct stack_runtime_worker *worker;
+        struct rte_mbuf *mbuf;
+};
+
+static int rx_test_remote(void *arg) {
+        struct rx_test_call *call = arg;
+        assert(rte_lcore_id() == call->worker->lcore_id);
+        if (call->mbuf == NULL)
+                owner_timer_engine_fini(&call->worker->timer_engine);
+        else
+                stack_runtime_rx_process(call->worker, call->mbuf, rte_get_timer_cycles());
+        return 0;
+}
+
+static void test_direct_rx(struct ipv4_reassembly *ctx, struct rte_mempool *mp,
+                           uint32_t source_ip, uint32_t dest_ip) {
+        unsigned int lcores[] = {rte_lcore_id(), rte_get_next_lcore(rte_lcore_id(), 1, 0)};
+        struct stack_runtime_worker workers[2];
+        struct nsock_handle handle;
+        uint8_t payload[32] = {1, 2, 3}, received[32];
+        struct rte_mbuf *mbuf, *whole;
+        unsigned int available = rte_mempool_avail_count(mp);
+        assert(lcores[1] < RTE_MAX_LCORE);
+        assert(rx_dispatch_configure_workers(lcores, 2) == 0);
+        assert(owner_timer_global_init() == 0);
+        for (unsigned int i = 0; i < 2; i++) {
+                assert(ring_init_owner_mp(lcores[i]) == 0);
+                assert(arp_table_init_owner(lcores[i]) == 0);
+                assert(stack_runtime_worker_init(&workers[i], lcores[i], i, 16,
+                    mp, ring_for_lcore(lcores[i]), NULL, NULL) == 0);
+                workers[i].direct_rx_enabled = true;
+                workers[i].rx_queue_id = i;
+        }
+        workers[0].reassembly = ctx;
+        assert(owner_io_socket_create_local(IPPROTO_UDP, &handle) == 0);
+        assert(owner_io_bind_ephemeral(handle, dest_ip) == 0);
+        struct nsock *sk = socket_owner_resolve_local(handle);
+        assert(sk != NULL);
+        /* A reply received on the wrong queue must reach the socket owner. */
+        whole = build_udp(mp, source_ip, dest_ip, rte_cpu_to_be_16(1003),
+                          sk->local_port, payload, sizeof(payload));
+        struct rx_test_call call = {.worker = &workers[1], .mbuf = whole};
+        assert(rte_eal_remote_launch(rx_test_remote, &call, lcores[1]) == 0);
+        assert(rte_eal_wait_lcore(lcores[1]) == 0);
+        assert(rte_ring_sc_dequeue(workers[0].ring->in, (void **)&mbuf) == 0);
+        stack_runtime_rx_process(&workers[0], mbuf, rte_get_timer_cycles());
+        assert(owner_io_recvfrom(handle, received, sizeof(received), NULL, NULL) == sizeof(payload));
+        assert(memcmp(payload, received, sizeof(payload)) == 0);
+        assert(workers[1].metrics.rx_handoffs == 1);
+
+        /* Fragments on different RX queues converge before owner dispatch. */
+        whole = build_udp(mp, source_ip, dest_ip, rte_cpu_to_be_16(1003),
+                          sk->local_port, payload, sizeof(payload));
+        call.mbuf = build_fragment(mp, whole, 77, 16, 24, 0);
+        assert(rte_eal_remote_launch(rx_test_remote, &call, lcores[1]) == 0);
+        assert(rte_eal_wait_lcore(lcores[1]) == 0);
+        assert(rte_ring_sc_dequeue(workers[0].ring->in, (void **)&mbuf) == 0);
+        stack_runtime_rx_process(&workers[0], mbuf, rte_get_timer_cycles());
+        stack_runtime_rx_process(&workers[0], build_fragment(mp, whole, 77, 0, 16, 1), rte_get_timer_cycles());
+        rte_pktmbuf_free(whole);
+        assert(owner_io_recvfrom(handle, received, sizeof(received), NULL, NULL) == sizeof(payload));
+        assert(memcmp(payload, received, sizeof(payload)) == 0);
+
+        /* ARP learns on both owners, but only queue zero emits a reply. */
+        mbuf = arp_build_pkt(mp, RTE_ARP_OP_REQUEST, g_broadcast_mac, source_ip, dest_ip);
+        assert(mbuf != NULL);
+        struct rte_ether_hdr *eth = rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
+        struct rte_arp_hdr *arp = (struct rte_arp_hdr *)(eth + 1);
+        memcpy(eth->src_addr.addr_bytes, test_mac, sizeof(test_mac));
+        memcpy(arp->arp_data.arp_sha.addr_bytes, test_mac, sizeof(test_mac));
+        mbuf->dynfield1[0] = 0;
+        call.mbuf = mbuf;
+        assert(rte_eal_remote_launch(rx_test_remote, &call, lcores[1]) == 0);
+        assert(rte_eal_wait_lcore(lcores[1]) == 0);
+        assert(rte_ring_sc_dequeue(workers[0].ring->in, (void **)&mbuf) == 0);
+        stack_runtime_rx_process(&workers[0], mbuf, rte_get_timer_cycles());
+        assert(rte_ring_count(workers[0].ring->out) == 1);
+        assert(rte_ring_sc_dequeue(workers[1].ring->in, (void **)&call.mbuf) == 0);
+        assert(call.mbuf->dynfield1[0] & ARP_MBUF_F_LEARN_ONLY);
+        assert(rte_eal_remote_launch(rx_test_remote, &call, lcores[1]) == 0);
+        assert(rte_eal_wait_lcore(lcores[1]) == 0);
+        assert(rte_ring_empty(workers[1].ring->out));
+        assert(rte_ring_sc_dequeue(workers[0].ring->out, (void **)&mbuf) == 0);
+        rte_pktmbuf_free(mbuf);
+
+        /* Full handoff rings account and free the rejected mbuf. */
+        while (!rte_ring_full(workers[0].ring->in)) {
+                mbuf = rte_pktmbuf_alloc(mp);
+                assert(mbuf != NULL);
+                assert(rte_ring_mp_enqueue(workers[0].ring->in, mbuf) == 0);
+        }
+        call.mbuf = build_udp(mp, source_ip, dest_ip, rte_cpu_to_be_16(1003),
+                             sk->local_port, payload, sizeof(payload));
+        assert(rte_eal_remote_launch(rx_test_remote, &call, lcores[1]) == 0);
+        assert(rte_eal_wait_lcore(lcores[1]) == 0);
+        assert(workers[1].metrics.rx_handoff_drops == 1);
+        while (rte_ring_sc_dequeue(workers[0].ring->in, (void **)&mbuf) == 0)
+                rte_pktmbuf_free(mbuf);
+        assert(owner_io_close(handle) == 0);
+        call.mbuf = NULL;
+        assert(rte_eal_remote_launch(rx_test_remote, &call, lcores[1]) == 0);
+        assert(rte_eal_wait_lcore(lcores[1]) == 0);
+        owner_timer_engine_fini(&workers[0].timer_engine);
+        rx_dispatch_reset();
+        assert(rte_mempool_avail_count(mp) == available);
+}
+
 int main(int argc, char **argv) {
         const uint32_t source_ip = rte_cpu_to_be_32(0xc0a81501);
         const uint32_t dest_ip = rte_cpu_to_be_32(0xc0a81502);
@@ -333,10 +446,11 @@ int main(int argc, char **argv) {
         assert(socket_registry_init_owner_with_capacity(rte_lcore_id(), 16) ==
                0);
         assert(socket_owner_init_with_capacity(rte_lcore_id(), 16) == 0);
-        assert(ring_init_owner(rte_lcore_id()) == 0);
+        assert(ring_init_owner_mp(rte_lcore_id()) == 0);
         assert(arp_table_init_owner(rte_lcore_id()) == 0);
         test_udp_ingress_chained(&reassembly, mp, source_ip, dest_ip);
 
+        test_direct_rx(&reassembly, mp, source_ip, dest_ip);
         ipv4_reassembly_fini(&reassembly);
         arp_table_fini();
         ring_fini();

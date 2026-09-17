@@ -6,6 +6,8 @@
 #include "log.h"
 #include "owner_timer.h"
 #include "ring.h"
+#include "rx_dispatch.h"
+#include "ipv4_reassembly.h"
 #include "socket.h"
 #include "tcp.h"
 
@@ -23,6 +25,7 @@
 
 static atomic_bool g_stop_requested;
 static struct stack_runtime_worker *g_workers[RTE_MAX_LCORE];
+static struct stack_runtime_worker *g_queue_workers[RTE_MAX_LCORE];
 
 void stack_runtime_tx_drain(struct stack_runtime_worker *worker,
                             unsigned int burst_budget, bool sample) {
@@ -58,7 +61,8 @@ int stack_runtime_worker_init(struct stack_runtime_worker *worker,
                               stack_runtime_reactor_fn reactor,
                               void *reactor_ctx) {
         if (worker == NULL || mp == NULL || ring == NULL ||
-            lcore_id >= RTE_MAX_LCORE || timer_capacity == 0)
+            lcore_id >= RTE_MAX_LCORE || queue_id >= RTE_MAX_LCORE ||
+            timer_capacity == 0)
                 return -1;
 
         memset(worker, 0, sizeof(*worker));
@@ -72,6 +76,7 @@ int stack_runtime_worker_init(struct stack_runtime_worker *worker,
                                     timer_capacity) != 0)
                 return -1;
         g_workers[lcore_id] = worker;
+        g_queue_workers[queue_id] = worker;
         atomic_store(&g_stop_requested, false);
         return 0;
 }
@@ -209,6 +214,74 @@ static void dispatch_packet(struct rte_mempool *mp, struct rte_mbuf *mbuf,
         }
 }
 
+static void rx_forward(struct stack_runtime_worker *from, uint16_t queue,
+                        struct rte_mbuf *mbuf) {
+        struct stack_runtime_worker *to =
+            queue < RTE_MAX_LCORE ? g_queue_workers[queue] : NULL;
+        if (to == NULL || !to->direct_rx_enabled ||
+            rte_ring_mp_enqueue(to->ring->in, mbuf) != 0) {
+                from->metrics.rx_handoff_drops++;
+                rte_pktmbuf_free(mbuf);
+        } else {
+                from->metrics.rx_handoffs++;
+        }
+}
+
+void stack_runtime_rx_process(struct stack_runtime_worker *worker,
+                              struct rte_mbuf *mbuf, uint64_t now_cycles) {
+        struct rx_dispatch_result result;
+        if (mbuf->data_len >= sizeof(struct rte_ether_hdr)) {
+                const struct rte_ether_hdr *eth =
+                    rte_pktmbuf_mtod(mbuf, const struct rte_ether_hdr *);
+                if (eth->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP)) {
+                        if (!(mbuf->dynfield1[0] & ARP_MBUF_F_LEARN_ONLY)) {
+                                if (worker->queue_id != 0) {
+                                        rx_forward(worker, 0, mbuf);
+                                        return;
+                                }
+                                for (unsigned int q = 1; q < RTE_MAX_LCORE; q++) {
+                                        if (g_queue_workers[q] == NULL ||
+                                            !g_queue_workers[q]->direct_rx_enabled)
+                                                continue;
+                                        struct rte_mbuf *clone =
+                                            rte_pktmbuf_clone(mbuf, worker->mp);
+                                        if (clone == NULL) {
+                                                worker->metrics.rx_handoff_drops++;
+                                                continue;
+                                        }
+                                        clone->dynfield1[0] = ARP_MBUF_F_LEARN_ONLY;
+                                        rx_forward(worker, q, clone);
+                                }
+                        }
+                        goto deliver;
+                }
+                if (worker->queue_id != 0 &&
+                    eth->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4) &&
+                    mbuf->data_len >= sizeof(*eth) + sizeof(struct rte_ipv4_hdr)) {
+                        const struct rte_ipv4_hdr *ip = rte_pktmbuf_mtod_offset(
+                            mbuf, const struct rte_ipv4_hdr *, sizeof(*eth));
+                        if (rte_be_to_cpu_16(ip->fragment_offset) &
+                            (RTE_IPV4_HDR_OFFSET_MASK | RTE_IPV4_HDR_MF_FLAG | 0x8000)) {
+                                rx_forward(worker, 0, mbuf);
+                                return;
+                        }
+                }
+        }
+        if (worker->reassembly != NULL) {
+                mbuf = ipv4_reassembly_process(worker->reassembly, mbuf, now_cycles);
+                if (mbuf == NULL)
+                        return;
+        }
+        rx_dispatch_classify(mbuf, worker->rx_queue_id, &result);
+        if (result.worker_index != worker->queue_id) {
+                rx_forward(worker, result.worker_index, mbuf);
+                return;
+        }
+deliver:
+        dispatch_packet(worker->mp, mbuf, worker->ring->out);
+        worker->metrics.rx_packets++;
+}
+
 int stack_runtime_worker_entry(void *arg) {
         struct stack_runtime_worker *worker = arg;
         struct rte_mempool *mp;
@@ -245,16 +318,36 @@ int stack_runtime_worker_entry(void *arg) {
                         metrics->in_ring_high_water = in_depth;
                 unsigned int nb_rx = rte_ring_sc_dequeue_burst(
                     ring->in, (void **)mbufs, BURST_SIZE, NULL);
-                for (unsigned int i = 0; i < nb_rx; i++)
-                        dispatch_packet(mp, mbufs[i], ring->out);
-                metrics->rx_packets += nb_rx;
+                for (unsigned int i = 0; i < nb_rx; i++) {
+                        if (worker->direct_rx_enabled)
+                                stack_runtime_rx_process(worker, mbufs[i], phase_start);
+                        else
+                                dispatch_packet(mp, mbufs[i], ring->out);
+                }
+                if (worker->direct_rx_enabled) {
+                        nb_rx = rte_eth_rx_burst(worker->port_id,
+                                                worker->rx_queue_id, mbufs, BURST_SIZE);
+                        metrics->nic_rx_packets += nb_rx;
+                        metrics->rx_burst_calls++;
+                        metrics->rx_empty_bursts += nb_rx == 0;
+                        metrics->rx_full_bursts += nb_rx == BURST_SIZE;
+                        for (unsigned int i = 0; i < nb_rx; i++) {
+                                /* NIC mbufs may retain metadata from an old clone. */
+                                mbufs[i]->dynfield1[0] = 0;
+                                stack_runtime_rx_process(worker, mbufs[i], phase_start);
+                        }
+                } else {
+                        metrics->rx_packets += nb_rx;
+                }
                 metrics->rx_cycles += rte_get_timer_cycles() - phase_start;
 
                 socket_owner_process_commands();
 
                 /* Timers are sampled separately from packet and app work. */
                 phase_start = rte_get_timer_cycles();
-                uint64_t now = rte_get_timer_cycles();
+                uint64_t now = phase_start;
+                if (worker->direct_rx_enabled && worker->reassembly != NULL)
+                        ipv4_reassembly_maintain(worker->reassembly, now);
                 if (now - worker->last_timer_tsc >= timer_interval) {
                         (void)owner_timer_poll(&worker->timer_engine);
                         worker->last_timer_tsc = now;

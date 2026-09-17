@@ -23,6 +23,8 @@ struct inout_ring {
  * @brief Create the SPSC ring pair assigned to one packet-worker lcore.
  */
 int ring_init_owner(unsigned int lcore_id);
+/** Direct RX workers may forward exceptional packets to any other owner. */
+int ring_init_owner_mp(unsigned int lcore_id);
 /** Return a specific worker's ring pair, or NULL when it is not initialized. */
 struct inout_ring *ring_for_lcore(unsigned int lcore_id);
 /** Return the current lcore's ring pair. */
