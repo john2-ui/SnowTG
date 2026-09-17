@@ -70,7 +70,10 @@ int tg_stats_csv_open(struct tg_stats_csv *csv, const char *path,
                 "ofo_drop_seg_limit,ofo_drop_byte_limit,ofo_drop_owner_limit,"
                 "ofo_drop_alloc,ofo_drop_pressure,ofo_pressure_transitions,"
                 "ofo_pressure_active,tcp_drain_residual,"
-                "tcp_forced_cleanup,tcp_pool_objects_in_use\n") < 0) {
+                "tcp_forced_cleanup,tcp_pool_objects_in_use,tx_packets,"
+                "tx_bursts,nic_tx_cycles,nic_tx_sampled_packets,"
+                "nic_tx_sampled_bursts,nic_rx_packets,rx_burst_calls,"
+                "rx_empty_bursts,rx_full_bursts,rx_handoffs,rx_handoff_drops\n") < 0) {
                 (void)fclose(csv->file);
                 memset(csv, 0, sizeof(*csv));
                 return -1;
@@ -112,6 +115,9 @@ int tg_stats_csv_write(struct tg_stats_csv *csv,
             "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
             "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
             "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
+            "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
+            "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
+            "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
             "%" PRIu64 ",%" PRIu64 ",%" PRIu64 "\n",
             scope, tg_csv_phase(snapshot->phase),
             tg_csv_cycles_to_us(snapshot->timestamp_cycles, hz),
@@ -169,7 +175,12 @@ int tg_stats_csv_write(struct tg_stats_csv *csv,
             snapshot->ofo_pressure_transitions,
             snapshot->ofo_pressure_active, snapshot->tcp_drain_residual,
             snapshot->tcp_forced_cleanup,
-            snapshot->tcp_pool_objects_in_use);
+            snapshot->tcp_pool_objects_in_use, snapshot->tx_packets,
+            snapshot->tx_bursts, snapshot->nic_tx_cycles,
+            snapshot->nic_tx_sampled_packets, snapshot->nic_tx_sampled_bursts,
+            snapshot->nic_rx_packets, snapshot->rx_burst_calls,
+            snapshot->rx_empty_bursts, snapshot->rx_full_bursts,
+            snapshot->rx_handoffs, snapshot->rx_handoff_drops);
         if (result < 0)
                 csv->failed = true;
         return result < 0 ? -1 : 0;

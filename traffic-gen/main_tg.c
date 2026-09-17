@@ -18,6 +18,7 @@
 #include "core/socket_capacity.h"
 #include "core/stats.h"
 #include "core/stats_csv.h"
+#include "core/dataplane_stats.h"
 
 #include "../pro-stack/arp.h"
 #include "../pro-stack/config.h"
@@ -50,6 +51,9 @@
 
 /** Last-resort bound after admissions and active transactions have stopped. */
 #define TG_DRAIN_TIMEOUT_SEC 120U
+
+/** Main-owned counters; never read or modified by workers. */
+static struct tg_dataplane_stats g_dataplane;
 
 /**
  * Per-packet-worker traffic-generator state.
@@ -196,6 +200,8 @@ static void tg_capture_stats_snapshot(struct tg_shard *shard,
                                 &reactor_burst_high_water);
         snapshot.worker_turns = runtime.worker_turns;
         snapshot.rx_packets = runtime.rx_packets;
+        snapshot.ring_hwm_in = runtime.in_ring_high_water;
+        snapshot.ring_hwm_out = runtime.out_ring_high_water;
         snapshot.socket_scans = runtime.socket_scans;
         snapshot.tx_flush_calls = runtime.tx_flush_calls;
         snapshot.dirty_tx_enqueues = runtime.dirty_tx_enqueues;
@@ -211,6 +217,18 @@ static void tg_capture_stats_snapshot(struct tg_shard *shard,
         snapshot.maintenance_cycles = runtime.maintenance_cycles;
         snapshot.reactor_cycles = runtime.reactor_cycles;
         snapshot.tx_flush_cycles = runtime.tx_flush_cycles;
+        snapshot.tx_packets = runtime.tx_packets;
+        snapshot.tx_bursts = runtime.tx_bursts;
+        snapshot.nic_tx_cycles = runtime.nic_tx_cycles;
+        snapshot.nic_tx_sampled_packets = runtime.nic_tx_sampled_packets;
+        snapshot.nic_tx_sampled_bursts = runtime.nic_tx_sampled_bursts;
+        snapshot.nic_rx_packets = runtime.nic_rx_packets;
+        snapshot.rx_burst_calls = runtime.rx_burst_calls;
+        snapshot.rx_empty_bursts = runtime.rx_empty_bursts;
+        snapshot.rx_full_bursts = runtime.rx_full_bursts;
+        snapshot.rx_handoffs = runtime.rx_handoffs;
+        snapshot.rx_handoff_drops = runtime.rx_handoff_drops;
+
         snapshot.ofo_segments_current = runtime.ofo_segments_current;
         snapshot.ofo_segments_peak = runtime.ofo_segments_peak;
         snapshot.ofo_bytes_current = runtime.ofo_bytes_current;
@@ -231,8 +249,9 @@ static void tg_capture_stats_snapshot(struct tg_shard *shard,
         snapshot.reactor_turns = reactor_turns;
         snapshot.reactor_events = reactor_events;
         snapshot.reactor_burst_high_water = reactor_burst_high_water;
-        snapshot.rx_ring_drops = atomic_exchange(&shard->rx_ring_drops, 0);
-        snapshot.tx_nic_drops = atomic_exchange(&shard->tx_nic_drops, 0);
+        snapshot.rx_ring_drops = runtime.rx_handoff_drops + atomic_exchange(&shard->rx_ring_drops, 0);
+        snapshot.tx_nic_drops = runtime.tx_nic_drops +
+                                atomic_exchange(&shard->tx_nic_drops, 0);
         snapshot.udp_tx_queue_drops = runtime.udp_tx_queue_drops;
         snapshot.rx_owner_hits = atomic_exchange(&shard->rx_owner_hits, 0);
         snapshot.rx_software_hashes =
@@ -314,21 +333,36 @@ static void tg_close_idle_connections(struct tg_shard *shard) {
                     TG_FLOW_RESULT_IO_FAILURE);
 }
 
-static void tg_drain_tx_ring(struct inout_ring *ring, uint16_t tx_queue_id) {
-        if (ring == NULL)
-                return;
+static void tg_transmit(struct tg_worker *worker, struct rte_mbuf **tx,
+                         unsigned int count, bool sample) {
+        uint64_t start = sample ? rte_get_timer_cycles() : 0;
+        unsigned int sent = rte_eth_tx_burst(g_net.port_id,
+                                            worker->tx_queue_id, tx, count);
+        if (sample) {
+                g_dataplane.main.nic_tx_cycles += rte_get_timer_cycles() - start;
+                g_dataplane.main.sampled_tx_packets += sent;
+        }
+        for (unsigned int i = sent; i < count; i++)
+                rte_pktmbuf_free(tx[i]);
+        if (sent != count)
+                atomic_fetch_add(&worker->shard.tx_nic_drops, count - sent);
+        if (g_dataplane.file != NULL) {
+                g_dataplane.main.tx_burst_calls++;
+                g_dataplane.main.tx_packets += sent;
+                g_dataplane.main.tx_partial_bursts += sent != count;
+                g_dataplane.main.tx_nic_drops += count - sent;
+        }
+}
 
+static void tg_drain_tx_ring(struct tg_worker *worker) {
         for (;;) {
                 struct rte_mbuf *tx[BURST_SIZE];
                 unsigned int nb_tx = rte_ring_sc_dequeue_burst(
-                    ring->out, (void **)tx, BURST_SIZE, NULL);
+                    worker->ring->out, (void **)tx, BURST_SIZE, NULL);
                 if (nb_tx == 0)
                         return;
 
-                unsigned int sent =
-                    rte_eth_tx_burst(g_net.port_id, tx_queue_id, tx, nb_tx);
-                for (unsigned int i = sent; i < nb_tx; i++)
-                        rte_pktmbuf_free(tx[i]);
+                tg_transmit(worker, tx, nb_tx, false);
         }
 }
 
@@ -381,19 +415,25 @@ static void tg_dispatch_rx_burst(struct tg_worker *workers,
                                  struct rte_mempool *mp,
                                  struct ipv4_reassembly *reassembly,
                                  uint16_t rx_queue, struct rte_mbuf **rx,
-                                 unsigned int nb_rx) {
+                                 unsigned int nb_rx, uint64_t now_cycles,
+                                 bool sample) {
         struct rte_mbuf *batches[RTE_MAX_LCORE][BURST_SIZE];
         unsigned int batch_counts[RTE_MAX_LCORE] = {0};
 
         for (unsigned int packet = 0; packet < nb_rx; packet++) {
                 struct rx_dispatch_result result;
                 unsigned int target;
+                uint64_t phase_start = sample ? rte_get_timer_cycles() : 0;
                 struct rte_mbuf *mbuf = ipv4_reassembly_process(
-                    reassembly, rx[packet], rte_get_timer_cycles());
+                    reassembly, rx[packet], now_cycles);
+                if (sample)
+                        g_dataplane.main.reassembly_cycles +=
+                            rte_get_timer_cycles() - phase_start;
 
                 if (mbuf == NULL)
                         continue;
 
+                phase_start = sample ? rte_get_timer_cycles() : 0;
                 rx_dispatch_classify(mbuf, rx_queue, &result);
                 target = result.worker_index;
                 if (target >= worker_count) {
@@ -413,8 +453,12 @@ static void tg_dispatch_rx_burst(struct tg_worker *workers,
                         atomic_fetch_add(
                             &workers[target].shard.rx_parse_fallbacks, 1);
                 batches[target][batch_counts[target]++] = mbuf;
+                if (sample)
+                        g_dataplane.main.dispatch_cycles +=
+                            rte_get_timer_cycles() - phase_start;
         }
 
+        uint64_t phase_start = sample ? rte_get_timer_cycles() : 0;
         for (unsigned int index = 0; index < worker_count; index++) {
                 unsigned int count = batch_counts[index];
                 unsigned int enq;
@@ -430,6 +474,9 @@ static void tg_dispatch_rx_burst(struct tg_worker *workers,
                         atomic_fetch_add(&workers[index].shard.rx_ring_drops,
                                          count - enq);
         }
+        if (sample)
+                g_dataplane.main.enqueue_cycles +=
+                    rte_get_timer_cycles() - phase_start;
 }
 
 /**
@@ -587,13 +634,20 @@ static void tg_shard_tick(void *ctx, unsigned int budget) {
             !shard->drained) {
                 (void)owner_timer_cancel(&shard->drain_timer);
                 (void)owner_io_memory_snapshot(&shard->memory);
-                tg_capture_stats_snapshot(shard, TG_STATS_PHASE_FINAL,
-                                          now_cycles);
                 shard->drained = true;
                 if (shard->runtime != NULL &&
                     atomic_fetch_sub(&shard->runtime->remaining_shards, 1) == 1)
                         stack_runtime_request_stop();
         }
+}
+
+static void tg_worker_finalize(void *ctx) {
+        struct tg_reactor *reactor = ctx;
+        struct tg_shard *shard = reactor->ctx;
+
+        (void)owner_io_memory_snapshot(&shard->memory);
+        tg_capture_stats_snapshot(shard, TG_STATS_PHASE_FINAL,
+                                  rte_get_timer_cycles());
 }
 
 /**
@@ -774,6 +828,8 @@ int main(int argc, char *argv[]) {
         struct tg_stats_csv stats_csv = {0};
         struct rte_mempool *mp;
         struct port_topology port_topology;
+        bool direct_tx;
+        bool direct_rx;
         struct ipv4_reassembly reassembly = {0};
 
         /* Stage 1: Initialize DPDK and separate EAL arguments from app args. */
@@ -788,6 +844,9 @@ int main(int argc, char *argv[]) {
                 rte_exit(EXIT_FAILURE, "usage: traffic-gen [--workers N] "
                                        "[--socket-id-max N] "
                                        "[--stats-csv PATH] [--mtu BYTES] "
+                                       "[--dataplane-csv PATH] [--metrics-sample N] "
+                                       "[--tx-mode main|worker|auto] "
+                                       "[--rx-mode main|worker|auto] "
                                        "[--local-ip IPv4] [--port-id N] "
                                        "[scenario.json]\n");
         worker_count = app_config.worker_count;
@@ -848,6 +907,31 @@ int main(int argc, char *argv[]) {
         port_topology = port_init_queues(app_config.port_id, mp,
                                          (uint16_t)worker_count,
                                          requested_mtu);
+        if (app_config.tx_mode == TG_TX_WORKER &&
+            !port_has_dedicated_worker_tx(&port_topology))
+                rte_exit(EXIT_FAILURE, "worker TX needs %u dedicated queues; "
+                         "port has %u\n", worker_count, port_topology.tx_queue_count);
+        direct_tx = app_config.tx_mode != TG_TX_MAIN &&
+                    port_has_dedicated_worker_tx(&port_topology);
+        direct_rx = app_config.rx_mode != TG_RX_MAIN &&
+                    port_topology.rx_queue_count == worker_count &&
+                    (port_topology.rx_mode == PORT_RX_MODE_HARDWARE_RSS ||
+                     worker_count == 1);
+        if (app_config.rx_mode == TG_RX_WORKER && !direct_rx)
+                rte_exit(EXIT_FAILURE, "worker RX requires independent queues "
+                         "and verified steering; rxq=%u workers=%u\n",
+                         port_topology.rx_queue_count, worker_count);
+        fprintf(stderr, "RX mode=%s steering=%s rss_hf=0x%" PRIx64 "\n",
+                direct_rx ? "worker" : "main",
+                port_topology.rx_mode == PORT_RX_MODE_HARDWARE_RSS ? "RSS" : "software",
+                port_topology.rss_hf);
+        fprintf(stderr, "TX mode=%s dedicated_available=%s rxq=%u txq=%u "
+                "workers=%u reason=%s\n", direct_tx ? "worker" : "main",
+                port_has_dedicated_worker_tx(&port_topology) ? "yes" : "no",
+                port_topology.rx_queue_count, port_topology.tx_queue_count,
+                worker_count, direct_tx ? "exclusive queues" :
+                app_config.tx_mode == TG_TX_MAIN ? "explicit main mode" :
+                "insufficient TX queues");
         net_context_init(app_config.port_id, app_config.local_ip,
                          port_topology.ipv4_mtu);
         owner_timer_global_init();
@@ -899,7 +983,8 @@ int main(int argc, char *argv[]) {
                         worker->lcore_id, socket_id_capacity) != 0 ||
                     socket_owner_init_with_capacity(worker->lcore_id,
                                                     socket_id_capacity) != 0 ||
-                    ring_init_owner(worker->lcore_id) != 0 ||
+                    (direct_rx ? ring_init_owner_mp(worker->lcore_id)
+                               : ring_init_owner(worker->lcore_id)) != 0 ||
                     arp_table_init_owner(worker->lcore_id) != 0)
                         rte_exit(EXIT_FAILURE,
                                  "worker %u shard initialization failed\n",
@@ -941,6 +1026,16 @@ int main(int argc, char *argv[]) {
                         rte_exit(EXIT_FAILURE,
                                  "worker %u runtime initialization failed\n",
                                  index);
+                worker->runtime.on_exit = tg_worker_finalize;
+                worker->runtime.port_id = g_net.port_id;
+                worker->runtime.tx_queue_id = worker->tx_queue_id;
+                worker->runtime.direct_tx_enabled = direct_tx;
+                worker->runtime.direct_rx_enabled = direct_rx;
+                worker->runtime.rx_queue_id = index;
+                if (direct_rx && index == 0)
+                        worker->runtime.reassembly = &reassembly;
+                worker->runtime.tx_sample_every =
+                    app_config.dataplane_csv_path == NULL ? 0 : app_config.metrics_sample;
         }
 
         /* Stage 7: Configure RX dispatch with the worker lcore assignments. */
@@ -954,6 +1049,21 @@ int main(int argc, char *argv[]) {
                         rte_exit(EXIT_FAILURE,
                                  "traffic-gen RX dispatcher initialization "
                                  "failed\n");
+        }
+
+        if (tg_dataplane_stats_open(&g_dataplane, app_config.dataplane_csv_path,
+                                    g_net.port_id, app_config.metrics_sample) != 0)
+                rte_exit(EXIT_FAILURE, "dataplane CSV open failed\n");
+        if (g_dataplane.file != NULL) {
+                struct rte_eth_dev_info info;
+                if (rte_eth_dev_info_get(g_net.port_id, &info) == 0)
+                        fprintf(stderr, "dataplane driver=%s rx_mode=%u rxq=%u "
+                                "txq=%u workers=%u main=%u sample_every=%u "
+                                "timer_hz=%" PRIu64 "\n", info.driver_name,
+                                port_topology.rx_mode, port_topology.rx_queue_count,
+                                port_topology.tx_queue_count, worker_count,
+                                main_lcore, app_config.metrics_sample,
+                                rte_get_timer_hz());
         }
 
         /* Stage 8: Launch one stack runtime on each worker lcore. */
@@ -971,47 +1081,98 @@ int main(int argc, char *argv[]) {
          * worker output until the runtime requests shutdown.
          */
         while (!stack_runtime_stop_requested()) {
+                bool sample = tg_dataplane_sample(&g_dataplane);
+                /* One timestamp for this RX turn, fragment expiry and
+                 * maintenance. Reading a virtualized TSC per packet is costly. */
+                uint64_t now = rte_get_timer_cycles();
+                uint64_t loop_start = now;
+                uint64_t phase_start;
                 /* Receive bursts from every RX queue and dispatch them. */
                 for (uint16_t rx_queue = 0;
-                     rx_queue < port_topology.rx_queue_count; rx_queue++) {
+                     !direct_rx && rx_queue < port_topology.rx_queue_count; rx_queue++) {
                         struct rte_mbuf *rx[BURST_SIZE];
+                        phase_start = sample ? rte_get_timer_cycles() : 0;
                         unsigned int nb_rx = rte_eth_rx_burst(
                             g_net.port_id, rx_queue, rx, BURST_SIZE);
+                        if (sample) {
+                                g_dataplane.main.rx_burst_cycles +=
+                                    rte_get_timer_cycles() - phase_start;
+                                g_dataplane.main.sampled_rx_packets += nb_rx;
+                        }
+                        if (g_dataplane.file != NULL) {
+                                g_dataplane.main.rx_burst_calls++;
+                                g_dataplane.main.rx_empty_bursts += nb_rx == 0;
+                                g_dataplane.main.rx_full_bursts += nb_rx == BURST_SIZE;
+                                g_dataplane.main.rx_packets += nb_rx;
+                                if (nb_rx > g_dataplane.main.rx_burst_max)
+                                        g_dataplane.main.rx_burst_max = nb_rx;
+                        }
 
                         if (nb_rx != 0)
                                 tg_dispatch_rx_burst(workers, worker_count, mp,
                                                      &reassembly, rx_queue, rx,
-                                                     nb_rx);
+                                                     nb_rx, now, sample);
                 }
-                ipv4_reassembly_maintain(&reassembly, rte_get_timer_cycles());
+                phase_start = sample ? rte_get_timer_cycles() : 0;
+                if (!direct_rx)
+                        ipv4_reassembly_maintain(&reassembly, now);
+                if (sample)
+                        g_dataplane.main.reassembly_maintenance_cycles +=
+                            rte_get_timer_cycles() - phase_start;
 
                 /* Drain each worker's TX ring and account for NIC drops. */
-                for (unsigned int index = 0; index < worker_count; index++) {
+                phase_start = sample ? rte_get_timer_cycles() : 0;
+                uint64_t nic_cycles_before = g_dataplane.main.nic_tx_cycles;
+                for (unsigned int index = 0; !direct_tx && index < worker_count; index++) {
                         struct tg_worker *worker = &workers[index];
                         struct rte_mbuf *tx[BURST_SIZE];
                         unsigned int nb_tx = rte_ring_sc_dequeue_burst(
                             worker->ring->out, (void **)tx, BURST_SIZE, NULL);
-                        if (nb_tx != 0) {
-                                unsigned int sent = rte_eth_tx_burst(
-                                    g_net.port_id, worker->tx_queue_id, tx,
-                                    nb_tx);
-                                for (unsigned int i = sent; i < nb_tx; i++)
-                                        rte_pktmbuf_free(tx[i]);
-                                if (sent != nb_tx)
-                                        atomic_fetch_add(
-                                            &worker->shard.tx_nic_drops,
-                                            nb_tx - sent);
-                        }
+                        if (g_dataplane.file != NULL)
+                                g_dataplane.main.tx_ring_polls++;
+                        if (nb_tx != 0)
+                                tg_transmit(worker, tx, nb_tx, sample);
                 }
+                if (sample && !direct_tx)
+                        g_dataplane.main.tx_ring_scan_cycles +=
+                            rte_get_timer_cycles() - phase_start -
+                            (g_dataplane.main.nic_tx_cycles - nic_cycles_before);
+                phase_start = sample ? rte_get_timer_cycles() : 0;
                 tg_drain_stats_csv(workers, worker_count, &stats_csv);
+                if (sample) {
+                        uint64_t end = rte_get_timer_cycles();
+                        g_dataplane.main.stats_drain_cycles += end - phase_start;
+                        g_dataplane.main.main_loop_cycles += end - loop_start;
+                }
+                /* With both NIC directions owned by workers, Main only
+                 * consumes reports; no packet polling needs this CPU. */
+                if (direct_rx && direct_tx)
+                        rte_delay_us_sleep(1000);
+                tg_dataplane_stats_report(&g_dataplane, now, false);
         }
 
         /* Stage 10: Wait for workers to stop and flush pending TX packets. */
         for (unsigned int index = 0; index < worker_count; index++)
                 (void)rte_eal_wait_lcore(workers[index].lcore_id);
-        for (unsigned int index = 0; index < worker_count; index++)
-                tg_drain_tx_ring(workers[index].ring,
-                                 workers[index].tx_queue_id);
+        for (unsigned int index = 0; index < worker_count; index++) {
+                struct tg_shard *shard = &workers[index].shard;
+                if (!direct_tx)
+                        tg_drain_tx_ring(&workers[index]);
+                /* Main may finish a burst after the owner took its snapshot. */
+                shard->final_snapshot.tx_nic_drops +=
+                    atomic_exchange(&shard->tx_nic_drops, 0);
+                shard->final_snapshot.rx_ring_drops +=
+                    atomic_exchange(&shard->rx_ring_drops, 0);
+                shard->final_snapshot.rx_owner_hits +=
+                    atomic_exchange(&shard->rx_owner_hits, 0);
+                shard->final_snapshot.rx_software_hashes +=
+                    atomic_exchange(&shard->rx_software_hashes, 0);
+                shard->final_snapshot.rx_parse_fallbacks +=
+                    atomic_exchange(&shard->rx_parse_fallbacks, 0);
+        }
+        tg_dataplane_stats_report(&g_dataplane, rte_get_timer_cycles(), true);
+        if (tg_dataplane_stats_close(&g_dataplane) != 0)
+                LOG_ERROR("dataplane CSV write/close failed");
         tg_drain_stats_csv(workers, worker_count, &stats_csv);
 
         /* Stage 11: Report aggregate traffic statistics from all workers. */

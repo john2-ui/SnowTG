@@ -71,6 +71,8 @@ DPDK EAL 参数写在 `--` 之前，traffic-gen 参数与 scenario 路径写在 
 ```text
 traffic-gen [EAL 参数] -- [--workers N] [--socket-id-max N]
             [--stats-csv PATH] [--mtu BYTES]
+            [--dataplane-csv PATH] [--metrics-sample N]
+            [--rx-mode main|worker|auto] [--tx-mode main|worker|auto]
             [--local-ip IPv4] [--port-id N] [scenario.json]
 ```
 
@@ -78,6 +80,11 @@ traffic-gen [EAL 参数] -- [--workers N] [--socket-id-max N]
 - `--socket-id-max`：每个 owner 的 socket 容量；省略时启动计算 `max(16384, 2 × ceil(全局并发 / active_shards))`。
   可显式降低默认值，但须至少为 `max(4096, 2 × ceil(全局并发 / active_shards))`；运行中不扩容。
 - `--stats-csv`：将周期统计写入指定 CSV 文件。
+- `--dataplane-csv`：输出 Main 阶段计时、轮询/收发计数和 NIC 统计增量；与 worker CSV 使用不同文件。
+- `--metrics-sample`：每 N 轮采样一次新增阶段计时，默认 `1024`；`0` 只保留计数，未指定数据面 CSV 时关闭新增计时。周期字段只覆盖采样轮次，不能直接除以全量包数。
+- `--rx-mode`：默认 `auto`；RSS 配置成功且 RX queues 足够时由 worker 独占收包，否则由 Main 软件分流；单 worker 可直接 RX。显式 `worker` 在条件不足时报错，`main` 用于集中 RX 对照。错队列报文经 MP/SC ring 回到 socket owner；ARP 回复和分片重组由 worker 0 负责。
+- `--tx-mode`：默认 `auto`；TX queues 足够时每个 worker 独占一个队列，否则回退 Main TX；显式 `worker` 在队列不足时报错。worker 每轮最多发送 4 个 burst，退出前排空。
+- `--stats-csv` 新增逐 worker 的 `nic_rx_packets/rx_burst_calls/rx_empty_bursts/rx_full_bursts/rx_handoffs/rx_handoff_drops`。RSS 配置成功不保证虚拟网卡后端实际分流；本机 vmxnet3 实测全部进入 RXQ0，当前推荐显式 `--rx-mode main --tx-mode worker`。FDIR 也需要驱动/硬件支持，本机不支持；证据和 RPS 对照见 [性能记录](docs/PERFORMANCE.md)。
 - `--mtu`：设置 IPv4 MTU。
 - `--local-ip`：设置协议栈的本机 IPv4 地址，默认为 `192.168.21.2`。
 - `--port-id`：选择 EAL 枚举出的 DPDK Ethernet port id，默认为 `0`。

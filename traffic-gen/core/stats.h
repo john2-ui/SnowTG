@@ -119,6 +119,17 @@ struct tg_stats_snapshot {
         uint64_t maintenance_cycles;
         uint64_t reactor_cycles;
         uint64_t tx_flush_cycles;
+        uint64_t tx_packets;
+        uint64_t tx_bursts;
+        uint64_t nic_tx_cycles;
+        uint64_t nic_tx_sampled_packets;
+        uint64_t nic_tx_sampled_bursts;
+        uint64_t nic_rx_packets;
+        uint64_t rx_burst_calls;
+        uint64_t rx_empty_bursts;
+        uint64_t rx_full_bursts;
+        uint64_t rx_handoffs;
+        uint64_t rx_handoff_drops;
 
         /** TCP out-of-order queue gauges, maxima, and interval counters. */
         uint64_t ofo_segments_current;

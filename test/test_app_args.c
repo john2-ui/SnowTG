@@ -24,6 +24,10 @@ static int test_defaults(void) {
         ASSERT_TRUE(config.worker_count == 1);
         ASSERT_TRUE(config.socket_id_max_override == 0);
         ASSERT_TRUE(config.stats_csv_path == NULL);
+        ASSERT_TRUE(config.dataplane_csv_path == NULL);
+        ASSERT_TRUE(config.metrics_sample == 1024);
+        ASSERT_TRUE(config.tx_mode == TG_TX_AUTO);
+        ASSERT_TRUE(config.rx_mode == TG_RX_AUTO);
         ASSERT_TRUE(config.requested_mtu == 0);
         ASSERT_TRUE(config.port_id == TG_DEFAULT_PORT_ID);
         ASSERT_TRUE(strcmp(config.scenario_path, TG_DEFAULT_SCENARIO_PATH) ==
@@ -38,7 +42,8 @@ static int test_overrides_and_order(void) {
             "traffic-gen",     "custom.json", "--port-id",   "65535",
             "--workers",       "4",           "--local-ip",  "10.20.30.40",
             "--mtu",           "1500",        "--stats-csv", "results.csv",
-            "--socket-id-max", "8192"};
+            "--socket-id-max", "8192", "--dataplane-csv", "main.csv",
+            "--metrics-sample", "0", "--tx-mode", "worker", "--rx-mode", "main"};
         struct tg_app_config config;
         struct in_addr expected_ip;
 
@@ -48,6 +53,10 @@ static int test_overrides_and_order(void) {
         ASSERT_TRUE(config.socket_id_max_override == 8192);
         ASSERT_TRUE(strcmp(config.stats_csv_path, "results.csv") == 0);
         ASSERT_TRUE(config.requested_mtu == 1500);
+        ASSERT_TRUE(strcmp(config.dataplane_csv_path, "main.csv") == 0);
+        ASSERT_TRUE(config.metrics_sample == 0);
+        ASSERT_TRUE(config.tx_mode == TG_TX_WORKER);
+        ASSERT_TRUE(config.rx_mode == TG_RX_MAIN);
         ASSERT_TRUE(config.port_id == UINT16_MAX);
         ASSERT_TRUE(strcmp(config.scenario_path, "custom.json") == 0);
         ASSERT_TRUE(inet_pton(AF_INET, "10.20.30.40", &expected_ip) == 1);
@@ -81,6 +90,17 @@ static int test_invalid_options(void) {
         char *two_scenarios[] = {"traffic-gen", "one.json", "two.json"};
         char *duplicate_workers[] = {"traffic-gen", "--workers", "1",
                                      "--workers", "2"};
+        char *same_csv[] = {"traffic-gen", "--stats-csv", "out.csv",
+                            "--dataplane-csv", "out.csv"};
+        char *bad_sample[] = {"traffic-gen", "--metrics-sample", "-1"};
+        char *missing_sample[] = {"traffic-gen", "--metrics-sample"};
+        char *duplicate_sample[] = {"traffic-gen", "--metrics-sample", "64",
+                                     "--metrics-sample", "1"};
+        char *bad_tx[] = {"traffic-gen", "--tx-mode", "shared"};
+        char *duplicate_tx[] = {"traffic-gen", "--tx-mode", "main", "--tx-mode", "worker"};
+
+        char *bad_rx[] = {"traffic-gen", "--rx-mode", "shared"};
+        char *duplicate_rx[] = {"traffic-gen", "--rx-mode", "main", "--rx-mode", "worker"};
 
 #define EXPECT_INVALID(args)                                                   \
         ASSERT_TRUE(expect_invalid((int)(sizeof(args) / sizeof((args)[0])),    \
@@ -97,6 +117,14 @@ static int test_invalid_options(void) {
         EXPECT_INVALID(unknown);
         EXPECT_INVALID(two_scenarios);
         EXPECT_INVALID(duplicate_workers);
+        EXPECT_INVALID(same_csv);
+        EXPECT_INVALID(bad_sample);
+        EXPECT_INVALID(missing_sample);
+        EXPECT_INVALID(duplicate_sample);
+        EXPECT_INVALID(bad_rx);
+        EXPECT_INVALID(duplicate_rx);
+        EXPECT_INVALID(bad_tx);
+        EXPECT_INVALID(duplicate_tx);
 #undef EXPECT_INVALID
         return 0;
 }

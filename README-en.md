@@ -71,16 +71,28 @@ The complete application syntax is:
 ```text
 traffic-gen [EAL arguments] -- [--workers N] [--socket-id-max N]
             [--stats-csv PATH] [--mtu BYTES]
+            [--dataplane-csv PATH] [--metrics-sample N]
+            [--rx-mode main|worker|auto] [--tx-mode main|worker|auto]
             [--local-ip IPv4] [--port-id N] [scenario.json]
 ```
 
 - `--workers`: number of network-stack owner/reactor workers; defaults to `1`.
 - `--socket-id-max`: per-owner socket capacity, allocated at startup as `max(16384, 2 * ceil(global concurrency / active_shards))` by default. An explicit value may lower this default but must cover `max(4096, 2 * ceil(global concurrency / active_shards))`. Live tables are not resized.
 - `--stats-csv`: writes periodic statistics to the specified CSV file.
+- `--dataplane-csv`: writes Main timings, packet counters and NIC counter deltas to a separate CSV file.
+- `--metrics-sample`: samples added timings every N loops; defaults to `1024`. Zero disables timing; omitting `--dataplane-csv` also disables it. Use sampled packet counts when calculating time per packet.
+- `--rx-mode`: defaults to `auto`, selecting worker RX when RSS configuration and independent queues are available, or with a single worker. Otherwise Main dispatches packets. Explicit `worker` fails if unsupported. Misrouted packets return to their socket owner; worker 0 handles ARP replies and fragment reassembly.
+- `--tx-mode`: defaults to `auto`, assigning each worker a dedicated TX queue when available and falling back to Main otherwise. Explicit `worker` requires enough queues. Each worker sends up to four bursts per turn and drains its ring on exit.
+
 - `--mtu`: sets the IPv4 MTU.
 - `--local-ip`: sets the stack's local IPv4 address; defaults to `192.168.21.2`.
 - `--port-id`: selects a DPDK Ethernet port id enumerated by EAL; defaults to `0`.
 - `scenario.json`: load-test scenario; examples are available in [`traffic-gen/scenarios/`](traffic-gen/scenarios/).
+
+Worker CSV reports include NIC RX/TX and handoff counters. Successful RSS configuration
+does not prove actual packet distribution: this VM's vmxnet3 backend delivers all
+traffic to RXQ0. Use `--rx-mode main --tx-mode worker` for this setup; see the
+[performance records](docs/PERFORMANCE.md) for measurements.
 
 `--local-ip` and `--port-id` configure the traffic-generator endpoint. The
 `peer.ip` and `peer.port` fields in each scenario class continue to identify

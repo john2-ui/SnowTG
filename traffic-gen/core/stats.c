@@ -141,6 +141,17 @@ void tg_stats_on_flow_finished(struct tg_stats *stats,
         X(maintenance_cycles)                                                  \
         X(reactor_cycles)                                                      \
         X(tx_flush_cycles)                                                     \
+        X(tx_packets)                                                          \
+        X(tx_bursts)                                                           \
+        X(nic_tx_cycles)                                                       \
+        X(nic_tx_sampled_packets)                                              \
+        X(nic_tx_sampled_bursts)                                               \
+        X(nic_rx_packets)                                                      \
+        X(rx_burst_calls)                                                      \
+        X(rx_empty_bursts)                                                     \
+        X(rx_full_bursts)                                                      \
+        X(rx_handoffs)                                                         \
+        X(rx_handoff_drops)                                                    \
         X(reactor_turns)                                                       \
         X(reactor_events)                                                      \
         X(scheduler_starts)                                                    \

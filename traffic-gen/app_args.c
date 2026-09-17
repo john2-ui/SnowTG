@@ -42,11 +42,18 @@ int tg_app_config_parse(int argc, char *argv[],
         struct tg_app_config config = {
             .scenario_path = TG_DEFAULT_SCENARIO_PATH,
             .worker_count = 1,
+            .metrics_sample = 1024,
+            .rx_mode = TG_RX_AUTO,
+            .tx_mode = TG_TX_AUTO,
             .port_id = TG_DEFAULT_PORT_ID,
         };
         bool workers_seen = false;
         bool socket_id_max_seen = false;
         bool stats_csv_seen = false;
+        bool dataplane_csv_seen = false;
+        bool metrics_sample_seen = false;
+        bool tx_mode_seen = false;
+        bool rx_mode_seen = false;
         bool mtu_seen = false;
         bool local_ip_seen = false;
         bool port_id_seen = false;
@@ -87,6 +94,50 @@ int tg_app_config_parse(int argc, char *argv[],
                         stats_csv_seen = true;
                         continue;
                 }
+                if (strcmp(argv[i], "--dataplane-csv") == 0) {
+                        if (dataplane_csv_seen || ++i == argc ||
+                            argv[i][0] == '\0' || argv[i][0] == '-')
+                                goto invalid;
+                        config.dataplane_csv_path = argv[i];
+                        dataplane_csv_seen = true;
+                        continue;
+                }
+                if (strcmp(argv[i], "--metrics-sample") == 0) {
+                        if (metrics_sample_seen || ++i == argc ||
+                            tg_parse_unsigned(argv[i], 0, UINT32_MAX, &value) != 0)
+                                goto invalid;
+                        config.metrics_sample = (uint32_t)value;
+                        metrics_sample_seen = true;
+                        continue;
+                }
+                if (strcmp(argv[i], "--tx-mode") == 0) {
+                        if (tx_mode_seen || ++i == argc)
+                                goto invalid;
+                        if (strcmp(argv[i], "main") == 0)
+                                config.tx_mode = TG_TX_MAIN;
+                        else if (strcmp(argv[i], "worker") == 0)
+                                config.tx_mode = TG_TX_WORKER;
+                        else if (strcmp(argv[i], "auto") == 0)
+                                config.tx_mode = TG_TX_AUTO;
+                        else
+                                goto invalid;
+                        tx_mode_seen = true;
+                        continue;
+                }
+                if (strcmp(argv[i], "--rx-mode") == 0) {
+                        if (rx_mode_seen || ++i == argc)
+                                goto invalid;
+                        if (strcmp(argv[i], "main") == 0)
+                                config.rx_mode = TG_RX_MAIN;
+                        else if (strcmp(argv[i], "worker") == 0)
+                                config.rx_mode = TG_RX_WORKER;
+                        else if (strcmp(argv[i], "auto") == 0)
+                                config.rx_mode = TG_RX_AUTO;
+                        else
+                                goto invalid;
+                        rx_mode_seen = true;
+                        continue;
+                }
                 if (strcmp(argv[i], "--mtu") == 0) {
                         if (mtu_seen || ++i == argc ||
                             tg_parse_unsigned(argv[i], IPV4_MIN_MTU, UINT16_MAX,
@@ -118,6 +169,9 @@ int tg_app_config_parse(int argc, char *argv[],
                 scenario_seen = true;
         }
 
+        if (config.stats_csv_path != NULL && config.dataplane_csv_path != NULL &&
+            strcmp(config.stats_csv_path, config.dataplane_csv_path) == 0)
+                goto invalid;
         *config_out = config;
         return 0;
 
