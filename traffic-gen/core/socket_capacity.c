@@ -13,6 +13,8 @@
 
 /** @brief Reserve factor for sockets that outlive active traffic flows. */
 #define TG_SOCKET_ID_RESERVE_FACTOR 2U
+/** Default headroom for TCP teardown sockets beyond active concurrency. */
+#define TG_SOCKET_ID_DEFAULT_CAPACITY 16384U
 
 /** @copydoc tg_socket_id_capacity */
 int tg_socket_id_capacity(const struct tg_plan *plan,
@@ -49,6 +51,8 @@ int tg_socket_id_capacity(const struct tg_plan *plan,
                         return -1;
                 }
                 *capacity_out = override;
+        } else if (*capacity_out < TG_SOCKET_ID_DEFAULT_CAPACITY) {
+                *capacity_out = TG_SOCKET_ID_DEFAULT_CAPACITY;
         }
         return 0;
 }

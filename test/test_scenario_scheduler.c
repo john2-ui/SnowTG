@@ -335,18 +335,34 @@ static int test_socket_capacity_policy(void) {
 
         plan.max_concurrency = 1000;
         ASSERT_TRUE(tg_socket_id_capacity(&plan, 1, 0, &capacity) == 0);
+        ASSERT_TRUE(capacity == 16384);
+        ASSERT_TRUE(tg_socket_id_capacity(&plan, 1, NSOCK_ID_DEFAULT_CAPACITY,
+                                          &capacity) == 0);
         ASSERT_TRUE(capacity == NSOCK_ID_DEFAULT_CAPACITY);
+        errno = 0;
+        ASSERT_TRUE(tg_socket_id_capacity(&plan, 1,
+                                          NSOCK_ID_DEFAULT_CAPACITY - 1U,
+                                          &capacity) == -1);
+        ASSERT_TRUE(errno == ERANGE);
 
         plan.max_concurrency = 10000;
         ASSERT_TRUE(tg_socket_id_capacity(&plan, 1, 0, &capacity) == 0);
         ASSERT_TRUE(capacity == 20000);
         ASSERT_TRUE(tg_socket_id_capacity(&plan, 4, 0, &capacity) == 0);
+        ASSERT_TRUE(capacity == 16384);
+        ASSERT_TRUE(tg_socket_id_capacity(&plan, 4, 5000, &capacity) == 0);
         ASSERT_TRUE(capacity == 5000);
         ASSERT_TRUE(tg_socket_id_capacity(&plan, 4, 24000, &capacity) == 0);
         ASSERT_TRUE(capacity == 24000);
 
         errno = 0;
         ASSERT_TRUE(tg_socket_id_capacity(&plan, 4, 4999, &capacity) == -1);
+        ASSERT_TRUE(errno == ERANGE);
+        plan.max_concurrency = 10001;
+        ASSERT_TRUE(tg_socket_id_capacity(&plan, 4, 5002, &capacity) == 0);
+        ASSERT_TRUE(capacity == 5002);
+        errno = 0;
+        ASSERT_TRUE(tg_socket_id_capacity(&plan, 4, 5001, &capacity) == -1);
         ASSERT_TRUE(errno == ERANGE);
         errno = 0;
         ASSERT_TRUE(tg_socket_id_capacity(&plan, 4, UINT32_MAX, &capacity) ==

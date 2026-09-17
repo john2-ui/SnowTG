@@ -261,8 +261,8 @@ $(HTTP_CLIENT_TEST): $(HTTP_CLIENT_OBJS)
 $(DNS_CLIENT_TEST): $(DNS_CLIENT_OBJS)
 	$(CC) $(DNS_CLIENT_OBJS) -o $@ $(SANITIZER_LDFLAGS)
 
-$(SCENARIO_SCHEDULER_TEST): $(SCENARIO_SCHEDULER_OBJS)
-	$(CC) $(SCENARIO_SCHEDULER_OBJS) -o $@ $(SANITIZER_LDFLAGS)
+$(SCENARIO_SCHEDULER_TEST): $(SCENARIO_SCHEDULER_OBJS) Makefile
+	$(CC) $(SCENARIO_SCHEDULER_OBJS) -o $@ $(DPDK_LIBS) $(SANITIZER_LDFLAGS)
 
 $(BUILD_DIR)/test_http_client.o: test_http_client.c \
 		../traffic-gen/core/txn.h \
@@ -302,8 +302,8 @@ $(BUILD_DIR)/tg_scenario_json.o: ../traffic-gen/core/scenario_json.c \
 $(BUILD_DIR)/tg_socket_capacity.o: ../traffic-gen/core/socket_capacity.c \
 		../traffic-gen/core/socket_capacity.h \
 		../traffic-gen/core/scenario.h \
-		../pro-stack/socket_owner.h | $(BUILD_DIR)
-	$(CC) $(HTTP_CLIENT_CFLAGS) -c $< -o $@
+		../pro-stack/socket_owner.h Makefile | $(BUILD_DIR)
+	$(CC) $(HTTP_CLIENT_CFLAGS) $(DPDK_CFLAGS) -D_GNU_SOURCE -c $< -o $@
 
 $(BUILD_DIR)/tg_registry.o: ../traffic-gen/proto/registry.c \
 		../traffic-gen/proto/registry.h \
@@ -316,8 +316,8 @@ $(BUILD_DIR)/tg_scheduler.o: ../traffic-gen/core/scheduler.c \
 	$(CC) $(HTTP_CLIENT_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/tg_stats.o: ../traffic-gen/core/stats.c \
-		../traffic-gen/core/stats.h ../traffic-gen/core/flow.h | $(BUILD_DIR)
-	$(CC) $(HTTP_CLIENT_CFLAGS) -c $< -o $@
+		../traffic-gen/core/stats.h ../traffic-gen/core/flow.h Makefile | $(BUILD_DIR)
+	$(CC) $(HTTP_CLIENT_CFLAGS) $(DPDK_CFLAGS) -D_GNU_SOURCE -c $< -o $@
 
 $(BUILD_DIR)/tg_http_client.o: ../traffic-gen/proto/http/http_client.c \
 		../traffic-gen/proto/http/http_client.h \

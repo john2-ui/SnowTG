@@ -75,7 +75,8 @@ traffic-gen [EAL 参数] -- [--workers N] [--socket-id-max N]
 ```
 
 - `--workers`：协议栈 owner/reactor worker 数，默认为 `1`。
-- `--socket-id-max`：手动设置每个 owner 的 socket 容量；省略时根据 scenario 自动计算。
+- `--socket-id-max`：每个 owner 的 socket 容量；省略时启动计算 `max(16384, 2 × ceil(全局并发 / active_shards))`。
+  可显式降低默认值，但须至少为 `max(4096, 2 × ceil(全局并发 / active_shards))`；运行中不扩容。
 - `--stats-csv`：将周期统计写入指定 CSV 文件。
 - `--mtu`：设置 IPv4 MTU。
 - `--local-ip`：设置协议栈的本机 IPv4 地址，默认为 `192.168.21.2`。

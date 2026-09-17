@@ -75,7 +75,7 @@ traffic-gen [EAL arguments] -- [--workers N] [--socket-id-max N]
 ```
 
 - `--workers`: number of network-stack owner/reactor workers; defaults to `1`.
-- `--socket-id-max`: manually sets the socket capacity for each owner; when omitted, the value is calculated from the scenario.
+- `--socket-id-max`: per-owner socket capacity, allocated at startup as `max(16384, 2 * ceil(global concurrency / active_shards))` by default. An explicit value may lower this default but must cover `max(4096, 2 * ceil(global concurrency / active_shards))`. Live tables are not resized.
 - `--stats-csv`: writes periodic statistics to the specified CSV file.
 - `--mtu`: sets the IPv4 MTU.
 - `--local-ip`: sets the stack's local IPv4 address; defaults to `192.168.21.2`.
