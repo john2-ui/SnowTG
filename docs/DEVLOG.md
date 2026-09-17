@@ -12,6 +12,7 @@
 - [ARC-006：traffic-gen UDP 直发与按需接收队列](#arc-006traffic-gen-udp-直发与按需接收队列) — 已实施；BSD/app-visible UDP 保留兼容路径
 - [ARC-007：traffic-gen 日志处理与低开销可观测性](#arc-007traffic-gen-日志处理与低开销可观测性) — 已实施；性能测量与协议调试分离
 - [ARC-008：TCP SACK、丢包恢复与可插拔拥塞控制](#arc-008tcp-sack丢包恢复与可插拔拥塞控制) — 已实施；D-SACK undo、NewReno 与跨 ACK 重传历史待后续扩展
+- [ARC-009：多 RX/TX 队列与 worker 直接收发](#arc-009多-rxtx-队列与-worker-直接收发) — 已实施；当前 VM 推荐 Main RX + worker TX
 
 ## 条目格式
 
@@ -1266,3 +1267,27 @@ make -C pro-stack
 真实链路验证还应覆盖 ACK/SACK 重排、多个 hole、TX ring 暂时失败、RTO 后
 SACK reneging、FIN 与 payload flight 边界、Timestamp option 挤压 SACK 容量，
 以及 D-SACK 在累计 ACK 左侧和累计 ACK 之上的两种编码。
+
+---
+
+## ARC-009：多 RX/TX 队列与 worker 直接收发
+
+- **状态与范围**：已实施；合并 Main/NIC 观测、时间戳复用、worker 独占 TX 与直接 RX。默认 RX/TX `auto`；本机实测推荐 `--rx-mode main --tx-mode worker`。
+- **实现**：修正 vmxnet3 配置前 RETA=0、固定 RSS key 长度的能力误判；RSS 配置成功时 worker i 独占 RXQi/TXQi，错队列报文用 MP/SC ring 交还原 owner。ARP 只由 worker 0 回复、其他 owner 学习；分片统一在 worker 0 重组。队列不足时 auto 回退 Main；显式 worker 报错。直接收发时 Main 每 1 ms 消费统计；TX 有预算并在退出前排空。
+- **实测**：2026-09-16，8 workers、并发 500、每点 3×30 秒，同二进制、反转顺序；对端 `192.168.10.86`（i5-1240P / 16 线程 / 15.6 GiB / 1 Gbps nginx）。以下为稳态均值：
+
+当天网络不稳定；以下仅为同环境相对 A/B，绝对容量待稳定网络复测。宿主机 Clash Verge 对 DPDK 路径的影响尚未证实。
+
+| RX / TX | HTTP 短连接 RPS | keep-alive RPS | 较集中收发 |
+|---|---:|---:|---|
+| Main / Main | 8280 | 19596 | 基线 |
+| Main / worker | **11161** | **27262** | **+34.80% / +39.12%** |
+| worker / worker | 8666 | 23504 | +4.67% / +19.94% |
+
+- **瓶颈与边界**：8 RX 配置成功，但独立 testpmd 和实流量均只在 RXQ0 收包；直接 RX 时该队列满 burst=100%，其他 RXQ 为 0，故不能宣称 RSS 并行增益。三轮短连接稳态 RX missed：集中收发 13323、仅直接 TX 0、直接 RX/TX 15198；直接 RX 的短连接变化也与基线 4.71% 波动相近。此 vmxnet3 v1 没有 UDP RSS，`rte_flow queue` 验证返回 ENOSYS，FDIR 无法补上硬件分流。当前更优路径是 Main RX + worker TX。
+- **RSS 定位补测**：独立 DPDK 强制 RETA 全指向 RXQ1，8190 个 TCP 包仍全进 RXQ0、RSS 标记为 0；Linux 外部 256 次、宿主机直连 128 次 HTTP 也只收 RXQ0。定位到当前 Workstation 虚拟接收路径未执行 RSS，具体配置/后端限制待查；RETA 读回只是配置副本。[本地证据索引](../debug/README.md)。
+- **对端与 lcore**：旧 `192.168.21.106`（2 vCPU）CPU 95%–100%，限制了旧测试的解释；新对端均值约 6.8%–8.4%，不再支持“对端 CPU 不足”的判断。直接 RX/TX 将 Main CPU 从约 99.5% 降至 11.6%–12.0%；worker 仍约 99%–100% busy poll，不能把 CPU 百分比当有效负载。8 workers 的并发 500→2000→4000，keep-alive 约 2.73→2.76→2.82 万 RPS，呈平台。DNS 对端 socket 曾溢出 200/221 包，单 socket 扩到 8 MiB 后溢出为 0，但仍有约 0.1% 失败，不能宣称测得 UDP 无损极限。
+- **验证与数据**：跨队列 owner 转交、跨队列分片、ARP 单回复、handoff 满环回收、TX 部分发送/预算/排空及完整回归；原始 CSV、逐 lcore CPU、对端配置、容量扫描、二进制/源码快照及复现入口见 [本地实验索引](../debug/README.md)。
+- **参数扫描**：补测 70 轮，候选各 3×30 秒；8 workers 下短连接并发 256 为 **11139 RPS**、keep-alive 并发 1000 为 **27221 RPS**，两组全程零请求失败。短连接并发 4000 吞吐未增、平均完成时间从 22.5 ms 升至 364.2 ms；[本地矩阵与原始数据位置](../debug/README.md)。
+
+- **NUC 补测（09-17）**：I225-V 实际 RSS 分流；独立 P 核 Main + 2 workers、同二进制反向 A/B，直接收发短连接 **52,481 RPS（+4.21%，两轮零失败）**，Keep-Alive **370,085 RPS（基本持平，已到千兆 TX 线速，失败228）**；Main CPU 约100%→**2.1%**。HP USB 网卡原单核软中断饱和，对端软件 RPS 使同参数 Keep-Alive 约14.2万→37万，这部分不计入代码收益。配置与原始数据索引见 [性能记录](PERFORMANCE.md#38-2026-09-17--nuc-发流hp-裸机接收)。

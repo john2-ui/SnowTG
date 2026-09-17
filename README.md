@@ -15,6 +15,31 @@ English documentation: [`README-en.md`](README-en.md)
 
 项目架构与后续工作见 [`docs/TODO.md`](docs/TODO.md)，性能测试记录见 [`docs/PERFORMANCE.md`](docs/PERFORMANCE.md)。
 
+## 测试机器
+
+以下配置核对于 2026-09-16～09-17；虚拟机 CPU 型号为 guest 识别值，vCPU 不代表独占物理核，内存为 Linux 可见容量。
+
+| 角色 | 机器型号 / CPU | CPU 与内存 | 压测网卡 | 用途与限制 |
+| --- | --- | --- | --- | --- |
+| DPDK 压测虚拟机（`snow`） | VMware Virtual Platform，Workstation 17.6；Intel Core Ultra 9 185H | 16 vCPU / 7.20 GiB | VMXNET3（`vmxnet3`，桥接） | 运行 SnowTG；当前虚拟接收路径实测全部进入 RX0，推荐 Main RX + worker TX |
+| 初始被压虚拟机（`192.168.21.106`） | VMware Virtual Platform；Intel Core Ultra 9 185H | 2 vCPU / 3350 MiB | 虚拟 Intel 网卡（`e1000`） | 早期 HTTP/DNS 对端；HTTP 压测时 CPU 达 95%–100%，限制吞吐对比 |
+| NUC 裸机（`192.168.10.86`） | Intel NUC12WSKi5；Intel Core i5-1240P | 12 核 / 16 线程，15.6 GiB | Intel I225-V（`igc`），最高 2.5 Gbps，当前链路 1 Gbps | 可作为 HTTP/DNS 对端或 DPDK 压测端；VFIO 与硬件 RSS 4 RX + 4 TX 已验证 |
+| 新被压裸机（`192.168.10.234`） | HP Laptop 15-fc0xxx；AMD Ryzen 7 7730U | 8 核 / 16 线程，15322 MiB | Realtek RTL8153 USB 3 千兆网卡（`r8152`），1 RX / 1 TX | nginx HTTP / dnsmasq DNS；iperf3 正向、反向分别约 938 / 942 Mbps，小包能力需结合单核软中断判断 |
+
+初始被压机最初按“2 核 / 2 GB”提供，表中内存采用后续实测的 3350 MiB。
+NUC → HP 最高实测：HTTP 短连接 **118,313 RPS**（4w/并发2048，单次20秒，全程失败2048）；
+Keep-Alive **370,129 RPS**（2w/并发512，单次30秒，全程失败7），接近千兆发送线速。
+短连接推荐 **1w/并发512：两轮均值114,302 RPS、两轮全程零失败**。
+以上均为稳态成功 RPS，对端启用软件 RPS、每 owner 容量16384；峰值与修复后推荐值的版本、完整配置及证据见
+[`docs/PERFORMANCE.md`](docs/PERFORMANCE.md#38-2026-09-17--nuc-发流hp-裸机接收)。尚未测得 NUC 的 CPU 上限。
+
+双机源码工作区为 VM 的 `/home/snow/dpdk-l` 和 NUC 的 `/home/lca/work/dpdk-l`。
+后续代码修改同步到两端，分别构建、验证；源码同步排除编译产物和压测数据，实验快照另行归档。
+NUC 构建前执行 `source /home/lca/work/snowtg-env.sh`，使用安装在
+`/opt/dpdk-26.07-rc3` 的 DPDK。NUC 已验证 VFIO Type 1 和 DPDK 四队列 UDP RSS；
+默认自协商多数为 1 Gbps，但仍偶发 100 Mbps；压测逐秒记录链路，异常样本单独保留并排除对比。
+程序启动先等待链路就绪（最多 20 秒），避免将 PHY 协商时间计入发流阶段。
+
 ## 使用方法
 
 ### 构建

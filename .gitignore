@@ -3,3 +3,7 @@ build-sanitizers/
 __pycache__/
 /temp/
 .vscode/
+
+# Local benchmark artifacts and ad hoc diagnostics; retain the repository index.
+/debug/*
+!/debug/README.md

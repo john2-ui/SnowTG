@@ -1,6 +1,6 @@
 # traffic-gen 性能记录
 
-短连接与 HTTP keep-alive GET 实测归档。先看「指标说明」，再按日期读结果表；表内只放数字与结论关键词，解释性文字放表下备注。
+短连接与 HTTP keep-alive GET 实测归档，更新至 **2026-09-17**。先看「指标说明」，再按日期读结果表；表内只放数字与结论关键词，解释性文字放表下备注。
 
 ---
 
@@ -8,10 +8,14 @@
 
 | 项 | 值 |
 | --- | --- |
-| 服务端 | `192.168.21.106:8888` |
+| 08-05～08-13 服务端 | `192.168.21.106:8888` |
+| 09-16 新服务端 | `192.168.10.86:8888`；i5-1240P / 16 线程 / 15.6 GiB / 1 Gbps，nginx |
 | 负载形态 | 短连接 / HTTP keep-alive GET（按章节说明） |
-| 默认时长 | 120 秒（表内另有说明除外） |
+| 历史默认时长 | 120 秒（表内另有说明除外） |
+| 09-16 时长 | 模式 A/B 与候选复测每点 3×30 秒；参数探索每点 20 秒 |
 | 客户端 | 本仓库 `traffic-gen` + `pro-stack`，真实 NIC |
+| 09-16 客户端环境 | 16 vCPU VMware VM，vmxnet3 v1；Main lcore 1，workers 从 lcore 2 起 |
+| 09-17 NUC 发流环境 | i5-1240P / I225-V / VFIO，1 Gbps；接收端 HP Ryzen 7 7730U / USB RTL8153 |
 
 目标 CPS 是剧本设定值，不等于实测吞吐；应以 **成功 RPS / 实际 started CPS** 为准。
 
@@ -34,6 +38,10 @@
 | **实际 started CPS** | `started / 时长`，真实发起速率 |
 | **成功 RPS** | `success / 时长`，端到端成功完成速率（主吞吐指标） |
 
+**09-16 使用稳态口径**：排除启动约 5 秒及末尾 2 秒，各 worker 按成功计数差 /
+实际采样时间计算 RPS 后相加；表中再取三轮均值。稳态成功率与全程失败分别列出，
+不能将稳态 100% 解读为整轮零失败。08-13 仍保留原 `success / 120 s` 口径。
+
 ### 2.2 延迟（phase latency）
 
 单位多为毫秒或秒；多 worker 场景记为各 worker 的 **min–max 范围**。
@@ -45,6 +53,8 @@
 | **complete** | 事务开始 → flow 终结回调（含关闭） |
 
 `avg` / `max` 分别为样本均值与最大值。
+
+09-16 的 `complete avg` 为稳态完成样本加权平均耗时，再跨轮取均值；未测 p99。
 
 ### 2.3 资源与丢包
 
@@ -285,19 +295,408 @@ SYN/RST 抓包。
 
 ---
 
-## 4. 当前结论（截至 2026-08-13）
+### 3.6 2026-09-16 — 多 RX/TX、强对端与参数扫描
+
+新增 worker 独占 TX、RSS 多 RX 直接收包、错队列 owner 转交及 Main/NIC 观测
+（[ARC-009](DEVLOG.md#arc-009多-rxtx-队列与-worker-直接收发)）。
+旧对端在本轮诊断中 CPU 达 95%–100%，随后切换至 §1 的 NUC 对端；
+这不能反推 08-13 当天也一定是对端 CPU 饱和。
+
+#### 与 08-13 的跨日期变化
+
+均为 **8 workers、全局并发 500、目标 100k CPS**；09-16 使用 Main RX + worker TX。
+
+| 模式 | 08-13 成功 RPS | 09-16 成功 RPS | 变为原来的 | 增长 |
+| --- | ---: | ---: | ---: | ---: |
+| 短连接 | 3,953.43 | **11,161** | **2.82×** | **+182.3%** |
+| keep-alive | 14,396.23 | **27,262** | **1.89×** | **+89.4%** |
+
+这是跨日期的实测变化，包含代码、对端、链路、服务配置和统计窗口差异，
+**不能全部归因于多 RX/TX 改造**。08-13 keep-alive 原记录还缺少完整 final/排空数据。
+同环境收发路径的收益见下表；跨日期百分比不与其叠加。
+
+#### 同环境收发路径 A/B
+
+同一新对端、同一二进制切换模式，8 workers、并发 500，每点 3×30 秒，
+第二轮反转模式顺序。Main/Main 复现集中收发路径，用于衡量路径切换收益。
+
+| RX / TX | 短连接 RPS | keep-alive RPS | 较 Main/Main | 短连接 RX missed（三轮稳态合计） |
+| --- | ---: | ---: | --- | ---: |
+| Main / Main | 8,280 | 19,596 | 基线 | 13,323 |
+| Main / worker | **11,161** | **27,262** | **+34.80% / +39.12%** | **0** |
+| worker / worker | 8,666 | 23,504 | +4.67% / +19.94% | 15,198 |
+
+18 轮均正常退出并排空，稳态成功率均为 100%；Main/Main keep-alive 第三轮
+启动阶段仍有 40 次协议失败，未归因。直接 RX 的短连接增幅与基线 4.71% 的组内波动接近，
+不作为稳定增益。原始记录保留本地，见 [实验数据索引](../debug/README.md)。
+
+#### workers / 并发扫描与重复验证
+
+覆盖 1/2/4/6/7/8/12 workers、并发 64～8000，分阶段探索与对照 58 组，
+再对四个候选各重复 3×30 秒，共 **70 轮**。以下均为 Main RX + worker TX：
+
+| 场景 | workers | 并发 | 三轮成功 RPS | 均值 | complete avg | 全程失败合计 |
+| --- | ---: | ---: | --- | ---: | ---: | ---: |
+| 短连接（推荐） | 8 | **256** | 11163 / 11209 / 11044 | **11,139** | **22.52 ms** | **0** |
+| 短连接 | 8 | 4,000 | 11093 / 10922 / 10936 | 10,983 | 364.16 ms | 2 |
+| keep-alive（推荐） | 8 | **1,000** | 27411 / 27212 / 27042 | **27,221** | 36.01 ms | **0** |
+| keep-alive | 7 | 1,000 | 26420 / 26756 / 26659 | 26,612 | 36.88 ms | 0 |
+
+推荐组波动分别为 1.48% / 1.36%，稳态成功率均为 100%，RX missed、RX ring drops、
+TX NIC drops 均为 0。探索单次最高 11,513 / 28,885 RPS 未在对应组合的重复测试中复现，
+不作为稳定上限。参数调整未带来相较前轮并发 500 的明确新吞吐增益。
+
+#### 瓶颈与边界
+
+- **多 RX 未实际分流**：成功配置 8 RX，但实流量与独立 testpmd 均只有 RXQ0 收包；
+  直接收发时 worker 0 兼顾接收、转交和自身业务，RXQ0 满 burst 比例为 100%。
+  当前收益主要来自 worker 独占 TX；此 PMD 的 `rte_flow queue` 验证返回 ENOSYS，
+  FDIR 无法补上分流。6/7 workers 实际回退为 1 RX + 6/7 TX，核数比较同时包含队列配置变化。
+- **RXQ0 定位补测**：绕过 SnowTG，独立 DPDK 将整张 RETA 强制指向 RXQ1，
+  实收 **8190** 个 TCP 探针包仍全部进入 RXQ0，覆盖 **4096** 个源端口，RSS 哈希标记为 **0**。
+  Linux vmxnet3 同样配置下完成 **256/256** 次真实 HTTP 连接，单播 RX 增量 **1477/0/…/0**。
+  因而问题已定位到当前 VMware 虚拟接收路径未执行 RSS；DPDK RETA 读回只是配置副本，
+  不能作为硬件分流成功证据。宿主机为 Workstation 17.6、有线地址 `192.168.10.254`，
+  本轮同在 192.168.10 网段；用户确认自动桥接、I219-V 有线 Up / 1 Gbps、WLAN 断开，
+  Windows RSS 查询无对象。宿主机直连的 **128/128** 次 HTTP 也成功、强制 RXQ1 仍只收 RXQ0。
+  没有依据归因于 Wi-Fi；物理 RSS 与虚拟队列分流不能等同，
+  仍需区分 Workstation 后端限制与宿主机配置。见 [本地定位数据](../debug/README.md)。
+- **高并发的明确拥塞点是 Main→worker ring**：8 workers 短连接并发 256→4000，
+  吞吐未增、平均完成时间约增至 16.2 倍，三轮稳态 RX ring drops 达 **139949**，
+  同期 NIC RX missed 为 0。扩大并发或 ring 不能单独解决处理速率平台。
+- **新对端 CPU、链路带宽未跑满**：推荐组对端平均 CPU **7.29% / 8.70%**，
+  最忙核约 31%；客户端 NIC RX/TX 均不足 60 Mbps。Main CPU 约 99.5%–99.7%，
+  worker 为 98.92%–100%，包含空轮询，不能仅凭 CPU 百分比定位热点。
+- **待验证的固定开销**：前轮 RDTSC 微基准约 **4.1–4.2 μs/次**，worker 主循环每轮
+  至少 11 次读时钟。已有 perf 仅覆盖 Main；需补 worker 剖析与读时钟/观测开销 A/B，
+  尚不能给出它们对吞吐损失的精确占比。单 RX 也不能解释全部性能上限。
+- **可靠性口径**：零请求失败不代表网络零丢包，推荐组服务端主机级 TCP 重传计数仍增长；
+  不能将剩余损失完全归于客户端或对端。当天网络与宿主机代理的影响未单独隔离，
+  以上是当前环境的可复现水平，不是硬件绝对上限。
+
+完整矩阵、逐 lcore CPU、失败类型、原始 CSV、二进制/源码记录与复现计划见
+[本地参数扫描数据索引](../debug/README.md)。
+70 轮均通过退出、计数闭合、排空与统计完整性核对，压测后网卡及原地址/路由已恢复。
+
+---
+
+### 3.7 2026-09-17 — NUC 硬件 RSS 可行性验证
+
+`192.168.10.86` 是裸机，Intel I225-V / igc 已启用 **4 RX + 4 TX**、128 项 RETA、
+TCP 四元组 RSS；RPS 为关闭状态。向现有 nginx 发起 **2048 次独立 HTTP 连接、16 并发**，
+全部成功，四个 RX 队列增量为 **2565 / 2563 / 2507 / 2627**，占比约
+**25.00% / 24.98% / 24.43% / 25.60%**；RX missed 和各队列 drops 增量为 0。
+这验证了真实硬件分流，计数含少量管理/背景流量；不是 RPS 容量测试，也尚未运行 NUC 上的 DPDK A/B。
+
+后续适合测试 1/2/4 workers。内核当前 UDP 哈希仅包含 IP，DPDK 需独立配置。
+同日已部署与 VM 同源码的 DPDK 26.07.0-rc3 / SnowTG、预留 2 GiB 大页，双机构建及回归通过。
+增加限定源/目标地址的临时策略路由后，Wi-Fi SSH 回程走 wlo1，实际接管有线口期间保持可用。
+**VFIO Type 1 + net_igc + 4 RX/4 TX** 启动成功，256 个不同源端口的 UDP 探针
+全部收到、全部带 RSS 标记，队列计数为 **64/64/64/64**；NIC RX missed/errors/nombuf 为 0。
+此轮 testpmd 协商为 **100 Mbps**，恢复 igc 内核驱动后回到 **1 Gbps**，原因待查；
+仅证明分流和部署可用，不作为吞吐上限或架构收益。此阶段尚未进行 RPS A/B，后续容量与对照结果见 §3.8。
+数据位置见 [本地实验索引](../debug/README.md)。
+
+---
+
+### 3.8 2026-09-17 — NUC 发流，HP 裸机接收
+
+NUC（i5-1240P / I225-V / VFIO）从 `192.168.10.86` 发流至
+`192.168.10.234`（HP Laptop 15-fc0xxx / Ryzen 7 7730U / 15322 MiB）。
+对端 nginx `:8888`、dnsmasq `:1053`；USB3 RTL8153 / r8152 只有 1 RX + 1 TX。
+内核 iperf3 正向、反向**分开测量**约 **938 / 942 Mbps**，不是同时双向结果，不能据此推定小包处理能力。
+
+**基础扫描**：Main=E 核 CPU8，workers=P 核 CPU0/2/4/6；worker RX/TX，
+目标 100 万 CPS，24 点各 20 秒，socket 容量默认每 owner 4096；对端软件 RPS 关闭。
+下表为稳态成功 RPS，括号为**全程失败数**；带失败的峰值不是无损容量。
+
+| 场景 / workers | 并发 32 | 并发 128 | 并发 512 | 并发 2048 |
+|---|---:|---:|---:|---:|
+| short / 1w | 19,017 (0) | 31,819 (902,424) | 31,473 (1,080,352) | 29,554 (1,134,464) |
+| short / 2w | 17,739 (0) | 34,277 (128) | 34,904 (513) | 34,479 (651,166) |
+| short / 4w | 14,348 (80) | 32,864 (64) | 34,643 (560) | 34,445 (3,825) |
+| keepalive / 1w | 57,116 (0) | 126,909 (128) | 151,942 (2,341) | 133,444 (89,731) |
+| keepalive / 2w | 48,127 (0) | 126,252 (128) | 141,714 (2,350) | 134,091 (21,124) |
+| keepalive / 4w | 48,333 (40) | 117,095 (144) | 137,540 (2,377) | 132,083 (20,975) |
+
+**定位与对照**：
+
+- 单 worker 短连接并发 128 时，`live_sockets` 顶到 **4096**，出现 ENFILE；稳态成功率仅 **32.83%**。
+  同二进制用现有 `--socket-id-max 16384` 复测 30 秒：**34,140 RPS / 99.9995%**，全程失败 6。
+  对比默认容量的 31,819 RPS，主要收益是消除资源失败；并发数不能代表关闭中 socket 的总占用。
+- 对端 RPS 关闭时，HTTP 高负载的 CPU10 **%soft≈100%**，NUC NIC missed 为 0。
+  对端启用 `rx-0/rps_cpus=5155`，将协议处理分到 7 个物理核并避开 USB IRQ 核；
+  这是 Linux 软件分流，不是 NUC 硬件 RSS，也不是 SnowTG 代码收益。
+- 4w / 并发 512 / Keep-Alive，RPS 开启的两轮 30 秒分别为 **369,969 / 370,059 RPS**，
+  均值 **370,014**；关闭后同参数 30 秒为 **141,645 RPS**，约 **+161.2%（2.61×）**。
+  开启两轮全程失败 **182 / 665**、稳态成功率 **99.9987% / 99.9981%**，不能称零失败。
+- 上述两轮 NIC TX 约 98 MB/s、112 万 packets/s。I225-V PMD 字节计数扣除了 FCS；
+  按 `(obytes + opackets × 24) × 8` 补计 FCS、前导码和 IFG，发送线速约 **999.6 / 999.4 Mbps**。
+  Keep-Alive 此时已接近当前 **1 Gbps TX 链路**上限，尚不能据此确定 NUC CPU 或 2.5 Gbps 端口的极限。
+- 短连接启用对端 RPS 后单次 **47,314 RPS**，但稳态成功率 **97.78%**、全程失败 25,117，
+  仍需控制本端 socket/连接注册容量；不把这个带失败结果作为推荐容量。
+
+**同机收发模式对照**：2 workers（CPU0/2），Main=CPU4，均为独立 P 核；
+对端 RPS=5155，所有模式 `--socket-id-max 16384`。短连接并发128，Keep-Alive并发512，
+预定每点2×30秒、第二轮反转模式顺序；使用 ARP 重试修复前的同一二进制。
+100 Mbps 异常轮不计入均值，使用新名字重测；下方 ARP 修复后候选另列，不混入该 A/B。
+
+| RX / TX | 短连接各轮 RPS → 均值 | Keep-Alive 各轮 RPS → 均值 | Main CPU 短 / KA | 全程失败合计 短 / KA |
+|---|---|---|---|---|
+| Main / Main | 50357 / 50365 → **50361** | 369979 / 370014 → **369997** | 99.96% / 100.00% | 256 / 732 |
+| Main / worker | 52580 / 53323 → **52952** | 223615 / 370107 → **296861** | 100.00% / 100.02% | 256 / 2862 |
+| worker / worker | 52515 / 52446 → **52481** | 370056 / 370114 → **370085** | 2.10% / 2.15% | 0 / 228 |
+
+直接收发较集中收发：短连接 **+4.21%**，Keep-Alive **+0.024%（线速下基本持平）**；
+Main CPU 从约100%降到 **2.1%**，两 worker 仍约100% busy poll。
+Main RX + worker TX 的 Keep-Alive 首轮低值保留；第三轮补测 **370,060 RPS**，
+不能把该波动解释为必然的架构退化。低值轮 Main RX 空轮询约99.73%、NIC missed=0，
+对端 CPU10 软中断约95.16%，仍需进一步区分对端处理波动和收发批次形态。
+
+直接收发短连接两轮全程零请求失败，约 **52,481 RPS / complete avg 2.43 ms**；
+Keep-Alive 两轮约 **370,085 RPS / 1.38 ms**，全程失败合计228。
+这是 NUC→HP 的新平台结果，不能把与 VM 的差值全部归为多队列代码收益。
+NUC 两队列实际均衡收包；少量 handoff 包含 ARP 广播复制，与 VM 全部进入 RX0 的情形不同。
+
+**调优与 ARP 修复后的候选**：对端软件 RPS 开启，HTTP 使用每 owner 容量16384。
+
+| 场景 / 配置 | 实测成功 RPS | 全程失败 | 口径 |
+|---|---:|---:|---|
+| 短连接 1w / 并发512 | **112608 / 115997，均值114302** | **0 / 0** | ARP 修复后，2×30秒 |
+| 短连接 4w / 并发512 | 114707 | 0 | ARP 修复后，单次30秒；未优于单 worker 档位 |
+| Keep-Alive 2w / 并发512 | **370129 / 370063，均值370096** | 7 / 145 | ARP 修复后，2×30秒；约999.99 / 999.85 Mbps TX线速 |
+| Keep-Alive 1w / 并发512 | 369392 | 98 | ARP 修复前，单次30秒；单P核已接近线速 |
+| Keep-Alive 2w / 并发256 | 285251 | 0 | ARP 修复前，单次30秒的零失败候选 |
+| DNS 4w / 并发128 / 目标10万CPS | **92891** | **0** | ARP 修复后，单次20秒；未达到目标10万，不是DNS绝对上限 |
+
+**高并发边界**：ARP 修复前同二进制、并发2048、容量16384，每点20秒；
+1 worker 为 **73218 RPS / 稳态成功率93.38% / NIC missed 64890**，RX满burst约89.83%。
+2 workers 为 **117740 RPS / 全程零失败 / NIC missed 0**，4 workers 为 **118313 RPS / 全程失败2048 / NIC missed 0**。
+两队列解除单 worker 收包拥塞，但相比并发512，继续加并发主要增加耗时：
+2w/2048 complete avg **17.47 ms**，修复后推荐1w/512约 **4.46 ms**。
+118313 是带失败的单次探索峰值；当前更实用的短连接参数为 **1w / 并发512 / 容量16384**。
+
+**启动可靠性修复**：抓包与CSV显示，旧路径前5秒停在ARP等待，首个非零成功采样在第6秒；
+代码中的 INCOMPLETE 邻居没有周期唤醒 parked TX，首个ARP丢失时只能等应用超时后新请求重新触发探测。
+在既有每秒维护中按探测间隔唤醒等待队列；丢失首个ARP的回归用例修复前失败、修复后及双机完整回归通过。
+1w/512 两轮失败 **512/512→0/0**，首个成功采样提前到第3秒（1秒采样粒度）。
+全程 `success/30s` 均值 **96232→106535 RPS（+10.7%）**；稳态均值 **115793→114302 RPS**，
+收益来自缩短启动空窗与消除超时，不能宣传为稳态吞吐提升。首个ARP丢失的具体链路位置仍未确定。
+ARP、lcore枚举和启动等待都是普通修复，不单列架构编号。
+
+DNS 修复前目标1万/5万/10万CPS分别约 **10000 / 50000 / 93021 RPS**，全程失败 **0 / 122 / 128**；
+本轮服务端 UDP `RcvbufErrors/InErrors` 增量均为0。DNS 约75%报文跨owner转交，TCP已做RSS端口亲和，
+不能据TCP的队列亲和结果断言UDP也无需handoff。
+
+**有效性与改动**：每轮保存链路、逐队列 RX、逐 lcore CPU、对端 SNMP/软中断与源码/二进制哈希。
+少数轮次偶发协商到 **100 Mbps**，已保留并排除出千兆对比，不能归因于收发模式。
+本轮修复了 Main lcore 编号较大时遗漏低编号 worker 的枚举问题，并在启动发流前等待链路就绪（最多 20 秒）；
+后者不保证协商为千兆；随后完成上述ARP重试修复。两端均完成构建、完整回归与实际 lcore 布局检查。
+原始数据及复现入口见 [本地实验索引](../debug/README.md)。
+
+#### 3.8.1 固定配置与复现
+
+| 项目 | NUC 发流端 | HP 接收端 |
+|---|---|---|
+| 机器 | Intel NUC12WSKi5，i5-1240P，12核16线程，15.6 GiB | HP Laptop 15-fc0xxx，Ryzen 7 7730U，8核16线程，15322 MiB |
+| 系统 | Ubuntu 20.04.6，Linux 5.15.0-139，GCC 9.4 | Ubuntu 20.04.6，Linux 5.15.0-139，接交流电，CPU governor=`ondemand` |
+| 数据口 | `0000:64:00.0` / I225-V `8086:15f3 rev03`，4 RX / 4 TX，RETA=128、RSS key=40B | `enx00e04c177428` / RTL8153，USB 5000M，1 RX / 1 TX |
+| 地址 / 驱动 | `192.168.10.86/24`，压测用 `vfio-pci`，恢复后 `igc` / `enp100s0` | `192.168.10.234/24`，`r8152` |
+| 链路 | 本轮有效样本均为 1000 Mbps；网卡硬件最高2.5 Gbps | 1000 Mbps，USB IRQ37主要落在CPU10/11 |
+| DPDK / 内存 | 26.07.0-rc3，源码 `1fdcbea124bbd5b7de69ea02473e6626c1aee0d3`，2 GiB巨页，EAL `-m 1024` | 内核收包；软件 RPS 关闭=`0000`，开启=`5155` |
+| 服务 | SnowTG，指标采样 `--metrics-sample 1024`，CSV间隔1秒 | nginx自动16 workers / HTTP 8888；dnsmasq / DNS 1053 |
+
+NUC 的 P 核 SMT 配对为0/1、2/3、4/5、6/7，E 核为8–15；以下 worker 只用各 P 核的一个线程。
+所有并发均为全局值，启动后按 active shards 划分；HTTP `target_cps=1000000` 是饱和调度目标。
+
+| 实验 | EAL lcores / Main | 应用参数 |
+|---|---|---|
+| 原始扫描 | `8,0` / `8,0,2` / `8,0,2,4,6`；Main=8 | workers=1/2/4，并发32/128/512/2048，各20秒；容量4096，HP RPS关闭 |
+| 同机架构 A/B | `4,0,2`，Main=4 | 2w；short并发128 / KA并发512；容量16384，HP RPS开启；每点2×30秒 |
+| 修复后短连接推荐 | `8,0`，Main=8 | 1w，并发512，容量16384，HP RPS开启；2×30秒 |
+| 修复后 KA 推荐 | `4,0,2`，Main=4 | 2w，并发512，容量16384，HP RPS开启；2×30秒 |
+| 短连接探索峰值 | `8,0,2,4,6`，Main=8 | 4w，并发2048，容量16384，HP RPS开启；20秒，ARP修复前 |
+| 修复后 DNS | `8,0,2,4,6`，Main=8 | 4w，并发128，目标100000 CPS，容量4096，HP RPS开启；20秒 |
+
+峰值与推荐值的版本不同。架构 A/B、容量扫描使用 `traffic-gen-ready`，SHA256前缀 `202aa0e9c8d4`；
+修复后候选使用 `traffic-gen-arp-fixed`，前缀 `2fe2abbc3403`。完整哈希、源码差异和命令均在逐轮 manifest 中。
+本次默认容量调整发生在以上测试之后，不把历史结果标成新二进制的复测。
+
+HP 的 `/home/lc/work/snowtg-20260917/nginx.conf`：
+
+```nginx
+worker_processes auto;
+worker_rlimit_nofile 65535;
+pid /home/lc/work/snowtg-20260917/nginx.pid;
+error_log /home/lc/work/snowtg-20260917/nginx-error.log crit;
+events { use epoll; worker_connections 16384; multi_accept on; }
+http {
+    access_log off;
+    server_tokens off;
+    tcp_nodelay on;
+    keepalive_timeout 1s;
+    keepalive_requests 1000;
+    reset_timedout_connection on;
+    server {
+        listen 192.168.10.234:8888 reuseport;
+        location / { default_type text/plain; return 200 "ok\n"; }
+    }
+}
+```
+
+同目录 `dnsmasq.conf`：
+
+```ini
+port=1053
+listen-address=192.168.10.234
+bind-interfaces
+no-resolv
+no-hosts
+address=/snowtg.test/192.0.2.1
+local-ttl=0
+pid-file=/home/lc/work/snowtg-20260917/dnsmasq.pid
+log-facility=/home/lc/work/snowtg-20260917/dnsmasq.log
+```
+
+服务已保留；重新部署时分别使用 `sudo nginx -c /home/lc/work/snowtg-20260917/nginx.conf`
+和 `sudo dnsmasq --conf-file=/home/lc/work/snowtg-20260917/dnsmasq.conf`。
+SnowTG 客户端每连接最多复用100次，nginx允许1000次，两者不能混为一谈。
+调优组需要在 HP 启用以下软件分流；CPU掩码适用于本机的核布局，测试结束恢复原值：
+
+```bash
+# HP，保存原值后开启；本轮测试前后原值均为0000
+peer_rps_path=/sys/class/net/enx00e04c177428/queues/rx-0/rps_cpus
+peer_rps_before=$(cat "$peer_rps_path")
+printf '5155\n' | sudo tee "$peer_rps_path"
+# 测试完成后
+printf '%s\n' "$peer_rps_before" | sudo tee "$peer_rps_path"
+```
+
+`5155` 将协议处理分到CPU0/2/4/6/8/12/14；原来CPU10软中断接近100%。
+这里的 RPS 是 Linux Receive Packet Steering，与“每秒请求数”及网卡硬件 RSS 是三个概念。
+[机制说明见 Linux 内核文档](https://docs.kernel.org/networking/scaling.html#rps-receive-packet-steering)。
+
+短连接 `short.json`（KA只把 `keepalive` 改为 `true`）：
+
+```json
+{
+  "name": "nuc-short", "duration_sec": 30, "max_concurrency": 512,
+  "target_cps": 1000000, "report_interval_sec": 1,
+  "classes": [{
+    "name": "http_get", "weight": 1, "transport": "tcp",
+    "peer": {"ip": "192.168.10.234", "port": 8888},
+    "http": {"method": "GET", "path": "/", "keepalive": false}
+  }]
+}
+```
+
+DNS 将顶层改为 `duration_sec=20`、`max_concurrency=128`、`target_cps=100000`，
+class 改为 `transport="udp"`、端口1053及 `"dns":{"qname":"snowtg.test","qtype":"A"}`，删除 `http` 字段。
+NUC 通过 Wi-Fi `192.168.21.187` 独立管理，有线口用于数据；绑定及恢复操作见 README 的 `bind-dpdk.sh`。
+已有巨页配置和独立管理通道后，短连接启动命令为：
+
+```bash
+cd /home/lca/work/dpdk-l
+source /home/lca/work/snowtg-env.sh
+# 确认独立管理连接回程不经过有线口后执行
+./bind-dpdk.sh --driver vfio-pci --force 0000:64:00.0
+run_dir=$(mktemp -d /home/lca/work/snowtg-run-XXXXXX)
+sudo env LD_LIBRARY_PATH="$LD_LIBRARY_PATH" ./traffic-gen/build/traffic-gen \
+  -l 8,0 --main-lcore 8 -a 0000:64:00.0 --file-prefix snowtg-bench -m 1024 -- \
+  --workers 1 --local-ip 192.168.10.86 --port-id 0 \
+  --rx-mode worker --tx-mode worker --socket-id-max 16384 \
+  --metrics-sample 1024 --stats-csv "$run_dir/workers.csv" \
+  --dataplane-csv "$run_dir/main.csv" short.json > "$run_dir/traffic-gen.log" 2>&1
+# 完成后恢复内核网卡与地址，再运行内核iperf3
+./bind-dpdk.sh --driver igc 0000:64:00.0
+sudo nmcli connection up enp100s0-static
+```
+
+KA换成 `-l 4,0,2 --main-lcore 4 --workers 2` 及 KA scenario；
+重现原始4096容量实验（包括DNS）时，新版本必须显式传 `--socket-id-max 4096`。
+架构 A/B 仅切换 `--rx-mode` / `--tx-mode`，其他参数与二进制固定；每轮核对1 Gbps及实际 RX 队列计数。
+以上是直接运行入口；完整采集脚本还记录逐秒链路、逐lcore CPU、HP CPU/softirq/SNMP和源码哈希，位于下方归档。
+
+**统计与数据路径**：72轮完成，其中65轮全程千兆；4轮100 Mbps和3轮早期链路诊断排除容量对比。
+稳态成功 RPS 为逐worker成功计数差/实际采样时长之和，去掉启动约5秒及末尾2秒；全程失败单独统计。
+OS CPU包含空轮询，不能等同有效工作占比。NIC线速估算补计每包24B的FCS/前导码/IFG。
+
+- VM：`/home/snow/dpdk-l/debug/2026-09-17-nuc-bench/`。
+- NUC：`/home/lca/work/snowtg-bench-20260917/`。
+- 全部逐轮结果与参数：`matrix.csv` / `matrix.md`、`results.json`；CPU：`lcores.csv`；有效性：`validation.json`。
+- 原始证据：`raw/<run>/` 内的 scenario、manifest、workers/main CSV、日志、链路、两端CPU及对端SNMP。
+- 原始数据与二进制不加入Git；本节保存配置、结论和复现方法，历史快照不随新代码覆盖。
+
+#### 3.8.2 Socket 容量与热路径更新
+
+本轮将 **traffic-gen 自动容量下限4096→16384 / owner**：
+`max(16384, 2 × ceil(max_concurrency / active_shards))`。
+显式 `--socket-id-max N` 可覆盖默认值，最低须满足 `max(4096, 2 × ceil(max_concurrency / active_shards))`，
+小内存环境仍可选4096。协议栈独立示例的默认4096保持不变。
+
+已有“动态容量”是**启动时按剧本计算**；owner槽位、连接注册表、flow map和事件队列随后一次性分配。
+运行中的资源水位检查、暂停/恢复 admission、ready/dirty事件更新都保留，但**不会扩容这些表**。
+短连接结束后 socket 可能仍处于关闭/TIME_WAIT，因此512个in-flight并不意味着只需512个socket槽位。
+16384是本轮已通过显式参数验证的配置，代价是增加每owner的表与队列内存，仍非任意负载的容量保证。
+本次代码只调整启动默认值与覆盖策略，不向收发热路径增加分配、锁或搬表。
+
+容量策略回归覆盖自动下限、大并发增长、显式缩小及分片向上取整边界；VM与NUC均验证构建和net_null实际启动。
+本次验证日志另存 `debug/2026-09-17-capacity-default/`，不混入上面的性能样本。
+
+#### 3.8.3 用 iperf3 核对正向、反向与同时双向 Mbps
+
+在网卡使用内核 `igc`、地址恢复后测试。HP启动服务：
+
+```bash
+iperf3 -s -B 192.168.10.234 -p 5202
+```
+
+NUC上分别执行（本轮归档使用 iperf3 3.7、4条TCP流、每次10秒、不忽略预热）：
+
+```bash
+# NUC发送 → HP接收
+iperf3 -c 192.168.10.234 -B 192.168.10.86 -p 5202 -P 4 -t 10 -f m
+# HP发送 → NUC接收
+iperf3 -c 192.168.10.234 -B 192.168.10.86 -p 5202 -P 4 -t 10 -f m -R
+# 同时发送和接收；这是另一组测试，不复用上面两次结果
+iperf3 -c 192.168.10.234 -B 192.168.10.86 -p 5202 -P 4 -t 10 -f m --bidir
+```
+
+`-P 4` 是4条并行流，`-f m` 显示Mbit/s；读取结尾各方向的 `[SUM] ... receiver`，
+不要把同一方向的sender和receiver相加。需归档时增加 `-J > 新文件.json`；可把 `-t` 改为30并加 `-O 3` 排除预热，
+但要记录参数变化。[参数定义见 iperf3 官方文档](https://software.es.net/iperf/invoking.html)。
+NUC已核对3.7支持 `--bidir`；[该选项从3.7加入](https://software.es.net/iperf/news.html#iperf-3-7-released)。
+
+| 已实测方向 | 接收端TCP有效吞吐 | 原始文件 |
+|---|---:|---|
+| NUC → HP | **938.215 Mbps** | `iperf-forward.json` |
+| HP → NUC | **941.539 Mbps** | `iperf-reverse.json` |
+| 同时双向 | **尚未测量** | 上述 `--bidir` 为复测方法 |
+
+面试表述：“先用iperf3建立内核TCP大流基线，正向938、反向942 Mbps，分别测量，接近千兆TCP有效吞吐；
+再测SnowTG小请求RPS，结合NIC包率和以太网开销判断KA已接近1 Gbps发送线速。”
+iperf3不经过SnowTG协议栈，不能证明其小包RPS上限；全双工链路可同时双向工作，分开测得的两个数不能相加冒充同时双向成绩。
+
+---
+
+## 4. 当前结论（截至 2026-09-17）
 
 分档数字见 §3；此处只留总览。
 
 | 观察 | 说明 |
 | --- | --- |
-| 最佳短连接实测 | 08-08：8w / 并发 500 / 目标 100k → 成功 RPS ≈ **11,921** |
-| keep-alive 最高实测 | 08-13：8w / 并发 500 / 目标 100k → 成功 RPS ≈ **14,396**；复用率 98.91% |
-| 08-12 水位 | 同结构约 **3.9k–4.8k** RPS，远低于 08-08；抬并发 complete 变差、RPS 不升 |
-| 主因（并发恶化） | 扫参+抓包：SYN 长尾/重传 → **对端/路径过载**占满并发槽（材料 `debug/2026-08-12/`） |
-| keep-alive 收益 | 减少重复握手，显著降低 `fail_connect`，缓解 accepted queue 的握手压力；同日 500/1k/5k 成功 RPS 提升 3.64×/3.61×/2.44× |
-| keep-alive 边界 | 1k/5k 失败转向已建立连接的 I/O/protocol；5k 成功率 83.558%，排空后仍有 737 live sockets |
-| 本机已排除 | 已统计项内无 mempool / TX·payload alloc / ring·nic drop；中低并发未撞 socket 表 |
-| 本机天花板 | 极高并发（~10k）先撞 **临时端口**（RSS 切分），不是 ENFILE |
-| 仍开放 | 服务端 accept queue 计数、keep-alive 响应 framing/RST、关闭中 socket / 端口背压 |
-| 对比纪律 | 无同环境对照的改动不对吞吐变化做归因 |
+| VM 推荐路径 | **Main RX + worker TX**；当前 vmxnet3 接收路径仍只有 RX0 |
+| VM 可重复的短连接水平 | **8w / 并发 256 → 11,139 RPS**，三轮全程零请求失败，complete avg 22.52 ms |
+| VM 可重复的 keep-alive 水平 | **8w / 并发 1000 → 27,221 RPS**，三轮全程零请求失败，complete avg 36.01 ms |
+| 与 08-13 的变化 | 同为 8w / 并发 500：短连接 **2.82×（+182.3%）**、keep-alive **1.89×（+89.4%）**；含更换对端与统计口径差异 |
+| VM 同环境架构收益 | 集中收发 → Main RX + worker TX：短连接 **+34.8%**、keep-alive **+39.1%** |
+| 当前 VM 的多 RX 限制 | Linux 与独立 DPDK 强制 RETA→RXQ1 仍只收 RXQ0，定位到当前虚拟接收路径未执行 RSS；宿主机侧具体原因待查，FDIR 不支持 |
+| NUC 推荐条件 | worker RX + worker TX，`--socket-id-max 16384`，对端软件收包分流 RPS=5155；各场景 workers 如下 |
+| NUC 可重复的短连接水平 | **1w / 并发512 → 114,302 RPS**，ARP修复后两轮全程零请求失败；同机收发A/B仍单独看2w/128 |
+| NUC 可重复的 Keep-Alive 水平 | **2w / 并发512 → 370,096 RPS**，ARP修复后两轮全程失败合计152；接近千兆发送线速 |
+| NUC 平台 | 实际 HTTP 已验证硬件多 RX 分流；Keep-Alive 开启对端软件 RPS 后达到约 37 万 RPS、接近 1 Gbps TX 线速；偶发 100 Mbps 样本排除 |
+| VM 拥塞证据 | 高并发时 Main→worker RX ring 积压、丢包；新对端 CPU 与 1 Gbps 带宽未跑满 |
+| VM 尚未定位到函数的开销 | worker 消费路径、虚拟化与频繁读时钟；CPU 100% 含 busy polling，不等于有效负载饱和 |
+| 历史参考 | 08-08 短连接单次记录约 11,921 RPS，仍高于本轮复测均值；跨日期不据此判定代码回归 |
+| 下一步 | VM 做 worker 热点剖析；NUC 的 Keep-Alive 继续扩展需更高带宽链路或减少每请求包数，短连接需继续核对关闭中资源与延迟 |
+| 对比纪律 | 稳态与全程、单次峰值与重复均值分开；跨日期变化不全部归因于代码，零请求失败不等于网络零丢包 |
