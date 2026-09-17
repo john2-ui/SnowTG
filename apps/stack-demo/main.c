@@ -85,8 +85,7 @@ int main(int argc, char *argv[]) {
         if (ipv4_reassembly_init(&reassembly) != 0)
                 rte_exit(EXIT_FAILURE, "IPv4 reassembly init failed\n");
 
-        unsigned int main_lcore = rte_lcore_id();
-        unsigned int worker_lcore = rte_get_next_lcore(main_lcore, 1, 0);
+        unsigned int worker_lcore = rte_get_next_lcore((unsigned int)-1, 1, 0);
         if (worker_lcore == RTE_MAX_LCORE)
                 rte_exit(EXIT_FAILURE,
                          "stack demo needs at least two lcores\n");

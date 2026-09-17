@@ -867,7 +867,8 @@ int main(int argc, char *argv[]) {
          * Stage 6: Initialize each worker's lcore assignment, ownership
          * resources, flow state, scheduler, reactor, and stack runtime.
          */
-        unsigned int previous_lcore = main_lcore;
+        /* EAL may place Main after worker IDs (e.g. an E-core after P-cores). */
+        unsigned int previous_lcore = (unsigned int)-1;
         for (unsigned int index = 0; index < worker_count; index++) {
                 struct tg_worker *worker = &workers[index];
 

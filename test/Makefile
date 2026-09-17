@@ -116,6 +116,13 @@ test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(SACK_TEST) $(TCP_CC_TEST) $(EPHE
 	$(CONN_POOL_TEST)
 	$(APP_ARGS_TEST)
 
+.PHONY: test-lcore-layout
+test-lcore-layout:
+	$(MAKE) -C ../traffic-gen BUILD_DIR=$(BUILD_DIR) \
+		STACK_BUILD_DIR=$(STACK_BUILD_DIR) SANITIZERS=$(SANITIZERS)
+	python3 test_lcore_layout.py ../traffic-gen/$(BUILD_DIR)/traffic-gen
+
+
 test-arp: $(ARP_TEST)
 
 test-owner-io: $(OWNER_IO_TEST)
