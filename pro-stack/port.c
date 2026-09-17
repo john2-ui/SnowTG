@@ -4,6 +4,7 @@
 #include "log.h"
 
 #include <rte_eal.h>
+#include <rte_cycles.h>
 #include <rte_ethdev.h>
 #include <rte_thash.h>
 
@@ -129,7 +130,9 @@ port_setup(uint16_t port_id, struct rte_mempool *mp,
                 port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS;
                 port_conf.rx_adv_conf.rss_conf.rss_hf = rss_hf;
                 port_conf.rx_adv_conf.rss_conf.rss_key = g_rss.key;
-                port_conf.rx_adv_conf.rss_conf.rss_key_len = g_rss.key_len;
+                /* ethdev validates the advertised length. vmxnet3 reports
+                 * zero but its PMD copies the fixed 40-byte buffer above. */
+                port_conf.rx_adv_conf.rss_conf.rss_key_len = dev_info->hash_key_size;
         }
         if (rte_eth_dev_configure(port_id, rx_queue_count, tx_queue_count,
                                   &port_conf) < 0)
@@ -160,7 +163,29 @@ port_setup(uint16_t port_id, struct rte_mempool *mp,
 
 static void port_setup_cleanup(uint16_t port_id) {
         (void)rte_eth_dev_stop(port_id);
-        (void)rte_eth_dev_close(port_id);
+        /* close releases the ethdev itself; fallback must reconfigure it. */
+}
+
+static void port_wait_link_up(uint16_t port_id) {
+        struct rte_eth_link link;
+
+        for (unsigned int elapsed_ms = 0; elapsed_ms <= 20000;
+             elapsed_ms += 100) {
+                if (rte_eth_link_get_nowait(port_id, &link) < 0)
+                        rte_exit(EXIT_FAILURE,
+                                 "port %u link query failed\n", port_id);
+                if (link.link_status == RTE_ETH_LINK_UP) {
+                        fprintf(stderr, "port %u link up: %u Mbps %s duplex\n",
+                                port_id, link.link_speed,
+                                link.link_duplex == RTE_ETH_LINK_FULL_DUPLEX
+                                    ? "full" : "half");
+                        return;
+                }
+                if (elapsed_ms < 20000)
+                        rte_delay_us_sleep(100000);
+        }
+        rte_exit(EXIT_FAILURE, "port %u link is down after 20 seconds\n",
+                 port_id);
 }
 
 static const char *port_setup_failure_name(enum port_setup_failure failure) {
@@ -290,9 +315,14 @@ struct port_topology port_init_queues(uint16_t port_id, struct rte_mempool *mp,
                 else if (worker_count > dev_info.max_rx_queues ||
                          worker_count > dev_info.max_tx_queues)
                         fallback_reason = "requested workers exceed RSS queues";
-                else if (dev_info.reta_size == 0)
-                        fallback_reason = "RSS RETA is unavailable";
-                else if (port_rss_prepare_key(dev_info.hash_key_size) != 0)
+                /* vmxnet3 exposes RETA only after RSS configuration, and
+                 * omits hash_key_size despite consuming a fixed 40-byte key. */
+                uint16_t key_size = dev_info.hash_key_size;
+                if (key_size == 0 && dev_info.driver_name != NULL &&
+                    strcmp(dev_info.driver_name, "net_vmxnet3") == 0)
+                        key_size = sizeof(port_rss_default_key);
+                if (fallback_reason == NULL &&
+                    port_rss_prepare_key(key_size) != 0)
                         fallback_reason = "RSS key size is unsupported";
 
                 if (fallback_reason == NULL) {
@@ -303,6 +333,7 @@ struct port_topology port_init_queues(uint16_t port_id, struct rte_mempool *mp,
                             port_setup(port_id, mp, &dev_info, worker_count,
                                        worker_count, true, rss_hf);
                         if (failure == PORT_SETUP_OK &&
+                            rte_eth_dev_info_get(port_id, &dev_info) == 0 &&
                             port_rss_configure_reta(port_id, worker_count,
                                                     dev_info.reta_size) == 0) {
                                 g_rss.enabled = true;
@@ -362,6 +393,9 @@ struct port_topology port_init_queues(uint16_t port_id, struct rte_mempool *mp,
         }
 
         topology.ipv4_mtu = port_resolve_ipv4_mtu(port_id, mp, requested_mtu);
+        /* Physical PHY negotiation can outlast rte_eth_dev_start(). Start the
+         * workload only after carrier is ready, so startup timeouts are real. */
+        port_wait_link_up(port_id);
         g_topology = topology;
         LOG_INFO("port %u started (driver=%s rx_mode=%s rxq=%u txq=%u "
                  "workers=%u rss_hf=0x%" PRIx64 ")",

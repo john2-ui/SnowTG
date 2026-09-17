@@ -837,7 +837,9 @@ int main(int argc, char *argv[]) {
                 rte_exit(EXIT_FAILURE, "socket registry init failed\n");
 
         mp =
-            rte_pktmbuf_pool_create("tg_mbuf_pool", NUM_MBUFS, 0, 0,
+            /* vmxnet3 posts buffers to two RX rings per queue. */
+            rte_pktmbuf_pool_create("tg_mbuf_pool",
+                                    NUM_MBUFS + 2U * NB_DESC * worker_count, 0, 0,
                                     RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
         if (mp == NULL)
                 rte_exit(EXIT_FAILURE, "rte_pktmbuf_pool_create() failed\n");
