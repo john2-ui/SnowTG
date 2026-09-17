@@ -11,16 +11,45 @@
 
 #include <rte_cycles.h>
 #include <rte_ether.h>
+#include <rte_ethdev.h>
 #include <rte_ip.h>
 #include <rte_lcore.h>
 #include <rte_mbuf.h>
 #include <rte_ring.h>
 
 #include <stdatomic.h>
+#include <limits.h>
 #include <string.h>
 
 static atomic_bool g_stop_requested;
 static struct stack_runtime_worker *g_workers[RTE_MAX_LCORE];
+
+void stack_runtime_tx_drain(struct stack_runtime_worker *worker,
+                            unsigned int burst_budget, bool sample) {
+        if (worker == NULL || !worker->direct_tx_enabled ||
+            worker->lcore_id != rte_lcore_id())
+                return;
+        for (unsigned int burst = 0; burst < burst_budget; burst++) {
+                struct rte_mbuf *packets[BURST_SIZE];
+                unsigned int count = rte_ring_sc_dequeue_burst(
+                    worker->ring->out, (void **)packets, BURST_SIZE, NULL);
+                if (count == 0)
+                        break;
+                uint64_t start = sample ? rte_get_timer_cycles() : 0;
+                unsigned int sent = rte_eth_tx_burst(worker->port_id,
+                    worker->tx_queue_id, packets, count);
+                if (sample) {
+                        worker->metrics.nic_tx_cycles += rte_get_timer_cycles() - start;
+                        worker->metrics.nic_tx_sampled_packets += sent;
+                        worker->metrics.nic_tx_sampled_bursts++;
+                }
+                for (unsigned int i = sent; i < count; i++)
+                        rte_pktmbuf_free(packets[i]);
+                worker->metrics.tx_packets += sent;
+                worker->metrics.tx_bursts++;
+                worker->metrics.tx_nic_drops += count - sent;
+        }
+}
 
 int stack_runtime_worker_init(struct stack_runtime_worker *worker,
                               unsigned int lcore_id, uint16_t queue_id,
@@ -259,9 +288,23 @@ int stack_runtime_worker_entry(void *arg) {
                 unsigned int out_depth = rte_ring_count(ring->out);
                 if (out_depth > metrics->out_ring_high_water)
                         metrics->out_ring_high_water = out_depth;
+                if (worker->direct_tx_enabled) {
+                        bool sample = false;
+                        if (worker->tx_sample_every != 0) {
+                                if (worker->tx_until_sample == 0) {
+                                        sample = true;
+                                        worker->tx_until_sample = worker->tx_sample_every;
+                                }
+                                worker->tx_until_sample--;
+                        }
+                        stack_runtime_tx_drain(worker, 4, sample);
+                }
                 metrics->worker_turns++;
                 metrics->turn_cycles += rte_get_timer_cycles() - turn_start;
         }
+        stack_runtime_tx_drain(worker, UINT_MAX, false);
+        if (worker->on_exit != NULL)
+                worker->on_exit(worker->reactor_ctx);
         owner_timer_engine_fini(&worker->timer_engine);
         return 0;
 }

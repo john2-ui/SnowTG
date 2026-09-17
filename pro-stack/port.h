@@ -31,6 +31,12 @@ struct port_topology {
         uint64_t rss_hf;
 };
 
+/** Queue IDs 0..worker_count-1 can have independent worker owners. */
+static inline bool port_has_dedicated_worker_tx(const struct port_topology *p) {
+        return p != NULL && p->worker_count != 0 &&
+               p->tx_queue_count >= p->worker_count;
+}
+
 /**
  * @brief Configure and start a DPDK ethernet port with one rx/tx queue.
  *

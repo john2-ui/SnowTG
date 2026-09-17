@@ -35,6 +35,12 @@ struct stack_runtime_metrics {
         uint64_t maintenance_cycles; /**< Timer and ARP maintenance time. */
         uint64_t reactor_cycles;     /**< Upper-layer reactor callback time. */
         uint64_t tx_flush_cycles;    /**< Dirty queue drain time. */
+        uint64_t tx_packets;         /**< Packets accepted by the NIC. */
+        uint64_t tx_bursts;
+        uint64_t tx_nic_drops;
+        uint64_t nic_tx_cycles;      /**< Sampled NIC calls only. */
+        uint64_t nic_tx_sampled_packets;
+        uint64_t nic_tx_sampled_bursts;
         uint32_t
             in_ring_high_water; /**< Largest observed NIC-to-worker depth. */
         uint32_t
@@ -67,10 +73,17 @@ struct stack_runtime_metrics {
 struct stack_runtime_worker {
         unsigned int lcore_id;
         uint16_t queue_id;
+        uint16_t port_id;
+        uint16_t tx_queue_id;
+        bool direct_tx_enabled;
+        uint32_t tx_sample_every;
+        uint32_t tx_until_sample;
         struct rte_mempool *mp;
         struct inout_ring *ring;
         stack_runtime_reactor_fn reactor;
         void *reactor_ctx;
+        /** Optional owner-local final snapshot, after the last complete turn. */
+        void (*on_exit)(void *reactor_ctx);
         struct stack_runtime_metrics metrics;
         struct owner_timer_engine timer_engine;
         uint64_t last_timer_tsc;
@@ -99,6 +112,10 @@ int stack_runtime_stop_requested(void);
  * call. This is valid only on the packet worker lcore.
  */
 void stack_runtime_metrics_take(struct stack_runtime_metrics *out);
+
+/** Owner-only, bounded TX. UINT_MAX drains to empty after producers stop. */
+void stack_runtime_tx_drain(struct stack_runtime_worker *worker,
+                            unsigned int burst_budget, bool sample);
 
 /** DPDK lcore entry point: packet ingress, timers, reactor, and TX flush. */
 int stack_runtime_worker_entry(void *arg);

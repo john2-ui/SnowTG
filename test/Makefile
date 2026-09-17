@@ -50,6 +50,7 @@ IPV4_REASSEMBLY_TEST := $(BUILD_DIR)/test_ipv4_reassembly
 STATS_CSV_TEST := $(BUILD_DIR)/test_stats_csv
 CONN_POOL_TEST := $(BUILD_DIR)/test_conn_pool
 APP_ARGS_TEST := $(BUILD_DIR)/test_app_args
+RUNTIME_TX_TEST := $(BUILD_DIR)/test_runtime_tx
 LLHTTP_DIR := ../third_party/llhttp
 HTTP_CLIENT_CFLAGS := $(TEST_CFLAGS) -I../traffic-gen/core \
 	-I../traffic-gen/proto -I../traffic-gen/proto/http \
@@ -121,6 +122,14 @@ test-lcore-layout:
 	$(MAKE) -C ../traffic-gen BUILD_DIR=$(BUILD_DIR) \
 		STACK_BUILD_DIR=$(STACK_BUILD_DIR) SANITIZERS=$(SANITIZERS)
 	python3 test_lcore_layout.py ../traffic-gen/$(BUILD_DIR)/traffic-gen
+
+
+.PHONY: test-runtime-tx
+test-runtime-tx: $(RUNTIME_TX_TEST)
+
+$(RUNTIME_TX_TEST): test_runtime_tx.c $(STACK_LIB) | $(BUILD_DIR)
+	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) test_runtime_tx.c $(STACK_LIB) \
+		-o $@ $(DPDK_LIBS) $(SANITIZER_LDFLAGS)
 
 
 test-arp: $(ARP_TEST)
