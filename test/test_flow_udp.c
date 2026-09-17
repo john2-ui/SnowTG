@@ -12,6 +12,7 @@
 #include <netinet/in.h>
 #include <rte_byteorder.h>
 #include <rte_eal.h>
+#include <rte_cycles.h>
 #include <rte_ip.h>
 #include <rte_lcore.h>
 #include <rte_mbuf.h>
@@ -341,6 +342,33 @@ static void test_local_udp_arp_retry(uint32_t local_ip, uint32_t peer_ip,
                                sizeof(peer)) == -1);
         assert(errno == EAGAIN);
         assert(sk->tx_arp_waiting);
+        drain_output_ring(); /* Simulate a lost first ARP request. */
+
+        struct arp_table *table = arp_table_instance();
+        struct arp_entry *entry = NULL;
+        for (uint32_t i = 0; i < table->capacity; i++) {
+                if (table->entries[i].ip == unresolved_ip) {
+                        entry = &table->entries[i];
+                        break;
+                }
+        }
+        assert(entry != NULL && entry->probe_count == 1);
+        uint64_t now = rte_get_timer_cycles();
+        arp_maintain(now);
+        assert(sk->tx_arp_waiting); /* No retry before its interval. */
+        entry->last_probe_at = now -
+            rte_get_timer_hz() * ARP_PROBE_INTERVAL_MS / 1000U - 1U;
+        arp_maintain(now);
+        assert(!sk->tx_arp_waiting && sk->tx_dirty_queued);
+        assert(nsock_tx_dirty_drain(NULL, 1) == 1);
+        assert(owner_io_ready_burst(&event, 1) == 1);
+        assert((event.events & OWNER_IO_EV_WRITE) != 0);
+        assert(owner_io_sendto(handle, &payload, sizeof(payload),
+                               (const struct sockaddr *)&peer,
+                               sizeof(peer)) == -1);
+        assert(errno == EAGAIN && sk->tx_arp_waiting);
+        assert(entry->probe_count == 2);
+        assert(rte_ring_count(ring_instance()->out) == 1);
         drain_output_ring();
 
         arp_table_learn(unresolved_ip, peer_mac);

@@ -315,6 +315,11 @@ void arp_maintain(uint64_t now) {
                          * TX wakeup is required here.
                          */
                         arp_remove(table, entry);
+                } else if (entry->state == ARP_STATE_INCOMPLETE &&
+                           arp_elapsed_ms(now, entry->last_probe_at) >=
+                               ARP_PROBE_INTERVAL_MS) {
+                        /* Parked TX must retry even if the first ARP was lost. */
+                        arp_wake_tx_waiters(entry->ip);
                 } else if (entry->state == ARP_STATE_FAILED &&
                            arp_elapsed_ms(now, entry->last_probe_at) >=
                                ARP_FAILED_TTL_MS) {
