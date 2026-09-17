@@ -12,6 +12,7 @@
 struct owner_timer;
 struct owner_timer_engine;
 
+/** The callback may rearm the timer or free its enclosing object. */
 typedef void (*owner_timer_cb)(struct owner_timer *timer, void *arg,
                                uint64_t now_cycles);
 

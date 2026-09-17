@@ -6,6 +6,8 @@
 #include <rte_lcore.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <sys/mman.h>
+#include <unistd.h>
 
 struct callback_state {
         unsigned int calls;
@@ -22,9 +24,10 @@ static void count_callback(struct owner_timer *timer, void *arg,
 }
 
 static void free_callback(struct owner_timer *timer,
-                          __attribute__((unused)) void *arg,
+                          void *arg,
                           __attribute__((unused)) uint64_t now_cycles) {
-        free(timer);
+        /* Make any backend access after the callback fail deterministically. */
+        assert(munmap(timer, *(size_t *)arg) == 0);
 }
 
 int main(int argc, char **argv) {
@@ -72,9 +75,12 @@ int main(int argc, char **argv) {
         engine.lcore_id = owner_lcore;
         assert(owner_timer_cancel(&first) == 0);
 
-        struct owner_timer *dynamic = malloc(sizeof(*dynamic));
-        assert(dynamic != NULL);
-        owner_timer_init(dynamic, free_callback, NULL);
+        size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
+        assert(sizeof(struct owner_timer) <= page_size);
+        struct owner_timer *dynamic = mmap(NULL, page_size,
+            PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        assert(dynamic != MAP_FAILED);
+        owner_timer_init(dynamic, free_callback, &page_size);
         assert(owner_timer_arm_at(dynamic, owner_timer_now()) == 0);
         assert(owner_timer_poll(&engine) == 0);
         assert(engine.active == 0);

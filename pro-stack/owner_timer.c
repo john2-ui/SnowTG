@@ -70,6 +70,14 @@ static void owner_timer_rte_cb(__attribute__((unused)) struct rte_timer *rte,
 
         callback = timer->callback;
         callback_arg = timer->callback_arg;
+        /* The callback may free its enclosing socket or hand its storage to
+         * another owner. Stop the RUNNING backend before that can happen:
+         * rte_timer_manage() otherwise touches it after the callback returns. */
+        if (rte_timer_stop(&timer->backend.rte) != 0) {
+                LOG_ERROR("cannot detach running owner timer lcore=%u",
+                          rte_lcore_id());
+                return;
+        }
         owner_timer_active_unlink(timer);
         if (callback != NULL)
                 callback(timer, callback_arg, owner_timer_now());
