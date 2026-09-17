@@ -50,6 +50,7 @@ IPV4_REASSEMBLY_TEST := $(BUILD_DIR)/test_ipv4_reassembly
 STATS_CSV_TEST := $(BUILD_DIR)/test_stats_csv
 CONN_POOL_TEST := $(BUILD_DIR)/test_conn_pool
 APP_ARGS_TEST := $(BUILD_DIR)/test_app_args
+DATAPLANE_TEST := $(BUILD_DIR)/test_dataplane_stats
 RUNTIME_TX_TEST := $(BUILD_DIR)/test_runtime_tx
 LLHTTP_DIR := ../third_party/llhttp
 HTTP_CLIENT_CFLAGS := $(TEST_CFLAGS) -I../traffic-gen/core \
@@ -96,7 +97,7 @@ test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(SACK_TEST) $(TCP_CC_TEST) $(EPHE
 	$(HTTP_CLIENT_TEST) $(DNS_CLIENT_TEST) $(SCENARIO_SCHEDULER_TEST) $(ARP_TEST) \
 	$(RX_DISPATCH_TEST) $(PORT_TOPOLOGY_TEST) $(FLOW_UDP_TEST) \
 	$(IPV4_REASSEMBLY_TEST) $(STATS_CSV_TEST) $(CONN_POOL_TEST) \
-	$(APP_ARGS_TEST)
+	$(APP_ARGS_TEST) $(DATAPLANE_TEST)
 	$(RBTREE_TEST)
 	$(OFO_TEST)
 	$(PAWS_TEST)
@@ -116,6 +117,7 @@ test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(SACK_TEST) $(TCP_CC_TEST) $(EPHE
 	$(STATS_CSV_TEST)
 	$(CONN_POOL_TEST)
 	$(APP_ARGS_TEST)
+	$(DATAPLANE_TEST)
 
 .PHONY: test-lcore-layout
 test-lcore-layout:
@@ -131,6 +133,11 @@ $(RUNTIME_TX_TEST): test_runtime_tx.c $(STACK_LIB) | $(BUILD_DIR)
 	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) test_runtime_tx.c $(STACK_LIB) \
 		-o $@ $(DPDK_LIBS) $(SANITIZER_LDFLAGS)
 
+
+$(DATAPLANE_TEST): test_dataplane_stats.c ../traffic-gen/core/dataplane_stats.c \
+		../traffic-gen/core/dataplane_stats.h | $(BUILD_DIR)
+	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) test_dataplane_stats.c \
+		../traffic-gen/core/dataplane_stats.c -o $@ $(DPDK_LIBS)
 
 test-arp: $(ARP_TEST)
 

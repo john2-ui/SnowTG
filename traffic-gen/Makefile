@@ -28,6 +28,7 @@ SRCS := main_tg.c \
 	core/scheduler.c \
 	core/stats.c \
 	core/stats_csv.c \
+	core/dataplane_stats.c \
 	core/txn.c \
 	proto/registry.c \
 	proto/http/http_client.c \
