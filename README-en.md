@@ -47,9 +47,23 @@ To check for memory errors and undefined behavior in an isolated build directory
 Bind the target NIC to a DPDK driver when required, then start the example application:
 
 ```bash
-./bind-dpdk.sh
+./bind-dpdk.sh --status
+./bind-dpdk.sh --dry-run enp100s0
+./bind-dpdk.sh enp100s0                    # Default: vfio-pci, requires IOMMU
+./bind-dpdk.sh --driver uio_pci_generic ens160  # Explicit lab VM alternative
 ./apps/stack-demo/build/stack-demo -l 0-2 ...
 ```
+
+The script accepts an interface or PCI address; run it as your login user and it
+uses `sudo` for changes. Locate `dpdk-devbind.py` through `DPDK_DEVBIND`, `PATH`,
+`DPDK_DIR/usertools`, `../dpdk/usertools`, or `--devbind PATH`. `igb_uio` is also
+supported when separately installed. UIO support depends on the device and does
+not provide VFIO's IOMMU isolation; there is no automatic driver fallback.
+`--force` permits an addressed/routed dedicated test port, but cannot override
+protection of the current SSH return path. Use independent management first.
+Restore the kernel driver with, for example,
+`./bind-dpdk.sh --driver igc 0000:64:00.0`; restore IP addresses, routes and NIC
+settings separately. No arguments only show status; no application is started.
 
 Compile-time settings for the TCP/UDP echo examples and local network identity are defined in [`pro-stack/config.h`](pro-stack/config.h). Common options include `ENABLE_TCP_APP`, `ENABLE_TCP_CLIENT`, `ENABLE_TCP_SERVER`, `ENABLE_UDP_APP`, `ENABLE_ARP`, and `ENABLE_ICMP`.
 

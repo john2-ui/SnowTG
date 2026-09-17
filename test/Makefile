@@ -52,6 +52,7 @@ CONN_POOL_TEST := $(BUILD_DIR)/test_conn_pool
 APP_ARGS_TEST := $(BUILD_DIR)/test_app_args
 DATAPLANE_TEST := $(BUILD_DIR)/test_dataplane_stats
 RUNTIME_TX_TEST := $(BUILD_DIR)/test_runtime_tx
+
 LLHTTP_DIR := ../third_party/llhttp
 HTTP_CLIENT_CFLAGS := $(TEST_CFLAGS) -I../traffic-gen/core \
 	-I../traffic-gen/proto -I../traffic-gen/proto/http \
@@ -93,7 +94,7 @@ SCENARIO_SCHEDULER_OBJS := $(BUILD_DIR)/test_scenario_scheduler.o \
 all: test
 
 # Compilation and execution both must succeed for the test target to pass.
-test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(SACK_TEST) $(TCP_CC_TEST) $(EPHEMERAL_TEST) $(OWNER_TIMER_TEST) $(OWNER_IO_TEST) \
+test: test-bind-dpdk $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(SACK_TEST) $(TCP_CC_TEST) $(EPHEMERAL_TEST) $(OWNER_TIMER_TEST) $(OWNER_IO_TEST) \
 	$(HTTP_CLIENT_TEST) $(DNS_CLIENT_TEST) $(SCENARIO_SCHEDULER_TEST) $(ARP_TEST) \
 	$(RX_DISPATCH_TEST) $(PORT_TOPOLOGY_TEST) $(FLOW_UDP_TEST) \
 	$(IPV4_REASSEMBLY_TEST) $(STATS_CSV_TEST) $(CONN_POOL_TEST) \
@@ -119,13 +120,6 @@ test: $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(SACK_TEST) $(TCP_CC_TEST) $(EPHE
 	$(APP_ARGS_TEST)
 	$(DATAPLANE_TEST)
 
-.PHONY: test-lcore-layout
-test-lcore-layout:
-	$(MAKE) -C ../traffic-gen BUILD_DIR=$(BUILD_DIR) \
-		STACK_BUILD_DIR=$(STACK_BUILD_DIR) SANITIZERS=$(SANITIZERS)
-	python3 test_lcore_layout.py ../traffic-gen/$(BUILD_DIR)/traffic-gen
-
-
 .PHONY: test-runtime-tx
 test-runtime-tx: $(RUNTIME_TX_TEST)
 
@@ -133,6 +127,15 @@ $(RUNTIME_TX_TEST): test_runtime_tx.c $(STACK_LIB) | $(BUILD_DIR)
 	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) test_runtime_tx.c $(STACK_LIB) \
 		-o $@ $(DPDK_LIBS) $(SANITIZER_LDFLAGS)
 
+.PHONY: test-bind-dpdk
+test-bind-dpdk:
+	python3 test_bind_dpdk.py
+
+.PHONY: test-lcore-layout
+test-lcore-layout:
+	$(MAKE) -C ../traffic-gen BUILD_DIR=$(BUILD_DIR) \
+		STACK_BUILD_DIR=$(STACK_BUILD_DIR) SANITIZERS=$(SANITIZERS)
+	python3 test_lcore_layout.py ../traffic-gen/$(BUILD_DIR)/traffic-gen
 
 $(DATAPLANE_TEST): test_dataplane_stats.c ../traffic-gen/core/dataplane_stats.c \
 		../traffic-gen/core/dataplane_stats.h | $(BUILD_DIR)

@@ -44,12 +44,29 @@ make -C test
 
 ### 运行示例协议栈
 
-按需先将目标网卡绑定到 DPDK 驱动，再启动示例程序：
+按需先将专用压测网卡绑定到 DPDK 驱动，再启动示例程序。脚本支持网卡名或 PCI 地址，默认驱动为 `vfio-pci`：
 
 ```bash
-./bind-dpdk.sh
+./bind-dpdk.sh --status
+./bind-dpdk.sh --dry-run enp100s0          # 仅预览，不改变网卡
+./bind-dpdk.sh enp100s0                    # NUC：VFIO，需要可用的 IOMMU
+# 没有可用 VFIO 的实验虚拟机：显式选择 UIO
+./bind-dpdk.sh --driver uio_pci_generic ens160
+# 也支持 --driver igb_uio，需事先安装对应模块
+
 ./apps/stack-demo/build/stack-demo -l 0-2 ...
 ```
+
+以登录用户运行脚本，绑定时自动调用 `sudo`；无参数只显示状态。DPDK 工具从
+`DPDK_DEVBIND`、`PATH`、`DPDK_DIR/usertools` 或项目相邻的 `../dpdk/usertools`
+查找，也可用 `--devbind /path/to/dpdk-devbind.py` 指定。UIO 需要网卡/驱动支持，
+不提供 VFIO 的 IOMMU 隔离；脚本不会在 VFIO 失败后自动切换驱动。
+
+脚本默认拒绝解绑有地址或路由的网卡；确认它是专用压测口后可加 `--force`。
+当前 SSH 回程使用的网卡仍会被拒绝，需通过独立管理网卡或本地控制台操作。
+恢复内核驱动时使用 PCI 地址，例如 NUC 的
+`./bind-dpdk.sh --driver igc 0000:64:00.0`，或本 VM 的
+`./bind-dpdk.sh --driver vmxnet3 0000:03:00.0`；地址、路由和网卡设置需另行恢复。
 
 TCP/UDP echo 示例及本地地址等编译期开关位于 [`pro-stack/config.h`](pro-stack/config.h)。常用开关包括 `ENABLE_TCP_APP`、`ENABLE_TCP_CLIENT`、`ENABLE_TCP_SERVER`、`ENABLE_UDP_APP`、`ENABLE_ARP` 和 `ENABLE_ICMP`。
 
