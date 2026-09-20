@@ -2,6 +2,7 @@ build/
 build-sanitizers/
 __pycache__/
 /temp/
+/docker-results/
 .vscode/
 
 # Local benchmark artifacts and ad hoc diagnostics; retain the repository index.

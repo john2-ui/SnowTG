@@ -40,7 +40,7 @@ SRCS := main_tg.c \
 	$(LLHTTP_DIR)/src/http.c
 
 # @brief pkg-config invocation used to discover the active DPDK installation.
-PKGCONF := pkg-config --define-prefix
+PKGCONF := pkg-config
 # @brief DPDK package configuration path retained for diagnostics and overrides.
 DPDK_PC := $(shell $(PKGCONF) --path libdpdk)
 # @brief Compiler flags for local headers, llhttp, and DPDK.

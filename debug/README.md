@@ -19,6 +19,7 @@
 | `debug/2026-09-17-nuc-rss/` | NUC I225-V 硬件 RSS 能力、2048 次 HTTP 的四队列分布及 DPDK 接管条件 |
 | `debug/2026-09-17-nuc-deploy/` | 双机部署/回归、VFIO 接管及恢复、DPDK 四队列 UDP RSS、源码一致性校验 |
 | `debug/2026-09-17-nuc-bench/` | NUC→HP HTTP/DNS、1/2/4 workers扫描、收发A/B、对端软件RPS、ARP丢首包修复前后、链路/CPU原始证据 |
+| `debug/2026-09-20-short-bottleneck/` | 13轮NUC→HP短连接诊断、双端perf、RPS/对端睿频/conntrack/并发对照、超时扫描排除实验与恢复核对 |
 
 每个实验目录内的 `README.md` 提供详细命令；`raw/` 保留未经聚合的记录。
 汇总数值不得覆盖旧轮次，重测使用新目录。

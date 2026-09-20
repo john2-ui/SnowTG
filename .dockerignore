@@ -1,0 +1,20 @@
+# Send only build inputs; never reuse host binaries or benchmark artifacts.
+**
+!Dockerfile
+!bind-dpdk.sh
+!pro-stack/
+!pro-stack/**
+!traffic-gen/
+!traffic-gen/**
+!apps/
+!apps/**
+!third_party/
+!third_party/**
+!test/
+!test/**
+**/build*/
+**/__pycache__/
+**/*.o
+**/*.a
+**/*.csv
+**/*.pcap*

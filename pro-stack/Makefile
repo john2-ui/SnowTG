@@ -36,7 +36,7 @@ all: library
 .PHONY: library
 library: $(STACK_LIB)
 
-PKGCONF=pkg-config --define-prefix
+PKGCONF=pkg-config
 
 PC_FILE := $(shell $(PKGCONF) --path libdpdk)
 CFLAGS += -O3 $(shell $(PKGCONF) --cflags libdpdk)

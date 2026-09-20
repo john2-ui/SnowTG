@@ -25,7 +25,7 @@ OFO_CFLAGS := $(CFLAGS) -std=gnu11 -Wall -Wextra -D_GNU_SOURCE -fdata-sections
 PAWS_CFLAGS := $(CFLAGS) -std=gnu11 -Wall -Wextra -Werror -D_GNU_SOURCE
 ARP_CFLAGS := $(PAWS_CFLAGS) -DLOG_LEVEL=LOG_LVL_ERROR -DARP_TESTING
 
-DPDK_PKGCONF := pkg-config --define-prefix
+DPDK_PKGCONF := pkg-config
 DPDK_CFLAGS := $(shell $(DPDK_PKGCONF) --cflags libdpdk)
 DPDK_LIBS := $(shell $(DPDK_PKGCONF) --libs libdpdk)
 

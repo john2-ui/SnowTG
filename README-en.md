@@ -42,6 +42,72 @@ To check for memory errors and undefined behavior in an isolated build directory
 # Optional: CC=clang JOBS=8 ./run-sanitizers.sh
 ```
 
+### Build and Smoke-Test with Docker
+
+With Docker Engine installed, run from the repository root (at least two
+available CPUs are required):
+
+```bash
+docker build -t snowtg . && docker run --rm --network none snowtg
+```
+
+The Ubuntu 26.04 image downloads and verifies the SHA-256 of DPDK 26.07, builds it
+from source, then builds `traffic-gen` and `stack-demo` and runs `make -C test`.
+Any failure stops the build. This DPDK version provides the duplicate IPv4
+fragment behavior required by the regression suite. `.dockerignore` excludes
+host binaries and benchmark artifacts. The image uses shared DPDK libraries and
+includes null, pcap, AF_PACKET, VMXNET3, virtio, and Intel e1000/igc PMDs, covering
+the project's VM and NUC NICs. Use
+`--build-arg 'DPDK_DRIVERS=bus/*,common/*,mempool/*,net/*'` for all buildable network
+drivers; drivers such as mlx5 also need their development packages added to the
+Dockerfile. Build tools and tests remain available for repeat checks.
+The default build uses four jobs; override with
+`docker build --build-arg JOBS=8 -t snowtg .`. DPDK uses a generic CPU configuration
+so the image does not inherit the build host's specific instruction set. The
+first build takes longer; subsequent builds can reuse the dependency cache.
+
+The default command reuses `test/test_lcore_layout.py`: it selects two available
+CPUs, runs a one-second DNS scenario with the `net_null` virtual NIC and 256 MiB
+of ordinary memory, and checks the exit status and final CSV record. It prints
+`PASS` and exits; no hugepages, privileges, or physical NIC are needed. The virtual
+NIC has no DNS peer, so this checks startup and shutdown, not successful requests
+or throughput. With fewer than two available CPUs whose IDs are below 128,
+`SKIP` means the startup check did not run.
+
+```bash
+docker run --rm --network none snowtg make -C test
+docker run --rm snowtg traffic-gen --help
+```
+
+Real traffic requires a Linux host with hugepages, IOMMU, and a dedicated test NIC
+bound to `vfio-pci` using `bind-dpdk.sh`. See the
+[DPDK container guide](https://doc.dpdk.org/guides/linux_gsg/build_sample_apps.html#running-an-application-in-a-container).
+Docker does not configure host drivers or unbind NICs. The example below assumes
+hugepages at `/dev/hugepages`, PCI address `0000:64:00.0`, and IOMMU group `17`.
+Replace those values, CPU IDs and local IP, and update the scenario's `peer.ip`
+and `peer.port`. Find the group with
+`readlink /sys/bus/pci/devices/0000:64:00.0/iommu_group`.
+
+```bash
+mkdir -p docker-results
+docker run --rm --init --network none \
+  --device /dev/vfio/vfio --device /dev/vfio/17 \
+  --cap-add IPC_LOCK --ulimit memlock=-1:-1 \
+  --mount type=bind,src=/dev/hugepages,dst=/dev/hugepages \
+  --mount "type=bind,src=$(pwd)/traffic-gen/scenarios,dst=/scenarios,readonly" \
+  --mount "type=bind,src=$(pwd)/docker-results,dst=/results" \
+  snowtg traffic-gen -l 0-1 -a 0000:64:00.0 \
+  --huge-dir /dev/hugepages --file-prefix snowtg -- \
+  --workers 1 --local-ip 192.168.21.2 --port-id 0 \
+  --stats-csv /results/stats.csv /scenarios/test/mix-http-dns.json
+```
+
+Traffic uses the VFIO NIC directly, without Docker port mapping. Results persist
+in `docker-results/stats.csv`. Concurrent instances need separate NICs, CPUs, and
+file prefixes. UIO device passthrough needs a different configuration; this
+example covers VFIO only. Override the image command with `stack-demo` and its
+EAL arguments to run the echo application instead.
+
 ### Run the Example Stack
 
 Bind the target NIC to a DPDK driver when required, then start the example application:

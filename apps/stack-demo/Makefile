@@ -5,7 +5,7 @@ SANITIZERS ?=
 STACK_LIB := ../../pro-stack/$(STACK_BUILD_DIR)/libpro-stack.a
 SRCS := main.c ../tcp-echo/tcp_echo.c ../udp-echo/udp_echo.c
 
-PKGCONF := pkg-config --define-prefix
+PKGCONF := pkg-config
 CFLAGS += -O3 -I../../pro-stack $(shell $(PKGCONF) --cflags libdpdk)
 CFLAGS += -DALLOW_EXPERIMENTAL_API
 LDFLAGS := $(shell $(PKGCONF) --static --libs libdpdk)
