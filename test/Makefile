@@ -95,7 +95,7 @@ SCENARIO_SCHEDULER_OBJS := $(BUILD_DIR)/test_scenario_scheduler.o \
 all: test
 
 # Compilation and execution both must succeed for the test target to pass.
-test: test-bind-dpdk $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(SACK_TEST) $(TCP_CC_TEST) $(EPHEMERAL_TEST) $(OWNER_TIMER_TEST) $(OWNER_IO_TEST) \
+test: test-snowtg-script test-bind-dpdk $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(SACK_TEST) $(TCP_CC_TEST) $(EPHEMERAL_TEST) $(OWNER_TIMER_TEST) $(OWNER_IO_TEST) \
 	$(HTTP_CLIENT_TEST) $(DNS_CLIENT_TEST) $(SCENARIO_SCHEDULER_TEST) $(ARP_TEST) \
 	$(RX_DISPATCH_TEST) $(PORT_TOPOLOGY_TEST) $(FLOW_UDP_TEST) \
 	$(IPV4_REASSEMBLY_TEST) $(STATS_CSV_TEST) $(CONN_POOL_TEST) \
@@ -128,6 +128,10 @@ test-runtime-tx: $(RUNTIME_TX_TEST)
 $(RUNTIME_TX_TEST): test_runtime_tx.c $(STACK_LIB) | $(BUILD_DIR)
 	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) test_runtime_tx.c $(STACK_LIB) \
 		-o $@ $(DPDK_LIBS) $(SANITIZER_LDFLAGS)
+
+.PHONY: test-snowtg-script
+test-snowtg-script:
+	python3 test_snowtg_script.py
 
 .PHONY: test-bind-dpdk
 test-bind-dpdk:
