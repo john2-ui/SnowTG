@@ -4,6 +4,9 @@
     python3 traffic-gen/snowtg.py scenario.py -- -l 0,1 -- --workers 1
     python3 traffic-gen/snowtg.py scenario.lua -- -l 0,1 -- --workers 1
     python3 traffic-gen/snowtg.py --emit-json plan.json scenario.py
+    python3 traffic-gen/snowtg.py run --output debug/run1 scenario.lua -- <EAL> -- <app>
+    python3 traffic-gen/snowtg.py compare baseline/result.json candidate/result.json
+    python3 traffic-gen/snowtg.py report run/result.json --output report.html
 
 Scripts may import scenario, phase, http and dns from snowtg. Helpers produce
 ordinary dictionaries; Lua scripts use require("snowtg") and may return a plan.
@@ -48,10 +51,22 @@ def dns(name, ip, qname, port=53, *, weight=1, qtype="A"):
                 peer=dict(ip=ip, port=port), dns=dict(qname=qname, qtype=qtype))
 
 
+def assertion(metric, op, value, *, class_name=None, protocol=None, phase=None,
+              quantile=None, latency_metric=None, critical=True):
+    """Build an SLO spec; the managed runner validates selectors and thresholds.
+
+    Rates are fractions, latency_ms is milliseconds with quantile in (0,1].
+    Latency defaults to successful completion; critical failures set exit code 2.
+    """
+    result = dict(metric=metric, op=op, value=value, critical=critical)
+    result.update({k: v for k, v in dict(
+        **{"class": class_name}, protocol=protocol, phase=phase,
+        quantile=quantile, latency_metric=latency_metric).items() if v is not None})
+    return result
 
 
 def scenario(name, *, classes, concurrency=256, phases=None, duration=None,
-             cps=None, report_interval=1):
+             cps=None, report_interval=1, assertions=None, purpose=None, service=None):
     """Open arrivals: provide phases OR duration/cps; concurrency is global."""
     result = dict(name=name, load_model="open", max_concurrency=concurrency,
                   report_interval_sec=report_interval, classes=list(classes))
@@ -63,6 +78,9 @@ def scenario(name, *, classes, concurrency=256, phases=None, duration=None,
         if duration is None or cps is None:
             raise ValueError("provide phases or both duration and cps")
         result.update(duration_sec=duration, target_cps=cps)
+    for key, value in (("assertions", assertions), ("purpose", purpose), ("service", service)):
+        if value is not None:
+            result[key] = value
     return result
 
 
@@ -109,10 +127,23 @@ def load_lua(path):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] in (["compare"], ["report"]):
+        from snowtg_results import cli
+        try:
+            return cli(argv)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            print(f"snowtg: {error}", file=sys.stderr)
+            return 1
+    managed = argv[:1] == ["run"]
+    if managed:
+        argv = argv[1:]
     parser = argparse.ArgumentParser(description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--emit-json", type=Path, metavar="PATH",
                         help="export only; native schema validation happens when run")
+    parser.add_argument("--output", type=Path, help="new managed-run directory (CSV, result.json, report.html)")
+    parser.add_argument("--baseline", type=Path, help="baseline result.json for the report")
+    parser.add_argument("--timeout", type=float, help="managed run wall-clock limit in seconds")
     parser.add_argument("--binary", type=Path,
                         default=Path(__file__).resolve().parent / "build/traffic-gen",
                         help="native executable (default: adjacent build/traffic-gen)")
@@ -129,6 +160,8 @@ def main(argv=None):
         else:
             text = load_script(path) if path.suffix == ".py" else path.read_text()
         if options.emit_json:
+            if managed or options.output or options.baseline or options.timeout is not None:
+                raise ValueError("--emit-json cannot be combined with managed-run options")
             if options.args:
                 raise ValueError("--emit-json does not accept runtime arguments")
             if options.emit_json.resolve() == path:
@@ -138,6 +171,12 @@ def main(argv=None):
         plan = json.loads(text)
         if not isinstance(plan, dict):
             raise ValueError("scenario must be an object")
+        if managed or options.output or options.baseline or options.timeout is not None or any(
+                key in plan for key in ("assertions", "purpose", "service")):
+            # Managed mode waits for the native child and evaluates final CSVs;
+            # scripts still execute only at startup, never in the packet path.
+            from snowtg_results import run
+            return run(plan, options.binary, options.args, options.output, options.timeout, options.baseline)
         args = options.args
         if args[:1] == ["--"]:
             args = args[1:]

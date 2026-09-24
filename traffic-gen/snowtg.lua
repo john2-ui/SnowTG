@@ -42,10 +42,11 @@ function M.dns(name, ip, qname, port, options)
 end
 
 -- Concurrency is global. Use phases OR duration/cps; native validation checks
--- protocol/rate limits after exporting the plan.
+-- protocol/rate limits after the launcher removes managed-run metadata.
 function M.scenario(name, options)
-    options = checked(options, "classes concurrency report_interval phases duration cps")
+    options = checked(options, "classes concurrency report_interval phases duration cps assertions purpose service")
     local result = {name=name, load_model="open", classes=options.classes,
+        assertions=options.assertions, purpose=options.purpose, service=options.service,
         max_concurrency=default(options.concurrency, 256),
         report_interval_sec=default(options.report_interval, 1)}
     if options.phases ~= nil then
@@ -60,7 +61,14 @@ function M.scenario(name, options)
     return result
 end
 
-
+-- Ratios use [0,1], latency uses ms and quantile in (0,1]. Selectors/thresholds
+-- are validated by the managed runner; critical failures yield exit code 2.
+function M.assertion(metric, op, value, options)
+    options = checked(options, "class_name protocol phase quantile latency_metric critical")
+    return {metric=metric, op=op, value=value, class=options.class_name,
+        protocol=options.protocol, phase=options.phase, quantile=options.quantile,
+        latency_metric=options.latency_metric, critical=default(options.critical, true)}
+end
 
 if ... == "snowtg" then return M end
 
