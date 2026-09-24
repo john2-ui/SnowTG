@@ -17,6 +17,7 @@
 #include "core/scheduler.h"
 #include "core/socket_capacity.h"
 #include "core/stats.h"
+#include "core/latency.h"
 #include "core/stats_csv.h"
 #include "core/dataplane_stats.h"
 
@@ -72,6 +73,7 @@ struct tg_shard {
         struct tg_plan plan;
         struct tg_scheduler scheduler;
         struct tg_stats stats;
+        struct tg_latency latency;
         struct tg_stats_snapshot runtime_totals;
         struct tg_stats_snapshot final_snapshot;
         struct owner_io_memory_snapshot memory;
@@ -173,6 +175,9 @@ static void tg_capture_stats_snapshot(struct tg_shard *shard,
             &snapshot, &shard->stats, now_cycles, ++shard->stats_sequence,
             shard->worker_index, shard->lcore_id, phase);
         snapshot.live_sockets = shard->scheduler.live_sockets;
+        snapshot.load_phase_index = shard->scheduler.phase_index;
+        snapshot.arrivals_planned = shard->scheduler.planned_total;
+        snapshot.arrivals_skipped = shard->scheduler.skipped_total;
         snapshot.tcp_drain_residual = shard->tcp_drain_residual;
         snapshot.tcp_forced_cleanup = shard->tcp_forced_cleanup;
         snapshot.tcp_pool_objects_in_use =
@@ -302,6 +307,8 @@ static void tg_on_flow_finished(void *ctx, const struct tg_flow *flow,
                 return;
         tg_scheduler_on_flow_finished(&shard->scheduler);
         tg_stats_on_flow_finished(&shard->stats, flow, result);
+        if (shard->latency.groups != NULL)
+                tg_latency_on_finished(&shard->latency, flow, result, rte_get_timer_cycles());
 }
 
 static void tg_on_socket_created(void *ctx) {
@@ -489,11 +496,13 @@ static int tg_start_class(void *ctx, const struct tg_class_plan *class_plan) {
         struct tg_shard *shard = ctx;
         const void *class_config;
         struct tg_flow *idle_flow = NULL;
+        struct tg_flow *new_flow = NULL;
         int start_result;
 
         if (shard == NULL || class_plan == NULL)
                 return -1;
         class_config = class_plan->proto_config;
+        uint32_t class_index = (uint32_t)(class_plan - shard->plan.classes);
 
         if (class_plan->transport == TG_TRANSPORT_TCP) {
                 idle_flow =
@@ -504,6 +513,10 @@ static int tg_start_class(void *ctx, const struct tg_class_plan *class_plan) {
                             class_plan->request_template,
                             class_plan->request_template_len);
                         if (start_result == 0) {
+                                if (shard->latency.groups != NULL)
+                                        tg_latency_on_admitted(&shard->latency, idle_flow,
+                                            shard->scheduler.phase_index, class_index,
+                                            shard->scheduler.dispatch_planned_cycles);
                                 tg_stats_on_connection_reused(&shard->stats);
                                 tg_stats_on_admitted(&shard->stats);
                                 return 0;
@@ -519,6 +532,8 @@ static int tg_start_class(void *ctx, const struct tg_class_plan *class_plan) {
                         }
                 } else if (!tg_conn_pool_can_create(&shard->conn_pool)) {
                         errno = EAGAIN;
+                        tg_latency_on_start_failed(&shard->latency,
+                            shard->scheduler.phase_index, class_index);
                         tg_stats_on_resource_deferred(&shard->stats);
                         return -1;
                 }
@@ -528,7 +543,8 @@ static int tg_start_class(void *ctx, const struct tg_class_plan *class_plan) {
                     sizeof(class_plan->peer), class_plan->proto, class_config,
                     class_plan, &shard->conn_pool, class_plan->request_template,
                     class_plan->request_template_len, tg_on_flow_finished,
-                    shard, tg_on_socket_created, tg_on_socket_released, shard);
+                    shard, tg_on_socket_created, tg_on_socket_released, shard,
+                    &new_flow);
         } else if (class_plan->transport == TG_TRANSPORT_UDP) {
                 start_result = tg_flow_start_udp(
                     &shard->flow_map, &shard->flow_pool,
@@ -536,13 +552,16 @@ static int tg_start_class(void *ctx, const struct tg_class_plan *class_plan) {
                     sizeof(class_plan->peer), class_plan->proto, class_config,
                     class_plan->request_template,
                     class_plan->request_template_len, tg_on_flow_finished,
-                    shard, tg_on_socket_created, tg_on_socket_released, shard);
+                    shard, tg_on_socket_created, tg_on_socket_released, shard,
+                    &new_flow);
         } else {
                 errno = EINVAL;
                 start_result = -1;
         }
 
         if (start_result != 0) {
+                tg_latency_on_start_failed(&shard->latency,
+                    shard->scheduler.phase_index, class_index);
                 if (errno == ENOBUFS || errno == ENFILE)
                         tg_stats_on_resource_deferred(&shard->stats);
                 else
@@ -551,6 +570,10 @@ static int tg_start_class(void *ctx, const struct tg_class_plan *class_plan) {
                           class_plan->name, errno);
                 return -1;
         }
+        if (shard->latency.groups != NULL)
+                tg_latency_on_admitted(&shard->latency, new_flow,
+                    shard->scheduler.phase_index, class_index,
+                    shard->scheduler.dispatch_planned_cycles);
         tg_stats_on_admitted(&shard->stats);
         if (class_plan->transport == TG_TRANSPORT_TCP)
                 tg_stats_on_connection_created(&shard->stats);
@@ -634,6 +657,12 @@ static void tg_shard_tick(void *ctx, unsigned int budget) {
             !shard->drained) {
                 (void)owner_timer_cancel(&shard->drain_timer);
                 (void)owner_io_memory_snapshot(&shard->memory);
+                /* Drain measures returned live resources, not reserved pool
+                 * capacity. Forced cleanup must never produce a clean sample. */
+                tg_latency_on_drained(&shard->latency, shard->scheduler.stop_cycles,
+                    rte_get_timer_cycles(), !shard->drain_forced && shard->scheduler.live_sockets == 0 &&
+                    tg_tcp_pool_objects_in_use(&shard->memory) == 0 &&
+                    shard->flow_pool.free_count == shard->flow_pool.capacity);
                 shard->drained = true;
                 if (shard->runtime != NULL &&
                     atomic_fetch_sub(&shard->runtime->remaining_shards, 1) == 1)
@@ -826,6 +855,8 @@ int main(int argc, char *argv[]) {
         struct tg_worker *workers;
         struct tg_runtime_control runtime = {0};
         struct tg_stats_csv stats_csv = {0};
+        FILE *latency_file = NULL;
+        int exit_status = EXIT_SUCCESS;
         struct rte_mempool *mp;
         struct port_topology port_topology;
         bool direct_tx;
@@ -846,7 +877,7 @@ int main(int argc, char *argv[]) {
                                        "[--stats-csv PATH] [--mtu BYTES] "
                                        "[--dataplane-csv PATH] [--metrics-sample N] "
                                        "[--tx-mode main|worker|auto] "
-                                       "[--rx-mode main|worker|auto] "
+                                       "[--rx-mode main|worker|auto] [--latency-csv PATH] "
                                        "[--local-ip IPv4] [--port-id N] "
                                        "[scenario.json]\n");
         worker_count = app_config.worker_count;
@@ -890,6 +921,13 @@ int main(int argc, char *argv[]) {
             "cps=%u concurrency=%u socket_id_capacity=%u",
             plan.name, plan.class_count, worker_count, active_shards,
             plan.target_cps, plan.max_concurrency, socket_id_capacity);
+
+        if (app_config.latency_csv_path != NULL) {
+                latency_file = fopen(app_config.latency_csv_path, "w");
+                if (latency_file == NULL)
+                        rte_exit(EXIT_FAILURE, "latency CSV open failed: %s\n",
+                                 app_config.latency_csv_path);
+        }
 
         /* Stage 4: Initialize global packet, network, and timer resources. */
         if (socket_registry_init() != 0)
@@ -1015,6 +1053,11 @@ int main(int argc, char *argv[]) {
                                          index);
                 }
 
+                if (worker->shard.scheduling_enabled && latency_file != NULL &&
+                    tg_latency_init(&worker->shard.latency, &worker->shard.plan,
+                                     rte_get_timer_hz()) != 0)
+                        rte_exit(EXIT_FAILURE, "worker %u latency allocation failed\n", index);
+
                 /* Attach the reactor and start-ready stack runtime context. */
                 tg_reactor_init(&worker->reactor, tg_shard_tick, tg_on_event,
                                 &worker->shard);
@@ -1065,6 +1108,19 @@ int main(int argc, char *argv[]) {
                                 main_lcore, app_config.metrics_sample,
                                 rte_get_timer_hz());
         }
+
+        /* One epoch for all shards; launch skew must not shift phase windows. */
+        uint64_t epoch = rte_get_timer_cycles() + rte_get_timer_hz() / 10;
+        if (g_dataplane.file != NULL) {
+                char device[RTE_ETH_NAME_MAX_LEN] = {0};
+                (void)rte_eth_dev_get_name_by_port(g_net.port_id, device);
+                fprintf(stderr, "run_metadata device=%s numa=%d epoch_cycles=%" PRIu64
+                        " timer_hz=%" PRIu64 " direct_rx=%u direct_tx=%u\n",
+                        device, rte_eth_dev_socket_id(g_net.port_id), epoch,
+                        rte_get_timer_hz(), direct_rx, direct_tx);
+        }
+        for (unsigned int index = 0; index < active_shards; index++)
+                tg_scheduler_start_at(&workers[index].shard.scheduler, epoch);
 
         /* Stage 8: Launch one stack runtime on each worker lcore. */
         for (unsigned int index = 0; index < worker_count; index++) {
@@ -1180,8 +1236,25 @@ int main(int argc, char *argv[]) {
         if (tg_stats_csv_close(&stats_csv) != 0)
                 LOG_ERROR("stats CSV close failed path=%s", stats_csv.path);
 
+        if (latency_file != NULL) {
+                const struct tg_latency *latencies[RTE_MAX_LCORE];
+                const struct tg_scheduler *schedulers[RTE_MAX_LCORE];
+                for (unsigned int i = 0; i < active_shards; i++) {
+                        latencies[i] = &workers[i].shard.latency;
+                        schedulers[i] = &workers[i].shard.scheduler;
+                }
+                if (tg_latency_csv_write(latency_file, &plan, latencies,
+                                           schedulers, active_shards) != 0)
+                        exit_status = EXIT_FAILURE;
+                if (fclose(latency_file) != 0)
+                        exit_status = EXIT_FAILURE;
+                if (exit_status != EXIT_SUCCESS)
+                        LOG_ERROR("latency CSV write/close failed");
+        }
+
         /* Stage 12: Release per-worker and global resources before exit. */
         for (unsigned int index = 0; index < worker_count; index++) {
+                tg_latency_fini(&workers[index].shard.latency);
                 tg_conn_pool_fini(&workers[index].shard.conn_pool);
                 tg_flow_pool_fini(&workers[index].shard.flow_pool);
                 tg_flow_map_fini(&workers[index].shard.flow_map);
@@ -1195,5 +1268,5 @@ int main(int argc, char *argv[]) {
         socket_registry_fini();
         tg_plan_fini(&plan);
         free(workers);
-        return EXIT_SUCCESS;
+        return exit_status;
 }

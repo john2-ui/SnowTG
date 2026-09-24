@@ -45,7 +45,7 @@ int tg_dataplane_stats_open(struct tg_dataplane_stats *stats, const char *path,
 #define TG_COLUMN(name) fprintf(stats->file, ",nic_" #name);
         TG_NIC_FIELDS(TG_COLUMN)
 #undef TG_COLUMN
-        fputc('\n', stats->file);
+        fputs(",link_rc,link_up,link_mbps,link_duplex\n", stats->file);
         if (ferror(stats->file)) {
                 (void)fclose(stats->file);
                 stats->file = NULL;
@@ -58,6 +58,7 @@ int tg_dataplane_stats_open(struct tg_dataplane_stats *stats, const char *path,
 void tg_dataplane_stats_report(struct tg_dataplane_stats *stats, uint64_t now,
                                bool final) {
         struct rte_eth_stats nic = {0};
+        struct rte_eth_link link = {0};
         bool valid;
         int rc;
 
@@ -85,7 +86,11 @@ void tg_dataplane_stats_report(struct tg_dataplane_stats *stats, uint64_t now,
                 valid ? nic.name - stats->previous_nic.name : UINT64_C(0));
         TG_NIC_FIELDS(TG_DELTA)
 #undef TG_DELTA
-        fputc('\n', stats->file);
+        /* Query without blocking Main. A failed query leaves zero fields;
+         * consumers must use link_rc to distinguish unknown from link-down. */
+        int link_rc = rte_eth_link_get_nowait(stats->port_id, &link);
+        fprintf(stats->file, ",%d,%u,%u,%u\n", link_rc, link.link_status,
+                link.link_speed, link.link_duplex);
         /* Keep the baseline on read failure; rebase after a counter reset. */
         if (rc == 0) {
                 stats->previous_nic = nic;

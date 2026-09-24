@@ -18,13 +18,15 @@
 
 /** @brief Maximum number of independently weighted traffic classes. */
 #define TG_PLAN_MAX_CLASSES 16U
+/** Maximum sequential load phases, compiled once at startup. */
+#define TG_PLAN_MAX_PHASES 16U
 /** @brief Capacity, including NUL terminator, of plan and class names. */
 #define TG_PLAN_CLASS_NAME_CAP 64U
 /** Largest immutable serialized request retained once per traffic class. */
 #define TG_PLAN_REQUEST_TEMPLATE_CAP 1024U
 /** @brief Largest flow-pool and scheduler concurrency supported by a plan. */
 #define TG_PLAN_MAX_CONCURRENCY 65536U
-/** @brief Largest supported connection-start rate in attempts per second. */
+/** @brief Largest logical transaction-start rate, including Keep-Alive reuse. */
 #define TG_PLAN_MAX_CPS 1000000U
 /** @brief Longest period during which a plan may admit new transactions. */
 #define TG_PLAN_MAX_DURATION_SEC 86400U
@@ -63,19 +65,34 @@ struct tg_class_plan {
         size_t request_template_len;
 };
 
+/** Global transaction rates, linearly interpolated over duration_sec.
+ * Open arrivals are independent of completion, bounded by concurrency.
+ * A zero-rate phase is allowed; the complete plan must have a nonzero peak. */
+struct tg_phase_plan {
+        char name[TG_PLAN_CLASS_NAME_CAP];
+        uint32_t duration_sec;
+        uint32_t start_cps;
+        uint32_t target_cps;
+};
+
 /**
  * @brief Complete validated plan consumed by one owner-local scheduler.
  *
- * The plan contains no parser-owned or socket-owned state.  It may therefore
- * be shared as immutable configuration once multi-shard execution is added.
+ * The plan contains no parser-owned or socket-owned state. Partitioning clones
+ * protocol configuration; workers then treat their shard plans as immutable.
  */
 struct tg_plan {
         char name[TG_PLAN_CLASS_NAME_CAP];
-        uint32_t duration_sec;
+        uint32_t duration_sec; /**< Sum of phase durations; excludes drain time. */
         uint32_t max_concurrency;
-        uint32_t target_cps;
+        uint32_t target_cps; /**< Peak rate, divided across scheduling shards. */
         uint32_t report_interval_sec;
         uint32_t total_weight;
+        uint32_t phase_count;
+        /** Global rates stay intact: shard i owns arrival i + n * shards. */
+        uint32_t schedule_shard_index;
+        uint32_t schedule_shard_count;
+        struct tg_phase_plan phases[TG_PLAN_MAX_PHASES];
         /** Initial weighted-round-robin phase for this scheduling shard. */
         uint32_t selection_phase;
         uint32_t class_count;
@@ -87,6 +104,10 @@ struct tg_plan {
  * @param plan Destination plan, cleared if compilation fails.
  * @param path Path to the scenario JSON document.
  * @return 0 on success; -1 with @c errno set on I/O, syntax, or schema error.
+ *
+ * Only open load is supported. Legacy duration_sec/target_cps compiles into a
+ * steady phase and cannot coexist with phases. Script/SLO metadata is removed
+ * by the launcher before reaching this strict native schema.
  */
 int tg_plan_load_file(struct tg_plan *plan, const char *path);
 /**

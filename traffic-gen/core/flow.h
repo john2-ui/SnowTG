@@ -116,8 +116,12 @@ struct tg_flow {
         tg_flow_finish_fn on_finish;
         void *on_finish_ctx;
         uint32_t requests_started;
-        /** Cycle timestamps are zero until each lifecycle phase occurs. */
-        uint64_t start_cycles;     /**< Flow object accepted for connection. */
+        /** Reassigned for each logical transaction, including Keep-Alive reuse. */
+        uint64_t planned_cycles; /**< Open-arrival deadline, before admission. */
+        uint32_t load_phase_index; /**< Immutable attribution across phase transitions. */
+        uint32_t class_index;
+        /** Unobserved connect/first-response events retain a zero timestamp. */
+        uint64_t start_cycles;     /**< Current transaction admitted or rearmed. */
         uint64_t connected_cycles; /**< TCP CONNECTED notification observed. */
         uint64_t first_rx_cycles;  /**< First application response byte read. */
         uint64_t deadline_cycles;  /**< Active transaction or UDP response
@@ -176,6 +180,9 @@ int tg_flow_map_remove(struct tg_flow_map *map, struct tg_flow *flow);
  * still be pending.  Synchronous failures fully reclaim the pool object.
  * Socket lifecycle callbacks are optional, but must be provided as a pair so
  * created/released accounting cannot become unbalanced.
+ * @param flow_out Optional borrowed pointer to the admitted pool object on
+ * success. Attach scheduling metadata before driving events; no ownership is
+ * transferred and completion may recycle it. Do not read it after failure.
  *
  * @return 0 on admission; -1 with @c errno set if no flow or socket is usable.
  */
@@ -186,7 +193,8 @@ int tg_flow_start_tcp(
     const struct tg_class_plan *class_plan, struct tg_conn_pool *conn_pool,
     const uint8_t *request, size_t request_len, tg_flow_finish_fn on_finish,
     void *on_finish_ctx, tg_flow_socket_created_fn on_socket_created,
-    owner_io_release_fn on_socket_released, void *socket_lifecycle_ctx);
+    owner_io_release_fn on_socket_released, void *socket_lifecycle_ctx,
+    struct tg_flow **flow_out);
 
 /**
  * @brief Rearms an idle TCP flow for one new logical transaction.
@@ -205,6 +213,8 @@ int tg_flow_rearm_tcp(struct tg_flow *flow, const struct tg_proto_ops *proto,
  * datagrams for the response. Traffic-generator UDP is owner-local: transmit
  * mbufs go directly to the worker output ring, while received datagrams use a
  * bounded lazy queue instead of per-socket packet rings.
+ * @param flow_out Same borrowed admission pointer contract as TCP; valid only
+ * on success and before flow completion/recycling.
  *
  * @return 0 on admission; -1 with @c errno set if no flow or socket is usable.
  */
@@ -216,7 +226,7 @@ int tg_flow_start_udp(struct tg_flow_map *map, struct tg_flow_pool *pool,
                       void *on_finish_ctx,
                       tg_flow_socket_created_fn on_socket_created,
                       owner_io_release_fn on_socket_released,
-                      void *socket_lifecycle_ctx);
+                      void *socket_lifecycle_ctx, struct tg_flow **flow_out);
 
 /**
  * @brief Advances a flow from a coalesced owner-I/O readiness mask.

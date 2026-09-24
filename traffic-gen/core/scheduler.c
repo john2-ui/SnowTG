@@ -1,121 +1,201 @@
-/**
- * @file scheduler.c
- * @brief Implements token-bucket admission and weighted class selection.
- *
- * All arithmetic is integer based: token credit is stored in cycle-clock
- * units to avoid rate loss from fractional tokens during frequent reactor
- * turns.  Credit is capped to one concurrency window to prevent unbounded
- * bursts after a stalled worker.
- */
-
+/** Open, paced arrivals with explicit bounded-backlog loss accounting. */
 #include "scheduler.h"
 
 #include <errno.h>
 #include <limits.h>
+#include <math.h>
 #include <string.h>
 
-/**
- * @brief Selects the next class using deterministic weighted round-robin.
- *
- * Advancing the cursor before each lookup gives reproducible sequences for a
- * fixed plan and tick trace, which is important for scenario unit tests.
- */
-static const struct tg_class_plan *
-tg_scheduler_select_class(struct tg_scheduler *scheduler) {
-        uint32_t selected = (uint32_t)(scheduler->selection_cursor %
-                                       scheduler->plan->total_weight);
+static struct tg_phase_plan tg_phase(const struct tg_scheduler *s) {
+        if (s->plan->phase_count != 0)
+                return s->plan->phases[s->phase_index];
+        /* Also support manually constructed single-phase plans. */
+        struct tg_phase_plan phase = {.duration_sec = s->plan->duration_sec,
+                                      .start_cps = s->plan->target_cps,
+                                      .target_cps = s->plan->target_cps};
+        return phase;
+}
+
+static uint32_t tg_shards(const struct tg_scheduler *s) {
+        return s->plan->phase_count && s->plan->schedule_shard_count
+                   ? s->plan->schedule_shard_count
+                   : 1U;
+}
+
+/* Number of global arrivals strictly before t: ceil(integral(rate, 0, t)).
+ * The exact integer integral avoids drift and per-turn fractional loss.
+ * 128-bit intermediates cover max duration/rate and clocks through 10 GHz. */
+static uint64_t tg_due_count(const struct tg_scheduler *s, uint64_t elapsed) {
+        struct tg_phase_plan p = tg_phase(s);
+        uint64_t duration = (uint64_t)p.duration_sec * s->cycles_per_second;
+        __uint128_t rate_term = (__uint128_t)2 * p.start_cps * duration;
+        if (p.target_cps >= p.start_cps)
+                rate_term +=
+                    (__uint128_t)(p.target_cps - p.start_cps) * elapsed;
+        else
+                rate_term -=
+                    (__uint128_t)(p.start_cps - p.target_cps) * elapsed;
+        __uint128_t numerator = (__uint128_t)elapsed * rate_term;
+        __uint128_t denominator =
+            (__uint128_t)2 * duration * s->cycles_per_second;
+        uint64_t global =
+            (uint64_t)((numerator + denominator - 1) / denominator);
+        uint32_t shards = tg_shards(s);
+        uint32_t index = shards == 1 ? 0 : s->plan->schedule_shard_index;
+        return global <= index ? 0 : (global - index + shards - 1) / shards;
+}
+
+/* Invert the global rate integral for this shard's next arrival. Using the
+ * global ordinal avoids rate-rounding drift when CPS is not divisible by workers. */
+static uint64_t tg_due_cycles(const struct tg_scheduler *s) {
+        struct tg_phase_plan p = tg_phase(s);
+        uint32_t shards = tg_shards(s);
+        uint64_t n = s->phase_consumed * shards +
+                     (shards == 1 ? 0 : s->plan->schedule_shard_index);
+        uint64_t offset;
+        if (p.start_cps == p.target_cps) {
+                offset = (uint64_t)((__uint128_t)n * s->cycles_per_second /
+                                    p.target_cps);
+        } else if (n == 0) {
+                offset = 0;
+        } else {
+                /* Stable inverse of A(t)=a*t+(b-a)*t*t/(2*duration). */
+                long double a = p.start_cps;
+                long double slope =
+                    ((long double)p.target_cps - a) / p.duration_sec;
+                long double t =
+                    (2.0L * n) / (a + sqrtl(a * a + 2.0L * slope * n));
+                offset = (uint64_t)(t * s->cycles_per_second);
+        }
+        return s->phase_start_cycles + offset;
+}
+
+/* Count any-length skipped runs in O(classes), not O(missed requests).
+ * Advance the same weighted selection cursor as real attempts so overload
+ * cannot silently change the intended class mix. */
+static void tg_skip(struct tg_scheduler *s, uint64_t count) {
+        uint64_t total = s->plan->total_weight;
+        uint64_t cursor = s->selection_cursor % total;
+        uint64_t remainder = count % total;
+        uint64_t begin = 0;
+        for (uint32_t i = 0; i < s->plan->class_count; i++) {
+                uint64_t end = begin + s->plan->classes[i].weight;
+                uint64_t hits = (count / total) * (end - begin);
+                for (unsigned int wrap = 0; wrap < 2; wrap++) {
+                        uint64_t lo = begin + wrap * total;
+                        uint64_t hi = end + wrap * total;
+                        if (lo < cursor)
+                                lo = cursor;
+                        if (hi > cursor + remainder)
+                                hi = cursor + remainder;
+                        if (hi > lo)
+                                hits += hi - lo;
+                }
+                s->counts[s->phase_index][i].skipped += hits;
+                begin = end;
+        }
+        s->selection_cursor += count;
+        s->phase_consumed += count;
+        s->skipped_total += count;
+}
+
+static uint32_t tg_select(struct tg_scheduler *s) {
+        uint32_t selected = s->selection_cursor++ % s->plan->total_weight;
         uint32_t cumulative = 0;
-
-        scheduler->selection_cursor++;
-        for (uint32_t i = 0; i < scheduler->plan->class_count; i++) {
-                cumulative += scheduler->plan->classes[i].weight;
+        for (uint32_t i = 0; i < s->plan->class_count; i++) {
+                cumulative += s->plan->classes[i].weight;
                 if (selected < cumulative)
-                        return &scheduler->plan->classes[i];
+                        return i;
         }
-        return NULL;
-}
-
-/**
- * @brief Accrues elapsed CPS credit while saturating at the burst cap.
- * @param scheduler Scheduler whose token numerator is updated.
- * @param elapsed_cycles Cycle-clock time since the previous scheduler turn.
- */
-static void tg_scheduler_add_tokens(struct tg_scheduler *scheduler,
-                                    uint64_t elapsed_cycles) {
-        uint64_t cap;
-        uint64_t added;
-
-        cap = (uint64_t)scheduler->plan->max_concurrency *
-              scheduler->cycles_per_second;
-        if (elapsed_cycles > UINT64_MAX / scheduler->plan->target_cps)
-                added = cap;
-        else
-                added = elapsed_cycles * scheduler->plan->target_cps;
-        if (added >= cap - scheduler->token_numerator)
-                scheduler->token_numerator = cap;
-        else
-                scheduler->token_numerator += added;
-}
-
-/** @copydoc tg_scheduler_init */
-int tg_scheduler_init(struct tg_scheduler *scheduler,
-                      const struct tg_plan *plan, uint64_t cycles_per_second) {
-        if (scheduler == NULL || plan == NULL || plan->class_count == 0 ||
-            plan->total_weight == 0 || plan->max_concurrency == 0 ||
-            plan->target_cps == 0 || cycles_per_second == 0) {
-                errno = EINVAL;
-                return -1;
-        }
-        memset(scheduler, 0, sizeof(*scheduler));
-        scheduler->plan = plan;
-        scheduler->cycles_per_second = cycles_per_second;
-        scheduler->selection_cursor = plan->selection_phase;
         return 0;
 }
 
-/** @copydoc tg_scheduler_tick */
-unsigned int tg_scheduler_tick(struct tg_scheduler *scheduler,
-                               uint64_t now_cycles, unsigned int budget,
-                               tg_scheduler_start_fn start, void *start_ctx) {
-        unsigned int started = 0;
+int tg_scheduler_init(struct tg_scheduler *s, const struct tg_plan *plan,
+                      uint64_t hz) {
+        if (s == NULL || plan == NULL || plan->class_count == 0 ||
+            plan->class_count > TG_PLAN_MAX_CLASSES ||
+            plan->total_weight == 0 || plan->max_concurrency == 0 ||
+            plan->target_cps == 0 || plan->duration_sec == 0 ||
+            plan->duration_sec > TG_PLAN_MAX_DURATION_SEC ||
+            plan->phase_count > TG_PLAN_MAX_PHASES || hz == 0 ||
+            hz > UINT64_C(10000000000)) {
+                errno = EINVAL;
+                return -1;
+        }
+        memset(s, 0, sizeof(*s));
+        s->plan = plan;
+        s->cycles_per_second = hz;
+        s->selection_cursor = plan->selection_phase;
+        return 0;
+}
 
-        if (scheduler == NULL || start == NULL || budget == 0 ||
-            scheduler->stopped)
+void tg_scheduler_start_at(struct tg_scheduler *s, uint64_t epoch) {
+        s->started = true;
+        s->start_cycles = epoch;
+        s->phase_start_cycles = epoch;
+        s->last_cycles = epoch;
+        s->stop_cycles =
+            epoch + (uint64_t)s->plan->duration_sec * s->cycles_per_second;
+}
+
+unsigned int tg_scheduler_tick(struct tg_scheduler *s, uint64_t now,
+                               unsigned int budget, tg_scheduler_start_fn start,
+                               void *ctx) {
+        unsigned int attempts = 0;
+        if (s == NULL || start == NULL || s->stopped)
                 return 0;
-        if (!scheduler->started) {
-                scheduler->started = true;
-                scheduler->start_cycles = now_cycles;
-                scheduler->last_cycles = now_cycles;
+        if (!s->started) {
+                tg_scheduler_start_at(s, now);
                 return 0;
         }
-        if (now_cycles < scheduler->last_cycles ||
-            now_cycles - scheduler->start_cycles >=
-                (uint64_t)scheduler->plan->duration_sec *
-                    scheduler->cycles_per_second) {
-                scheduler->stopped = true;
+        if (now < s->start_cycles)
+                return 0;
+        if (now < s->last_cycles) {
+                s->stopped = true;
                 return 0;
         }
-        if (scheduler->resource_paused) {
-                scheduler->last_cycles = now_cycles;
-                return 0;
-        }
-
-        tg_scheduler_add_tokens(scheduler, now_cycles - scheduler->last_cycles);
-        scheduler->last_cycles = now_cycles;
-        while (started < budget &&
-               scheduler->active < scheduler->plan->max_concurrency &&
-               scheduler->token_numerator >= scheduler->cycles_per_second) {
-                const struct tg_class_plan *class_plan =
-                    tg_scheduler_select_class(scheduler);
-
-                scheduler->token_numerator -= scheduler->cycles_per_second;
-                if (class_plan == NULL)
+        s->last_cycles = now;
+        for (;;) {
+                struct tg_phase_plan phase = tg_phase(s);
+                uint64_t duration =
+                    (uint64_t)phase.duration_sec * s->cycles_per_second;
+                uint64_t elapsed = now - s->phase_start_cycles;
+                bool ended = elapsed >= duration;
+                uint64_t due = tg_due_count(s, ended ? duration : elapsed);
+                s->planned_total += due - s->phase_seen;
+                s->phase_seen = due;
+                if (!ended)
                         break;
-                if (start(start_ctx, class_plan) == 0)
-                        scheduler->active++;
-                started++;
+                tg_skip(s, due - s->phase_consumed);
+                s->phase_start_cycles += duration;
+                s->phase_index++;
+                s->phase_consumed = s->phase_seen = 0;
+                s->token_numerator = 0;
+                uint32_t phases =
+                    s->plan->phase_count ? s->plan->phase_count : 1;
+                if (s->phase_index == phases) {
+                        s->stopped = true;
+                        return 0;
+                }
         }
-        return started;
+        uint64_t pending = s->phase_seen - s->phase_consumed;
+        if (pending > s->plan->max_concurrency) {
+                tg_skip(s, pending - s->plan->max_concurrency);
+                pending = s->plan->max_concurrency;
+        }
+        while (!s->resource_paused && attempts < budget && pending &&
+               s->active < s->plan->max_concurrency) {
+                uint32_t selected = tg_select(s);
+                s->dispatch_planned_cycles = tg_due_cycles(s);
+                s->counts[s->phase_index][selected].attempted++;
+                s->phase_consumed++;
+                if (start(ctx, &s->plan->classes[selected]) == 0)
+                        s->active++;
+                attempts++;
+                pending--;
+        }
+        s->token_numerator = pending * s->cycles_per_second;
+        return attempts;
 }
 
 /** @copydoc tg_scheduler_on_flow_finished */

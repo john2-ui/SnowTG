@@ -50,6 +50,7 @@ int tg_app_config_parse(int argc, char *argv[],
         bool workers_seen = false;
         bool socket_id_max_seen = false;
         bool stats_csv_seen = false;
+        bool latency_csv_seen = false;
         bool dataplane_csv_seen = false;
         bool metrics_sample_seen = false;
         bool tx_mode_seen = false;
@@ -92,6 +93,14 @@ int tg_app_config_parse(int argc, char *argv[],
                                 goto invalid;
                         config.stats_csv_path = argv[i];
                         stats_csv_seen = true;
+                        continue;
+                }
+                if (strcmp(argv[i], "--latency-csv") == 0) {
+                        if (latency_csv_seen || ++i == argc ||
+                            argv[i][0] == '\0' || argv[i][0] == '-')
+                                goto invalid;
+                        config.latency_csv_path = argv[i];
+                        latency_csv_seen = true;
                         continue;
                 }
                 if (strcmp(argv[i], "--dataplane-csv") == 0) {
@@ -171,6 +180,12 @@ int tg_app_config_parse(int argc, char *argv[],
 
         if (config.stats_csv_path != NULL && config.dataplane_csv_path != NULL &&
             strcmp(config.stats_csv_path, config.dataplane_csv_path) == 0)
+                goto invalid;
+        if (config.latency_csv_path != NULL &&
+            ((config.stats_csv_path != NULL &&
+              strcmp(config.latency_csv_path, config.stats_csv_path) == 0) ||
+             (config.dataplane_csv_path != NULL &&
+              strcmp(config.latency_csv_path, config.dataplane_csv_path) == 0)))
                 goto invalid;
         *config_out = config;
         return 0;

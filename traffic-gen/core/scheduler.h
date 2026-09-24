@@ -5,9 +5,9 @@
  * @file scheduler.h
  * @brief Owner-local CPS and concurrency scheduler for immutable plans.
  *
- * The scheduler uses an integer token numerator to preserve fractional CPS
- * credit between short reactor turns.  It has no socket knowledge; callers
- * provide the callback that admits the selected traffic class.
+ * Open arrivals follow a fixed clock, independent of completions. Pending
+ * arrivals are bounded by concurrency; overflow and phase-end misses are
+ * counted explicitly. Callers provide the transaction admission callback.
  */
 
 #include "scenario.h"
@@ -21,18 +21,23 @@
  * @param class_plan Immutable class selected by weighted round-robin.
  * @return 0 if a flow was admitted; nonzero if the start attempt failed.
  *
- * Failed attempts still consume a scheduler token because CPS limits attempt
- * rate, rather than only successful connections.
+ * Each attempted arrival is consumed once, even if admission fails.
  */
 typedef int (*tg_scheduler_start_fn)(void *ctx,
                                      const struct tg_class_plan *class_plan);
 
+struct tg_schedule_count {
+        uint64_t attempted;
+        uint64_t skipped;
+};
+
 /**
  * @brief Mutable scheduling state owned exclusively by one worker lcore.
  *
- * @p token_numerator represents tokens with @p cycles_per_second as its
- * denominator.  @p selection_cursor starts at the plan's shard-specific
- * weighted-round-robin phase.  @p active is incremented only for successfully
+ * @p token_numerator exposes pending arrivals times clock frequency for
+ * compatibility with the existing token gauge, not fractional rate tokens.
+ * @p selection_cursor starts at the plan's shard-specific weighted-round-robin
+ * phase. @p active is incremented only for successfully
  * admitted flows and must be decremented exactly once by the completion
  * observer.
  */
@@ -43,6 +48,17 @@ struct tg_scheduler {
         uint64_t last_cycles;
         uint64_t token_numerator;
         uint64_t selection_cursor;
+        uint64_t phase_start_cycles;
+        /* Per-shard current-phase arrivals: consumed = attempted + skipped;
+         * seen = due by last tick; their difference is the pending backlog. */
+        uint64_t phase_consumed;
+        uint64_t phase_seen;
+        uint64_t planned_total;
+        uint64_t skipped_total;
+        uint64_t dispatch_planned_cycles; /* Selected deadline, valid in start callback. */
+        uint64_t stop_cycles;
+        uint32_t phase_index;
+        struct tg_schedule_count counts[TG_PLAN_MAX_PHASES][TG_PLAN_MAX_CLASSES];
         uint32_t active;
         uint32_t live_sockets;
         uint64_t resource_pauses;
@@ -61,14 +77,21 @@ struct tg_scheduler {
 int tg_scheduler_init(struct tg_scheduler *scheduler,
                       const struct tg_plan *plan, uint64_t cycles_per_second);
 
+/** Set a shared epoch before workers launch; ticks before it admit nothing. */
+void tg_scheduler_start_at(struct tg_scheduler *scheduler, uint64_t epoch);
+
 /**
- * @brief Adds elapsed CPS credit and starts bounded eligible transactions.
+ * @brief Accounts clock-driven arrivals and starts bounded eligible transactions.
  * @param scheduler Owner-local scheduler state.
  * @param now_cycles Monotonic cycle-clock timestamp for this worker turn.
  * @param budget Maximum start attempts to issue during this turn.
  * @param start Callback that creates the selected transaction.
  * @param start_ctx Opaque context forwarded to @p start.
  * @return Number of attempted starts, including callback failures.
+ *
+ * Zero budget or a resource pause suppresses admission, not clock accounting.
+ * Overflow drops the oldest pending arrivals; phase-end backlog is skipped
+ * instead of replayed at the next phase's rate.
  */
 unsigned int tg_scheduler_tick(struct tg_scheduler *scheduler,
                                uint64_t now_cycles, unsigned int budget,

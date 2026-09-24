@@ -41,6 +41,11 @@ struct tg_stats_snapshot {
         uint64_t lcore_id;
         /** TG_STATS_PHASE_PERIODIC or TG_STATS_PHASE_FINAL. */
         uint64_t phase;
+        /** Zero-based load phase; phase_count denotes final drain. */
+        uint64_t load_phase_index;
+        /** Cumulative arrivals across phases; skipped includes backlog loss. */
+        uint64_t arrivals_planned;
+        uint64_t arrivals_skipped;
 
         /** Cumulative transaction counters. */
         uint64_t txns_started;

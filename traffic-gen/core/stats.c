@@ -280,6 +280,12 @@ void tg_stats_snapshot_add(struct tg_stats_snapshot *aggregate,
         if (sample->sequence > aggregate->sequence)
                 aggregate->sequence = sample->sequence;
         aggregate->txns_started += sample->txns_started;
+        /* Furthest observed phase; an inactive shard's zero must not reset it.
+         * Asynchronous snapshots do not describe a simultaneous phase barrier. */
+        if (sample->load_phase_index > aggregate->load_phase_index)
+                aggregate->load_phase_index = sample->load_phase_index;
+        aggregate->arrivals_planned += sample->arrivals_planned;
+        aggregate->arrivals_skipped += sample->arrivals_skipped;
         aggregate->txns_done += sample->txns_done;
         aggregate->txns_success += sample->txns_success;
         aggregate->txns_fail += sample->txns_fail;

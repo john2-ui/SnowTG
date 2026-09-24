@@ -16,6 +16,15 @@
 static struct rte_eth_stats fake_nic;
 static int fake_error;
 
+int rte_eth_link_get_nowait(uint16_t port, struct rte_eth_link *out) {
+        assert(port == 0);
+        memset(out, 0, sizeof(*out));
+        out->link_status = 1;
+        out->link_speed = 1000;
+        out->link_duplex = 1;
+        return 0;
+}
+
 /** Supplies the scripted NIC snapshot and status in place of a device read. */
 int rte_eth_stats_get(uint16_t port, struct rte_eth_stats *out) {
         assert(port == 0);

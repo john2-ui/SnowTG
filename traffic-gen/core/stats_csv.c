@@ -73,7 +73,8 @@ int tg_stats_csv_open(struct tg_stats_csv *csv, const char *path,
                 "tcp_forced_cleanup,tcp_pool_objects_in_use,tx_packets,"
                 "tx_bursts,nic_tx_cycles,nic_tx_sampled_packets,"
                 "nic_tx_sampled_bursts,nic_rx_packets,rx_burst_calls,"
-                "rx_empty_bursts,rx_full_bursts,rx_handoffs,rx_handoff_drops\n") < 0) {
+                "rx_empty_bursts,rx_full_bursts,rx_handoffs,rx_handoff_drops,"
+                "load_phase_index,arrivals_planned,arrivals_skipped\n") < 0) {
                 (void)fclose(csv->file);
                 memset(csv, 0, sizeof(*csv));
                 return -1;
@@ -117,6 +118,7 @@ int tg_stats_csv_write(struct tg_stats_csv *csv,
             "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
             "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
             "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
+            "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
             "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
             "%" PRIu64 ",%" PRIu64 ",%" PRIu64 "\n",
             scope, tg_csv_phase(snapshot->phase),
@@ -180,7 +182,9 @@ int tg_stats_csv_write(struct tg_stats_csv *csv,
             snapshot->nic_tx_sampled_packets, snapshot->nic_tx_sampled_bursts,
             snapshot->nic_rx_packets, snapshot->rx_burst_calls,
             snapshot->rx_empty_bursts, snapshot->rx_full_bursts,
-            snapshot->rx_handoffs, snapshot->rx_handoff_drops);
+            snapshot->rx_handoffs, snapshot->rx_handoff_drops,
+            snapshot->load_phase_index, snapshot->arrivals_planned,
+            snapshot->arrivals_skipped);
         if (result < 0)
                 csv->failed = true;
         return result < 0 ? -1 : 0;

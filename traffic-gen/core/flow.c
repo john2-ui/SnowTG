@@ -190,7 +190,8 @@ int tg_flow_start_tcp(
     const struct tg_class_plan *class_plan, struct tg_conn_pool *conn_pool,
     const uint8_t *request, size_t request_len, tg_flow_finish_fn on_finish,
     void *on_finish_ctx, tg_flow_socket_created_fn on_socket_created,
-    owner_io_release_fn on_socket_released, void *socket_lifecycle_ctx) {
+    owner_io_release_fn on_socket_released, void *socket_lifecycle_ctx,
+    struct tg_flow **flow_out) {
         struct tg_flow *flow;
         struct nsock_handle handle;
 
@@ -202,6 +203,7 @@ int tg_flow_start_tcp(
                 return -1;
         }
 
+        if (flow_out != NULL) *flow_out = NULL;
         flow = tg_flow_pool_get(pool);
         if (flow == NULL)
                 return -1;
@@ -254,10 +256,13 @@ int tg_flow_start_tcp(
                         tg_flow_start_cleanup(map, pool, flow, true);
                         return -1;
                 }
+                if (flow_out != NULL) *flow_out = flow;
                 return 0;
         }
-        if (errno == EINPROGRESS)
+        if (errno == EINPROGRESS) {
+                if (flow_out != NULL) *flow_out = flow;
                 return 0;
+        }
 
         tg_flow_start_cleanup(map, pool, flow, true);
         return -1;
@@ -272,7 +277,7 @@ int tg_flow_start_udp(struct tg_flow_map *map, struct tg_flow_pool *pool,
                       void *on_finish_ctx,
                       tg_flow_socket_created_fn on_socket_created,
                       owner_io_release_fn on_socket_released,
-                      void *socket_lifecycle_ctx) {
+                      void *socket_lifecycle_ctx, struct tg_flow **flow_out) {
         const struct sockaddr_in *peer_in = (const struct sockaddr_in *)peer;
         struct tg_flow *flow;
         struct nsock_handle handle;
@@ -286,6 +291,7 @@ int tg_flow_start_udp(struct tg_flow_map *map, struct tg_flow_pool *pool,
                 return -1;
         }
 
+        if (flow_out != NULL) *flow_out = NULL;
         flow = tg_flow_pool_get(pool);
         if (flow == NULL)
                 return -1;
@@ -335,10 +341,13 @@ int tg_flow_start_udp(struct tg_flow_map *map, struct tg_flow_pool *pool,
                 flow->txn.request_offset = request_len;
                 tg_txn_on_tx_accepted(&flow->txn, request_len);
                 flow->state = TG_FLOW_RECEIVING;
+                if (flow_out != NULL) *flow_out = flow;
                 return 0;
         }
-        if (sent < 0 && errno == EAGAIN)
+        if (sent < 0 && errno == EAGAIN) {
+                if (flow_out != NULL) *flow_out = flow;
                 return 0;
+        }
         if (sent >= 0)
                 errno = EIO;
         tg_flow_start_cleanup(map, pool, flow, true);

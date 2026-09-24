@@ -23,7 +23,7 @@
 /** @brief Largest accepted on-disk scenario document, in bytes. */
 #define TG_SCENARIO_MAX_BYTES (64U * 1024U)
 /** @brief Tokenization bound that limits parser stack and startup work. */
-#define TG_SCENARIO_MAX_TOKENS 512U
+#define TG_SCENARIO_MAX_TOKENS 2048U
 
 /** @brief Releases one protocol-owned class configuration. */
 static void tg_class_plan_fini(struct tg_class_plan *class_plan) {
@@ -290,11 +290,64 @@ static int tg_read_file(const char *path, char **json_out, size_t *length_out) {
         return 0;
 }
 
+/** Compile constant or continuously linear open-arrival phases. */
+static int tg_parse_phases(const struct tg_json_doc *doc, int array_index,
+                           struct tg_plan *plan) {
+        static const char *const allowed[] = {
+            "name", "duration_sec", "start_cps", "target_cps"};
+        if (doc->tokens[array_index].type != JSMN_ARRAY ||
+            doc->tokens[array_index].size < 1 ||
+            doc->tokens[array_index].size > (int)TG_PLAN_MAX_PHASES)
+                goto invalid;
+        for (int i = array_index + 1; i < doc->token_count; i++) {
+                if (doc->tokens[i].parent != array_index)
+                        continue;
+                if (doc->tokens[i].type != JSMN_OBJECT ||
+                    !tg_json_object_has_only(doc, i, allowed, 4))
+                        goto invalid;
+                struct tg_phase_plan *phase = &plan->phases[plan->phase_count];
+                int name = tg_json_object_value(doc, i, "name");
+                int duration = tg_json_object_value(doc, i, "duration_sec");
+                int start = tg_json_object_value(doc, i, "start_cps");
+                int target = tg_json_object_value(doc, i, "target_cps");
+                if (name < 0 || duration < 0 || target < 0 ||
+                    tg_json_copy_string(phase->name, sizeof(phase->name), doc,
+                                        &doc->tokens[name]) != 0 ||
+                    tg_json_parse_u32(doc, &doc->tokens[duration], 1,
+                                      TG_PLAN_MAX_DURATION_SEC,
+                                      &phase->duration_sec) != 0 ||
+                    tg_json_parse_u32(doc, &doc->tokens[target], 0,
+                                      TG_PLAN_MAX_CPS, &phase->target_cps) != 0)
+                        goto invalid;
+                phase->start_cps = phase->target_cps;
+                if (start >= 0 && tg_json_parse_u32(doc, &doc->tokens[start],
+                                                   0, TG_PLAN_MAX_CPS,
+                                                   &phase->start_cps) != 0)
+                        goto invalid;
+                for (uint32_t j = 0; j < plan->phase_count; j++)
+                        if (strcmp(phase->name, plan->phases[j].name) == 0)
+                                goto invalid;
+                plan->duration_sec += phase->duration_sec;
+                if (plan->duration_sec > TG_PLAN_MAX_DURATION_SEC)
+                        goto invalid;
+                if (phase->target_cps > plan->target_cps)
+                        plan->target_cps = phase->target_cps;
+                if (phase->start_cps > plan->target_cps)
+                        plan->target_cps = phase->start_cps;
+                plan->phase_count++;
+        }
+        if (plan->target_cps != 0)
+                return 0;
+invalid:
+        errno = EINVAL;
+        return -1;
+}
+
 /** @copydoc tg_plan_load_file */
 int tg_plan_load_file(struct tg_plan *plan, const char *path) {
         static const char *const allowed[] = {
             "name",       "duration_sec",        "max_concurrency",
-            "target_cps", "report_interval_sec", "classes"};
+            "target_cps", "report_interval_sec", "classes", "phases", "load_model"};
         jsmntok_t tokens[TG_SCENARIO_MAX_TOKENS];
         jsmn_parser parser;
         struct tg_json_doc doc;
@@ -307,6 +360,8 @@ int tg_plan_load_file(struct tg_plan *plan, const char *path) {
         int cps_index;
         int report_index;
         int classes_index;
+        int phases_index;
+        int model_index;
         int result = -1;
 
         if (plan == NULL || path == NULL) {
@@ -335,23 +390,47 @@ int tg_plan_load_file(struct tg_plan *plan, const char *path) {
         cps_index = tg_json_object_value(&doc, 0, "target_cps");
         report_index = tg_json_object_value(&doc, 0, "report_interval_sec");
         classes_index = tg_json_object_value(&doc, 0, "classes");
-        if (name_index < 0 || duration_index < 0 || concurrency_index < 0 ||
-            cps_index < 0 || classes_index < 0 ||
+        phases_index = tg_json_object_value(&doc, 0, "phases");
+        model_index = tg_json_object_value(&doc, 0, "load_model");
+        /* Closed concurrency is a different executor, not an alias for CPS. */
+        if ((model_index >= 0 &&
+             !tg_json_token_equal(&doc, &tokens[model_index], "open")) ||
+            name_index < 0 || concurrency_index < 0 || classes_index < 0 ||
             tg_json_copy_string(plan->name, sizeof(plan->name), &doc,
                                 &tokens[name_index]) != 0 ||
-            tg_json_parse_u32(&doc, &tokens[duration_index], 1,
-                              TG_PLAN_MAX_DURATION_SEC,
-                              &plan->duration_sec) != 0 ||
             tg_json_parse_u32(&doc, &tokens[concurrency_index], 1,
                               TG_PLAN_MAX_CONCURRENCY,
                               &plan->max_concurrency) != 0 ||
-            tg_json_parse_u32(&doc, &tokens[cps_index], 1, TG_PLAN_MAX_CPS,
-                              &plan->target_cps) != 0 ||
             (report_index >= 0 &&
              tg_json_parse_u32(&doc, &tokens[report_index], 1,
                                TG_PLAN_MAX_REPORT_INTERVAL_SEC,
-                               &plan->report_interval_sec) != 0) ||
-            tg_parse_classes(&doc, classes_index, plan) != 0)
+                               &plan->report_interval_sec) != 0)) {
+                errno = EINVAL;
+                goto out;
+        }
+        if (phases_index >= 0) {
+                if (duration_index >= 0 || cps_index >= 0 ||
+                    tg_parse_phases(&doc, phases_index, plan) != 0) {
+                        errno = EINVAL;
+                        goto out;
+                }
+        } else {
+                if (duration_index < 0 || cps_index < 0 ||
+                    tg_json_parse_u32(&doc, &tokens[duration_index], 1,
+                                      TG_PLAN_MAX_DURATION_SEC,
+                                      &plan->duration_sec) != 0 ||
+                    tg_json_parse_u32(&doc, &tokens[cps_index], 1,
+                                      TG_PLAN_MAX_CPS, &plan->target_cps) != 0) {
+                        errno = EINVAL;
+                        goto out;
+                }
+                plan->phase_count = 1;
+                strcpy(plan->phases[0].name, "steady");
+                plan->phases[0].duration_sec = plan->duration_sec;
+                plan->phases[0].start_cps = plan->target_cps;
+                plan->phases[0].target_cps = plan->target_cps;
+        }
+        if (tg_parse_classes(&doc, classes_index, plan) != 0)
                 goto out;
         if (report_index < 0)
                 plan->report_interval_sec = 1;
@@ -408,6 +487,8 @@ int tg_plan_partition(struct tg_plan *destination, const struct tg_plan *source,
         cps_remainder = source->target_cps % shard_count;
         concurrency_base = source->max_concurrency / shard_count;
         concurrency_remainder = source->max_concurrency % shard_count;
+        partitioned.schedule_shard_index = shard_index;
+        partitioned.schedule_shard_count = shard_count;
         partitioned.target_cps =
             cps_base + (shard_index < cps_remainder ? 1U : 0U);
         partitioned.max_concurrency =

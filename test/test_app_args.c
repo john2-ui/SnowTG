@@ -24,6 +24,7 @@ static int test_defaults(void) {
         ASSERT_TRUE(config.worker_count == 1);
         ASSERT_TRUE(config.socket_id_max_override == 0);
         ASSERT_TRUE(config.stats_csv_path == NULL);
+        ASSERT_TRUE(config.latency_csv_path == NULL);
         ASSERT_TRUE(config.dataplane_csv_path == NULL);
         ASSERT_TRUE(config.metrics_sample == 1024);
         ASSERT_TRUE(config.tx_mode == TG_TX_AUTO);
@@ -43,13 +44,14 @@ static int test_overrides_and_order(void) {
             "--workers",       "4",           "--local-ip",  "10.20.30.40",
             "--mtu",           "1500",        "--stats-csv", "results.csv",
             "--socket-id-max", "8192", "--dataplane-csv", "main.csv",
-            "--metrics-sample", "0", "--tx-mode", "worker", "--rx-mode", "main"};
+            "--metrics-sample", "0", "--tx-mode", "worker", "--rx-mode", "main", "--latency-csv", "latency.csv"};
         struct tg_app_config config;
         struct in_addr expected_ip;
 
         ASSERT_TRUE(tg_app_config_parse((int)(sizeof(argv) / sizeof(argv[0])),
                                         argv, &config) == 0);
         ASSERT_TRUE(config.worker_count == 4);
+        ASSERT_TRUE(strcmp(config.latency_csv_path, "latency.csv") == 0);
         ASSERT_TRUE(config.socket_id_max_override == 8192);
         ASSERT_TRUE(strcmp(config.stats_csv_path, "results.csv") == 0);
         ASSERT_TRUE(config.requested_mtu == 1500);
@@ -90,6 +92,10 @@ static int test_invalid_options(void) {
         char *two_scenarios[] = {"traffic-gen", "one.json", "two.json"};
         char *duplicate_workers[] = {"traffic-gen", "--workers", "1",
                                      "--workers", "2"};
+        char *missing_latency[] = {"traffic-gen", "--latency-csv"};
+        char *duplicate_latency[] = {"traffic-gen", "--latency-csv", "a", "--latency-csv", "b"};
+        char *same_latency[] = {"traffic-gen", "--stats-csv", "a", "--latency-csv", "a"};
+        char *same_dataplane[] = {"traffic-gen", "--dataplane-csv", "a", "--latency-csv", "a"};
         char *same_csv[] = {"traffic-gen", "--stats-csv", "out.csv",
                             "--dataplane-csv", "out.csv"};
         char *bad_sample[] = {"traffic-gen", "--metrics-sample", "-1"};
@@ -118,6 +124,10 @@ static int test_invalid_options(void) {
         EXPECT_INVALID(two_scenarios);
         EXPECT_INVALID(duplicate_workers);
         EXPECT_INVALID(same_csv);
+        EXPECT_INVALID(missing_latency);
+        EXPECT_INVALID(duplicate_latency);
+        EXPECT_INVALID(same_latency);
+        EXPECT_INVALID(same_dataplane);
         EXPECT_INVALID(bad_sample);
         EXPECT_INVALID(missing_sample);
         EXPECT_INVALID(duplicate_sample);

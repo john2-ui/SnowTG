@@ -27,6 +27,7 @@ SRCS := main_tg.c \
 	core/socket_capacity.c \
 	core/scheduler.c \
 	core/stats.c \
+	core/latency.c \
 	core/stats_csv.c \
 	core/dataplane_stats.c \
 	core/txn.c \
@@ -49,7 +50,7 @@ CFLAGS += -O3 -I. -Icore -Iproto -I../pro-stack -I$(LLHTTP_DIR)/include \
 CFLAGS += -DALLOW_EXPERIMENTAL_API
 CFLAGS += -DLOG_LEVEL=$(LOG_LEVEL)
 # @brief Static DPDK link flags resolved through pkg-config.
-LDFLAGS := $(shell $(PKGCONF) --static --libs libdpdk)
+LDFLAGS := $(shell $(PKGCONF) --static --libs libdpdk) -lm
 ifneq ($(strip $(SANITIZERS)),)
 CFLAGS += -O1 -g3 -fno-omit-frame-pointer -fno-optimize-sibling-calls
 CFLAGS += -fsanitize=$(SANITIZERS)
@@ -63,8 +64,9 @@ $(STACK_LIB):
 	$(MAKE) -C ../pro-stack library LOG_LEVEL=$(LOG_LEVEL) \
 		BUILD_DIR=$(STACK_BUILD_DIR) SANITIZERS=$(SANITIZERS)
 
-$(BUILD_DIR)/$(APP): $(SRCS) Makefile $(STACK_LIB) | $(BUILD_DIR)
+$(BUILD_DIR)/$(APP): $(SRCS) $(wildcard *.h core/*.h proto/*.h proto/*/*.h) Makefile build_metadata.py $(STACK_LIB) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(SRCS) $(STACK_LIB) -o $@ $(LDFLAGS)
+	python3 build_metadata.py $@ --cc="$(CC)" --cflags="$(CFLAGS)" --ldflags="$(LDFLAGS)"
 
 $(BUILD_DIR):
 	mkdir -p $@

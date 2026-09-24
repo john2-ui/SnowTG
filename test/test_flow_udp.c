@@ -98,7 +98,7 @@ static struct tg_flow *start_udp_flow(struct tg_flow_map *map,
         assert(tg_flow_start_udp(map, pool, (const struct sockaddr *)peer,
                                  sizeof(*peer), &test_proto, NULL, request,
                                  sizeof(request), test_on_finish, finish, NULL,
-                                 NULL, NULL) == 0);
+                                 NULL, NULL, NULL) == 0);
         return only_flow(map);
 }
 

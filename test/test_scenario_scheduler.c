@@ -1,3 +1,4 @@
+#define _POSIX_C_SOURCE 200809L
 #include "../traffic-gen/core/scenario.h"
 #include "../traffic-gen/core/scheduler.h"
 #include "../traffic-gen/core/socket_capacity.h"
@@ -9,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define ASSERT_TRUE(condition)                                                 \
         do {                                                                   \
@@ -386,7 +388,8 @@ static int test_weight_token_and_concurrency_bounds(void) {
         ASSERT_TRUE(
             tg_scheduler_tick(&scheduler, 10, 3, record_start, &recorder) == 3);
         ASSERT_TRUE(recorder.count == 3);
-        ASSERT_TRUE(memcmp(recorder.selected, "AAB", 3) == 0);
+        ASSERT_TRUE(scheduler.skipped_total == 7);
+        ASSERT_TRUE(memcmp(recorder.selected, "ABA", 3) == 0);
         ASSERT_TRUE(scheduler.active == 3);
 
         tg_scheduler_on_flow_finished(&scheduler);
@@ -455,6 +458,7 @@ static int test_stats(void) {
         ASSERT_TRUE(stats.starts_deferred_resource == 1);
 
         first.ofo_segments_current = 3;
+        first.load_phase_index = 5;
         first.ofo_segments_peak = 4;
         first.ofo_accepted_segments = 5;
         first.ofo_reorder_distance_max = 100;
@@ -484,6 +488,7 @@ static int test_stats(void) {
         second.ofo_pressure_active = 1;
         tg_stats_snapshot_add(&aggregate, &first);
         tg_stats_snapshot_add(&aggregate, &second);
+        ASSERT_TRUE(aggregate.load_phase_index == 5);
         ASSERT_TRUE(aggregate.ofo_segments_current == 5);
         ASSERT_TRUE(aggregate.ofo_segments_peak == 7);
         ASSERT_TRUE(aggregate.ofo_accepted_segments == 11);
@@ -495,7 +500,109 @@ static int test_stats(void) {
         return 0;
 }
 
+static int load_phase_json(struct tg_plan *plan, const char *fields) {
+        char path[] = "/tmp/snowtg-phase-XXXXXX";
+        int fd = mkstemp(path);
+        if (fd < 0) return -1;
+        FILE *file = fdopen(fd, "w");
+        if (file == NULL) { close(fd); unlink(path); return -1; }
+        fprintf(file, "{\"name\":\"phase-test\",\"max_concurrency\":100,"
+                      "%s,\"classes\":[{\"name\":\"dns\",\"weight\":1,"
+                      "\"transport\":\"udp\",\"peer\":{\"ip\":\"192.0.2.1\","
+                      "\"port\":53},\"dns\":{\"qname\":\"test.invalid\",\"qtype\":\"A\"}}]}", fields);
+        fclose(file);
+        int result = tg_plan_load_file(plan, path);
+        unlink(path);
+        return result;
+}
+
+struct phase_recorder {
+        struct tg_scheduler *scheduler;
+        uint64_t count[TG_PLAN_MAX_PHASES];
+        uint64_t last_due;
+        bool invalid;
+};
+
+static int record_phase(void *ctx, const struct tg_class_plan *class_plan) {
+        struct phase_recorder *r = ctx;
+        (void)class_plan;
+        uint64_t due = r->scheduler->dispatch_planned_cycles;
+        r->invalid |= due < r->last_due || due > r->scheduler->last_cycles;
+        r->last_due = due;
+        r->count[r->scheduler->phase_index]++;
+        return -1;
+}
+
+static int test_phased_open_arrivals(void) {
+        struct tg_plan plan;
+        const char *fields = "\"load_model\":\"open\",\"phases\":["
+            "{\"name\":\"warmup\",\"duration_sec\":2,\"target_cps\":2},"
+            "{\"name\":\"ramp\",\"duration_sec\":2,\"start_cps\":2,\"target_cps\":6},"
+            "{\"name\":\"spike\",\"duration_sec\":1,\"target_cps\":10},"
+            "{\"name\":\"pause\",\"duration_sec\":1,\"target_cps\":0},"
+            "{\"name\":\"cooldown\",\"duration_sec\":2,\"start_cps\":6,\"target_cps\":0}]";
+        ASSERT_TRUE(load_phase_json(&plan, fields) == 0);
+        ASSERT_TRUE(plan.phase_count == 5 && plan.duration_sec == 8 && plan.target_cps == 10);
+        uint64_t totals[TG_PLAN_MAX_PHASES] = {0};
+        for (unsigned int i = 0; i < 3; i++) {
+                struct tg_plan shard = {0};
+                struct tg_scheduler s;
+                struct phase_recorder r = {.scheduler = &s};
+                ASSERT_TRUE(tg_plan_partition(&shard, &plan, i, 3) == 0);
+                ASSERT_TRUE(tg_scheduler_init(&s, &shard, 1000) == 0);
+                tg_scheduler_start_at(&s, 100);
+                for (uint64_t now = 0; now <= 8100; now++)
+                        tg_scheduler_tick(&s, now, 100, record_phase, &r);
+                ASSERT_TRUE(s.stopped && s.skipped_total == 0 && !r.invalid);
+                for (unsigned int p = 0; p < 5; p++) totals[p] += r.count[p];
+                tg_plan_fini(&shard);
+        }
+        ASSERT_TRUE(totals[0] == 4 && totals[1] == 8 && totals[2] == 10 &&
+                    totals[3] == 0 && totals[4] == 6);
+        struct tg_scheduler s;
+        struct phase_recorder r = {.scheduler = &s};
+        ASSERT_TRUE(tg_scheduler_init(&s, &plan, 1000) == 0);
+        tg_scheduler_start_at(&s, 0);
+        tg_scheduler_set_resource_available(&s, false);
+        tg_scheduler_tick(&s, 8000, 0, record_phase, &r);
+        ASSERT_TRUE(s.stopped && s.planned_total == 28 && s.skipped_total == 28);
+        ASSERT_TRUE(s.counts[0][0].skipped == 4 && s.counts[4][0].skipped == 6);
+        tg_plan_fini(&plan);
+        /* Max supported duration/rate must not overflow the arrival integral. */
+        memset(&plan, 0, sizeof(plan));
+        plan.duration_sec = TG_PLAN_MAX_DURATION_SEC;
+        plan.target_cps = TG_PLAN_MAX_CPS;
+        plan.max_concurrency = 1;
+        plan.class_count = 2;
+        plan.total_weight = 3;
+        plan.classes[0].weight = 2;
+        plan.classes[1].weight = 1;
+        ASSERT_TRUE(tg_scheduler_init(&s, &plan, UINT64_C(10000000000)) == 0);
+        tg_scheduler_start_at(&s, 0);
+        tg_scheduler_tick(&s, UINT64_C(864000000000000), 0, record_phase, &r);
+        ASSERT_TRUE(s.planned_total == UINT64_C(86400000000));
+        ASSERT_TRUE(s.counts[0][0].skipped == UINT64_C(57600000000));
+        ASSERT_TRUE(s.counts[0][1].skipped == UINT64_C(28800000000));
+        const char *invalid[] = {
+            "\"phases\":[]",
+            "\"load_model\":\"closed\",\"duration_sec\":1,\"target_cps\":1",
+            "\"duration_sec\":1,\"phases\":[{\"name\":\"x\",\"duration_sec\":1,\"target_cps\":1}]",
+            "\"phases\":[{\"name\":\"x\",\"duration_sec\":0,\"target_cps\":1}]",
+            "\"phases\":[{\"name\":\"x\",\"duration_sec\":1,\"target_cps\":0}]",
+            "\"phases\":[{\"name\":\"x\",\"duration_sec\":1,\"target_cps\":1000001}]",
+            "\"phases\":[{\"name\":\"x\",\"duration_sec\":1,\"target_cps\":1,\"typo\":1}]",
+            "\"phases\":[{\"name\":\"x\",\"duration_sec\":86400,\"target_cps\":1},"
+                         "{\"name\":\"y\",\"duration_sec\":1,\"target_cps\":1}]",
+            "\"phases\":[{\"name\":\"x\",\"duration_sec\":1,\"target_cps\":1},"
+                         "{\"name\":\"x\",\"duration_sec\":1,\"target_cps\":1}]"
+        };
+        for (size_t i = 0; i < sizeof(invalid)/sizeof(invalid[0]); i++)
+                ASSERT_TRUE(load_phase_json(&plan, invalid[i]) == -1);
+        return 0;
+}
+
 int main(void) {
+        ASSERT_TRUE(test_phased_open_arrivals() == 0);
         ASSERT_TRUE(test_plan_load_and_validation() == 0);
         ASSERT_TRUE(test_mixed_protocol_plan_and_partition() == 0);
         ASSERT_TRUE(test_partition_clone_failure_cleanup() == 0);

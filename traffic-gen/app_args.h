@@ -22,6 +22,7 @@ enum tg_rx_mode { TG_RX_MAIN, TG_RX_WORKER, TG_RX_AUTO };
 struct tg_app_config {
         const char *scenario_path;
         const char *stats_csv_path;
+        const char *latency_csv_path; /**< NULL disables per-phase histograms. */
         const char *dataplane_csv_path;
         uint32_t metrics_sample; /**< Time one in N main loops; zero disables. */
         enum tg_tx_mode tx_mode;

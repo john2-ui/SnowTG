@@ -50,6 +50,7 @@ IPV4_REASSEMBLY_TEST := $(BUILD_DIR)/test_ipv4_reassembly
 STATS_CSV_TEST := $(BUILD_DIR)/test_stats_csv
 CONN_POOL_TEST := $(BUILD_DIR)/test_conn_pool
 APP_ARGS_TEST := $(BUILD_DIR)/test_app_args
+LATENCY_TEST := $(BUILD_DIR)/test_latency
 DATAPLANE_TEST := $(BUILD_DIR)/test_dataplane_stats
 RUNTIME_TX_TEST := $(BUILD_DIR)/test_runtime_tx
 
@@ -98,7 +99,7 @@ test: test-bind-dpdk $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(SACK_TEST) $(TCP_
 	$(HTTP_CLIENT_TEST) $(DNS_CLIENT_TEST) $(SCENARIO_SCHEDULER_TEST) $(ARP_TEST) \
 	$(RX_DISPATCH_TEST) $(PORT_TOPOLOGY_TEST) $(FLOW_UDP_TEST) \
 	$(IPV4_REASSEMBLY_TEST) $(STATS_CSV_TEST) $(CONN_POOL_TEST) \
-	$(APP_ARGS_TEST) $(DATAPLANE_TEST)
+	$(APP_ARGS_TEST) $(DATAPLANE_TEST) $(LATENCY_TEST)
 	$(RBTREE_TEST)
 	$(OFO_TEST)
 	$(PAWS_TEST)
@@ -119,6 +120,7 @@ test: test-bind-dpdk $(RBTREE_TEST) $(OFO_TEST) $(PAWS_TEST) $(SACK_TEST) $(TCP_
 	$(CONN_POOL_TEST)
 	$(APP_ARGS_TEST)
 	$(DATAPLANE_TEST)
+	$(LATENCY_TEST)
 
 .PHONY: test-runtime-tx
 test-runtime-tx: $(RUNTIME_TX_TEST)
@@ -288,7 +290,7 @@ $(DNS_CLIENT_TEST): $(DNS_CLIENT_OBJS)
 	$(CC) $(DNS_CLIENT_OBJS) -o $@ $(SANITIZER_LDFLAGS)
 
 $(SCENARIO_SCHEDULER_TEST): $(SCENARIO_SCHEDULER_OBJS) Makefile
-	$(CC) $(SCENARIO_SCHEDULER_OBJS) -o $@ $(DPDK_LIBS) $(SANITIZER_LDFLAGS)
+	$(CC) $(SCENARIO_SCHEDULER_OBJS) -o $@ $(DPDK_LIBS) -lm $(SANITIZER_LDFLAGS)
 
 $(BUILD_DIR)/test_http_client.o: test_http_client.c \
 		../traffic-gen/core/txn.h \
@@ -390,3 +392,9 @@ $(BUILD_DIR):
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+$(LATENCY_TEST): test_latency.c ../traffic-gen/core/latency.c \
+        ../traffic-gen/core/latency.h ../traffic-gen/core/flow.h \
+        ../traffic-gen/core/scenario.h ../traffic-gen/core/scheduler.h | $(BUILD_DIR)
+	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) test_latency.c \
+		../traffic-gen/core/latency.c -o $@ $(SANITIZER_LDFLAGS)

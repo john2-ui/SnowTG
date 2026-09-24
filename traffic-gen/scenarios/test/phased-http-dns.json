@@ -1,0 +1,77 @@
+{
+  "name": "gateway-phased-http-dns",
+  "load_model": "open",
+  "max_concurrency": 256,
+  "report_interval_sec": 1,
+  "phases": [
+    {
+      "name": "warmup",
+      "duration_sec": 3,
+      "target_cps": 200
+    },
+    {
+      "name": "ramp_up",
+      "duration_sec": 3,
+      "start_cps": 200,
+      "target_cps": 1000
+    },
+    {
+      "name": "steady",
+      "duration_sec": 4,
+      "target_cps": 1000
+    },
+    {
+      "name": "spike",
+      "duration_sec": 2,
+      "target_cps": 2000
+    },
+    {
+      "name": "cool_down",
+      "duration_sec": 3,
+      "target_cps": 200
+    }
+  ],
+  "classes": [
+    {
+      "name": "http_keepalive",
+      "weight": 6,
+      "transport": "tcp",
+      "peer": {
+        "ip": "192.168.10.234",
+        "port": 8888
+      },
+      "http": {
+        "method": "GET",
+        "path": "/",
+        "keepalive": true
+      }
+    },
+    {
+      "name": "http_short",
+      "weight": 2,
+      "transport": "tcp",
+      "peer": {
+        "ip": "192.168.10.234",
+        "port": 8888
+      },
+      "http": {
+        "method": "GET",
+        "path": "/",
+        "keepalive": false
+      }
+    },
+    {
+      "name": "dns",
+      "weight": 2,
+      "transport": "udp",
+      "peer": {
+        "ip": "192.168.10.234",
+        "port": 1053
+      },
+      "dns": {
+        "qname": "snowtg.test",
+        "qtype": "A"
+      }
+    }
+  ]
+}
