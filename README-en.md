@@ -150,7 +150,7 @@ The complete application syntax is:
 
 ```text
 traffic-gen [EAL arguments] -- [--workers N] [--socket-id-max N]
-            [--stats-csv PATH] [--mtu BYTES]
+            [--stats-csv PATH] [--latency-csv PATH] [--mtu BYTES]
             [--dataplane-csv PATH] [--metrics-sample N]
             [--rx-mode main|worker|auto] [--tx-mode main|worker|auto]
             [--local-ip IPv4] [--port-id N] [scenario.json]
@@ -159,6 +159,7 @@ traffic-gen [EAL arguments] -- [--workers N] [--socket-id-max N]
 - `--workers`: number of network-stack owner/reactor workers; defaults to `1`.
 - `--socket-id-max`: per-owner socket capacity, allocated at startup as `max(16384, 2 * ceil(global concurrency / active_shards))` by default. An explicit value may lower this default but must cover `max(4096, 2 * ceil(global concurrency / active_shards))`. Live tables are not resized.
 - `--stats-csv`: writes periodic statistics to the specified CSV file.
+- `--latency-csv`: per-phase, protocol and class histograms with P50/P90/P95/P99/P99.9 for scheduling, connection, first response, completion and drain latency.
 - `--dataplane-csv`: writes Main timings, packet counters and NIC counter deltas to a separate CSV file.
 - `--metrics-sample`: samples added timings every N loops; defaults to `1024`. Zero disables timing; omitting `--dataplane-csv` also disables it. Use sampled packet counts when calculating time per packet.
 - `--rx-mode`: defaults to `auto`, selecting worker RX when RSS configuration and independent queues are available, or with a single worker. Otherwise Main dispatches packets. Explicit `worker` fails if unsupported. Misrouted packets return to their socket owner; worker 0 handles ARP replies and fragment reassembly.
@@ -177,6 +178,44 @@ traffic to RXQ0. Use `--rx-mode main --tx-mode worker` for this setup; see the
 `--local-ip` and `--port-id` configure the traffic-generator endpoint. The
 `peer.ip` and `peer.port` fields in each scenario class continue to identify
 the target service and its service port.
+
+### Scripted Scenarios, SLOs and Reports
+
+`python3 traffic-gen/snowtg.py` accepts `.json`, `.py` and `.lua`. Requires Python 3.8+;
+Lua scenarios also need Lua 5.3/5.4 (`SNOWTG_LUA` can select the interpreter).
+Scripts generate configuration at startup and do not participate in packet processing.
+Start with the [Python](traffic-gen/scenarios/test/acceptance-http-dns.py) or
+[Lua](traffic-gen/scenarios/test/acceptance-http-dns.lua) example:
+
+- `scenario` sets global concurrency; `http` / `dns` define weighted traffic classes.
+- `phase` defines warmup, ramp, steady, spike and cooldown stages; `start` enables a linear rate change. The arrival model is open.
+- `assertion` checks success rate, latency quantiles, allocation failures and drain, with phase/class selectors where applicable.
+  `success_rate` uses planned arrivals as its denominator; `latency_ms` defaults to successful transaction completion latency.
+
+Run from the project root. This NUC example requires matching CPU IDs, PCI address and local IP.
+The example targets `192.168.10.234:8888/1053`; set `SNOWTG_PEER` to change the target IP
+and `SNOWTG_SERVICE_VERSION` to record the tested service version.
+
+```bash
+python3 traffic-gen/snowtg.py run --output debug/run1 \
+  traffic-gen/scenarios/test/acceptance-http-dns.lua -- \
+  -l 4,0,2 --main-lcore 4 -a 0000:64:00.0 -m 512 -- \
+  --workers 2 --local-ip 192.168.10.86
+
+# Repeat with output directory debug/run2, then compare
+python3 traffic-gen/snowtg.py compare debug/run1/result.json debug/run2/result.json
+
+# Generate an offline report including baseline differences
+python3 traffic-gen/snowtg.py report debug/run2/result.json \
+  --baseline debug/run1/result.json --output debug/comparison.html
+```
+
+`run` saves CSVs and logs, records configuration, environment/build metadata and SLO results in `result.json`, and generates `report.html`.
+Use a new output directory; CSV paths are managed automatically. Exit codes: `0` passes acceptance,
+`2` fails a critical SLO, `1` is an invalid run. Add `--baseline PATH` before the scenario path to include
+a baseline during a run; export configuration only with `--emit-json PATH` (without `run`).
+Comparison checks workload/environment compatibility; maximum sustainable load remains unmeasured.
+Generated results under `debug/` are ignored by Git.
 
 ### Add an Application-Layer Protocol Plugin
 

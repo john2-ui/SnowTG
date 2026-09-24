@@ -220,7 +220,7 @@ DPDK EAL 参数写在 `--` 之前，traffic-gen 参数与 scenario 路径写在 
 
 ```text
 traffic-gen [EAL 参数] -- [--workers N] [--socket-id-max N]
-            [--stats-csv PATH] [--mtu BYTES]
+            [--stats-csv PATH] [--latency-csv PATH] [--mtu BYTES]
             [--dataplane-csv PATH] [--metrics-sample N]
             [--rx-mode main|worker|auto] [--tx-mode main|worker|auto]
             [--local-ip IPv4] [--port-id N] [scenario.json]
@@ -230,6 +230,7 @@ traffic-gen [EAL 参数] -- [--workers N] [--socket-id-max N]
 - `--socket-id-max`：每个 owner 的 socket 容量；省略时启动计算 `max(16384, 2 × ceil(全局并发 / active_shards))`。
   可显式降低默认值，但须至少为 `max(4096, 2 × ceil(全局并发 / active_shards))`；运行中不扩容。
 - `--stats-csv`：将周期统计写入指定 CSV 文件。
+- `--latency-csv`：按阶段、协议和类别输出延迟直方图及 P50/P90/P95/P99/P99.9，涵盖调度、建连、首字节、完成和排空。
 - `--dataplane-csv`：输出 Main 阶段计时、轮询/收发计数和 NIC 统计增量；与 worker CSV 使用不同文件。
 - `--metrics-sample`：每 N 轮采样一次新增阶段计时，默认 `1024`；`0` 只保留计数，未指定数据面 CSV 时关闭新增计时。周期字段只覆盖采样轮次，不能直接除以全量包数。
 - `--rx-mode`：默认 `auto`；RSS 配置成功且 RX queues 足够时由 worker 独占收包，否则由 Main 软件分流；单 worker 可直接 RX。显式 `worker` 在条件不足时报错，`main` 用于集中 RX 对照。错队列报文经 MP/SC ring 回到 socket owner；ARP 回复和分片重组由 worker 0 负责。
@@ -242,6 +243,41 @@ traffic-gen [EAL 参数] -- [--workers N] [--socket-id-max N]
 
 `--local-ip` 和 `--port-id` 配置的是流量发生器本端。scenario 中每个 class
 的 `peer.ip` 和 `peer.port` 仍用于配置目标服务地址和服务端口。
+
+### 脚本剧本、SLO 验收与报告
+
+统一入口 `python3 traffic-gen/snowtg.py` 支持 `.json`、`.py`、`.lua`。需要 Python 3.8+；
+Lua 剧本另需 Lua 5.3/5.4（可用 `SNOWTG_LUA` 指定解释器）。脚本仅在启动时生成配置，不参与收发包。
+直接修改 [Python 示例](traffic-gen/scenarios/test/acceptance-http-dns.py) 或
+[Lua 示例](traffic-gen/scenarios/test/acceptance-http-dns.lua) 即可：
+
+- `scenario` 配置全局并发，`http` / `dns` 定义带权重的流量类别。
+- `phase` 组合预热、爬坡、稳态、突发和降载；提供 `start` 时线性变速。当前支持开放到达模型。
+- `assertion` 设置成功率、延迟分位数、分配失败数和排空等 SLO，可按阶段、类别筛选。
+  `success_rate` 分母为计划请求数；`latency_ms` 默认统计成功事务的完成延迟。
+
+以下在项目根目录运行，以 NUC 为例；按机器替换 CPU、PCI、本机 IP。
+示例目标为 `192.168.10.234:8888/1053`，可通过 `SNOWTG_PEER` 修改 IP，
+用 `SNOWTG_SERVICE_VERSION` 填写实测服务版本。
+
+```bash
+python3 traffic-gen/snowtg.py run --output debug/run1 \
+  traffic-gen/scenarios/test/acceptance-http-dns.lua -- \
+  -l 4,0,2 --main-lcore 4 -a 0000:64:00.0 -m 512 -- \
+  --workers 2 --local-ip 192.168.10.86
+
+# 将上面的输出目录换成 debug/run2 再测，然后比较
+python3 traffic-gen/snowtg.py compare debug/run1/result.json debug/run2/result.json
+
+# 离线生成含基线差异的报告
+python3 traffic-gen/snowtg.py report debug/run2/result.json \
+  --baseline debug/run1/result.json --output debug/comparison.html
+```
+
+`run` 自动保存 CSV 和日志；`result.json` 记录配置、环境/构建信息与验收结果，`report.html` 展示报告。
+输出目录必须是新目录，无需另传 CSV 路径。返回码：`0` 验收通过、`2` 关键 SLO 未达标、`1` 运行无效。
+运行时也可在剧本路径前加 `--baseline PATH`；仅导出配置用 `--emit-json PATH`（不带 `run`）。
+比较会检查负载及环境是否可比；最大可持续负载仍标为未测定。`debug/` 下的结果不进入 Git。
 
 ### 添加应用层协议插件
 
