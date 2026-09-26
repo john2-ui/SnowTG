@@ -11,6 +11,7 @@
 
 #include "../proto.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 
 /** Capacity, including NUL, of a textual DNS name in a scenario. */
@@ -31,6 +32,9 @@ struct tg_dns_config {
         char qname[TG_DNS_QNAME_CAP];
         uint16_t qtype;
         uint16_t transaction_id;
+        /* Legacy DNS validation need not select a downstream HTTP destination. */
+        bool require_address; /**< Workflow A lookup must yield a matching IPv4.
+                               */
 };
 
 /** DNS protocol operations used by scenario-compiled DNS classes. */

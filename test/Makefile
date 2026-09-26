@@ -64,16 +64,19 @@ LLHTTP_CFLAGS := $(CFLAGS) -std=c11 -Wall -Wextra -Wno-unused-parameter \
 	-I$(LLHTTP_DIR)/include
 HTTP_CLIENT_OBJS := $(BUILD_DIR)/test_http_client.o \
 	$(BUILD_DIR)/tg_txn.o \
+	$(BUILD_DIR)/tg_value.o \
 	$(BUILD_DIR)/tg_http_client.o \
 	$(BUILD_DIR)/llhttp.o \
 	$(BUILD_DIR)/llhttp_api.o \
 	$(BUILD_DIR)/llhttp_http.o
 DNS_CLIENT_OBJS := $(BUILD_DIR)/test_dns_client.o \
 	$(BUILD_DIR)/tg_txn.o \
+	$(BUILD_DIR)/tg_value.o \
 	$(BUILD_DIR)/tg_dns_client.o
 SCENARIO_SCHEDULER_OBJS := $(BUILD_DIR)/test_scenario_scheduler.o \
 	$(BUILD_DIR)/tg_scenario.o \
 	$(BUILD_DIR)/tg_scenario_json.o \
+	$(BUILD_DIR)/tg_value.o \
 	$(BUILD_DIR)/tg_socket_capacity.o \
 	$(BUILD_DIR)/tg_registry.o \
 	$(BUILD_DIR)/tg_scheduler.o \
@@ -406,3 +409,7 @@ $(LATENCY_TEST): test_latency.c ../traffic-gen/core/latency.c \
         ../traffic-gen/core/scenario.h ../traffic-gen/core/scheduler.h | $(BUILD_DIR)
 	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) test_latency.c \
 		../traffic-gen/core/latency.c -o $@ $(SANITIZER_LDFLAGS)
+
+# Shared scalar objects support protocol tests without EAL or a NIC.
+$(BUILD_DIR)/tg_value.o: ../traffic-gen/core/value.c ../traffic-gen/core/value.h
+	$(CC) $(TEST_CFLAGS) -c $< -o $@

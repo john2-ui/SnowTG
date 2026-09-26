@@ -6,6 +6,8 @@
 #include "dns_client.h"
 
 #include "../../core/txn.h"
+#include "../../core/value.h"
+#include <arpa/inet.h>
 
 #include <errno.h>
 #include <stdbool.h>
@@ -13,6 +15,7 @@
 #include <string.h>
 
 struct tg_dns_state {
+        char address[INET_ADDRSTRLEN];
         uint16_t transaction_id;
 };
 
@@ -319,19 +322,90 @@ static int tg_dns_init(struct tg_txn *txn) {
 static void tg_dns_on_tx_accepted(__attribute__((unused)) struct tg_txn *txn,
                                   __attribute__((unused)) size_t bytes) {}
 
+/* Follow only answer-section IN CNAME links rooted at the original question.
+ * Unrelated A records and additional glue cannot choose the HTTP destination.
+ */
+static int tg_dns_address(struct tg_dns_state *state,
+                          const struct tg_dns_config *config,
+                          const uint8_t *data, size_t length) {
+        char wanted[TG_DNS_QNAME_CAP];
+        strcpy(wanted, config->qname);
+        for (unsigned hop = 0; hop < 16; hop++) {
+                char owner[TG_DNS_QNAME_CAP], next_name[TG_DNS_QNAME_CAP] = "";
+                size_t offset, following;
+                if (tg_dns_expand_name(data, length, 12, owner, sizeof(owner),
+                                       &offset))
+                        return -1;
+                offset += 4;
+                for (unsigned i = 0; i < tg_dns_get_u16(data + 6); i++) {
+                        if (tg_dns_expand_name(data, length, offset, owner,
+                                               sizeof(owner), &offset) ||
+                            offset + 10 > length)
+                                return -1;
+                        uint16_t type = tg_dns_get_u16(data + offset),
+                                 cls = tg_dns_get_u16(data + offset + 2),
+                                 n = tg_dns_get_u16(data + offset + 8);
+                        offset += 10;
+                        if (n > length - offset)
+                                return -1;
+                        if (cls == 1 && tg_dns_names_equal(owner, wanted)) {
+                                if (type == 1 && n == 4)
+                                        return inet_ntop(AF_INET, data + offset,
+                                                         state->address,
+                                                         sizeof(state->address))
+                                                   ? 0
+                                                   : -1;
+                                if (type == 5 && !next_name[0]) {
+                                        if (tg_dns_expand_name(
+                                                data, length, offset, next_name,
+                                                sizeof(next_name),
+                                                &following) ||
+                                            following != offset + n)
+                                                return -1;
+                                }
+                        }
+                        offset += n;
+                }
+                if (!next_name[0] || tg_dns_names_equal(wanted, next_name))
+                        return -1;
+                strcpy(wanted, next_name);
+        }
+        return -1;
+}
+
+/**
+ * @brief Copies the validated matching IPv4 address into business context.
+ * @return 0 when an address is available; -1 otherwise. No borrowed packet data
+ *         escapes, and extraction never initiates a recursive DNS query.
+ */
+static int tg_dns_export(const struct tg_txn *txn, const char *source,
+                         const char *path, unsigned index,
+                         struct tg_value *out) {
+        (void)path;
+        (void)index;
+        const struct tg_dns_state *state = txn->proto_ctx;
+        if (strcmp(source, "address") || !state || !state->address[0])
+                return -1;
+        out->kind = TG_VALUE_STRING;
+        strcpy(out->text, state->address);
+        return 0;
+}
+
 /** @brief Parse one complete DNS response datagram. */
 static enum tg_proto_result tg_dns_on_rx(struct tg_txn *txn,
                                          const uint8_t *data, size_t len) {
         const struct tg_dns_config *config;
-        const struct tg_dns_state *state;
+        struct tg_dns_state *state;
 
         if (txn == NULL || (data == NULL && len != 0))
                 return TG_PROTO_FAILED;
         config = txn->class_config;
         state = txn->proto_ctx;
-        return tg_dns_response_valid(state, config, data, len)
-                   ? TG_PROTO_COMPLETE
-                   : TG_PROTO_FAILED;
+        if (!tg_dns_response_valid(state, config, data, len))
+                return TG_PROTO_FAILED;
+        if (config->require_address && tg_dns_address(state, config, data, len))
+                return TG_PROTO_FAILED;
+        return TG_PROTO_COMPLETE;
 }
 
 /** @brief UDP DNS transactions cannot be completed by stream EOF. */
@@ -358,5 +432,6 @@ const struct tg_proto_ops tg_dns_proto_ops = {
     .on_tx_accepted = tg_dns_on_tx_accepted,
     .on_rx = tg_dns_on_rx,
     .on_eof = tg_dns_on_eof,
+    .export_value = tg_dns_export,
     .reset = tg_dns_reset,
 };

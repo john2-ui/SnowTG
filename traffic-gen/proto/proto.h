@@ -15,6 +15,7 @@
 #include <stdint.h>
 
 struct tg_txn;
+struct tg_value;
 
 /** @brief Progress status returned by a protocol plugin callback. */
 enum tg_proto_result {
@@ -57,6 +58,16 @@ struct tg_proto_ops {
         enum tg_proto_result (*on_rx)(struct tg_txn *txn, const uint8_t *data,
                                       size_t len);
         enum tg_proto_result (*on_eof)(struct tg_txn *txn);
+        /**
+         * @brief Copies one parsed scalar before reset releases protocol state.
+         * @return 0 on success; a negative value when export fails.
+         *
+         * Optional for legacy-only protocols. The caller owns out; the plugin
+         * must not return borrowed buffers, advance steps, or manage sockets.
+         */
+        int (*export_value)(const struct tg_txn *txn, const char *source,
+                            const char *path, unsigned index,
+                            struct tg_value *out);
         void (*reset)(struct tg_txn *txn);
 };
 
