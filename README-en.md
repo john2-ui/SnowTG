@@ -1,5 +1,9 @@
 # SnowTG
 
+Latest measured results (2026-09-26): [benchmark methodology and limits (中文)](docs/BENCHMARK.md) and [RPS/PPS chart](docs/assets/benchmark-capacity-en.svg). Ordinary KA throughput is similar to dperf in this environment.
+
+![Saturation throughput: RPS and client-to-server PPS, with test conditions](docs/assets/benchmark-capacity-en.svg)
+
 ## Project Overview
 
 `SnowTG` is a DPDK-based userspace IPv4 network stack and mixed traffic generator. It uses a single-owner, per-core reactor architecture with lock-free hot paths, provides TCP/UDP socket capabilities, and drives HTTP/DNS load traffic through its own network stack.
@@ -150,6 +154,7 @@ The complete application syntax is:
 
 ```text
 traffic-gen [EAL arguments] -- [--workers N] [--socket-id-max N]
+            [--max-requests-per-connection N]
             [--stats-csv PATH] [--latency-csv PATH] [--mtu BYTES]
             [--dataplane-csv PATH] [--metrics-sample N]
             [--rx-mode main|worker|auto] [--tx-mode main|worker|auto]
@@ -157,13 +162,16 @@ traffic-gen [EAL arguments] -- [--workers N] [--socket-id-max N]
 ```
 
 - `--workers`: number of network-stack owner/reactor workers; defaults to `1`.
+- `--max-requests-per-connection`: request limit per TCP connection, including the first request. Default `0` allows unlimited reuse; `1` disables reuse and `100` reproduces the former client retirement policy. Response close semantics, EOF, and idle timeouts still apply. This does not change TCP TIME_WAIT. Python/Lua launchers forward this option after the EAL separator.
+- TCP coalesces in-order acknowledgements and receive-window updates within each owner turn, piggybacking on outgoing data or a current control ACK (such as FIN+ACK) when possible and sending a pure ACK otherwise. The final active-open handshake ACK can share the first request, with a pure ACK fallback in the same turn. SYN/SYN+ACK, FIN, duplicate and out-of-order control acknowledgements retain their control path; no delayed-ACK timer is introduced.
+- After a valid RTT sample, TCP uses a 200 ms minimum data RTO, matching Linux's default policy, to recover losses before short Keep-Alive idle timeouts. The initial RTO remains 1 s; Karn protection and exponential backoff still apply. This deliberately uses a lower floor than RFC 6298's recommended 1 s; builds requiring that conservative floor can define `TCP_RTO_MIN_MS=1000`.
 - `--socket-id-max`: per-owner socket capacity, allocated at startup as `max(16384, 2 * ceil(global concurrency / active_shards))` by default. An explicit value may lower this default but must cover `max(4096, 2 * ceil(global concurrency / active_shards))`. Live tables are not resized.
 - `--stats-csv`: writes periodic statistics to the specified CSV file.
 - `--latency-csv`: per-phase, protocol and class histograms with P50/P90/P95/P99/P99.9 for scheduling, connection, first response, completion and drain latency.
 - `--dataplane-csv`: writes Main timings, packet counters and NIC counter deltas to a separate CSV file.
 - `--metrics-sample`: samples added timings every N loops; defaults to `1024`. Zero disables timing; omitting `--dataplane-csv` also disables it. Use sampled packet counts when calculating time per packet.
 - `--rx-mode`: defaults to `auto`, selecting worker RX when RSS configuration and independent queues are available, or with a single worker. Otherwise Main dispatches packets. Explicit `worker` fails if unsupported. Misrouted packets return to their socket owner; worker 0 handles ARP replies and fragment reassembly.
-- `--tx-mode`: defaults to `auto`, assigning each worker a dedicated TX queue when available and falling back to Main otherwise. Explicit `worker` requires enough queues. Each worker sends up to four bursts per turn and drains its ring on exit.
+- `--tx-mode`: defaults to `auto`, assigning each worker a dedicated TX queue when available and falling back to Main otherwise. Explicit `worker` requires enough queues. Each worker sends up to four bursts per turn. Packets not accepted by the NIC remain at the ring head for the next turn; shutdown makes a final drain attempt and accounts for discarded leftovers.
 
 - `--mtu`: sets the IPv4 MTU.
 - `--local-ip`: sets the stack's local IPv4 address; defaults to `192.168.21.2`.
