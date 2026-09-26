@@ -152,8 +152,13 @@
 #endif
 /** RFC 6298 initial data/FIN RTO before a valid RTT sample (ms). */
 #define TCP_RTO_INITIAL_MS 1000
-/** RFC 6298 lower bound for the calculated data/FIN RTO (ms). */
-#define TCP_RTO_MIN_MS 1000
+/** Calculated data/FIN RTO floor, matching Linux's 200 ms policy. A valid
+ * RTT sample is required before leaving the 1 s initial RTO. The RFC 6298
+ * conservative 1 s floor can be selected at build time when needed.
+ */
+#ifndef TCP_RTO_MIN_MS
+#define TCP_RTO_MIN_MS 200
+#endif
 /** Safety cap for exponential data/FIN RTO backoff (ms). */
 #define TCP_RTO_MAX_MS 60000
 /** First SYN retransmit timeout (ms). */

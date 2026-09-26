@@ -391,6 +391,33 @@ static void test_raw_timestamp_rtt_sample(void) {
         CHECK(!tcp_rtt_sample_ack(&sk, true, 1U, 2U, &sample));
 }
 
+static void test_rtt_loss_recovery_policy(void) {
+        struct nsock sk = {0};
+        sk.u.tcp.timestamps_ok = true;
+        tcp_rtt_reset(&sk);
+        CHECK(sk.u.tcp.rto_ms == TCP_RTO_INITIAL_MS);
+        uint32_t stamp = tcp_options_now_ms();
+        tcp_rtt_note_xmit(&sk, 100, stamp);
+        CHECK(!tcp_rtt_on_ack(&sk, 99, true, stamp));
+        CHECK(sk.u.tcp.rto_ms == TCP_RTO_INITIAL_MS);
+        CHECK(tcp_rtt_on_ack(&sk, 100, true, stamp));
+        CHECK(sk.u.tcp.rto_ms == TCP_RTO_MIN_MS);
+        tcp_rtt_on_timeout(&sk);
+        CHECK(sk.u.tcp.rto_ms == 2U * TCP_RTO_MIN_MS);
+        CHECK(sk.u.tcp.rtt_retransmitting);
+        tcp_rtt_note_xmit(&sk, 200, stamp);
+        CHECK(!tcp_rtt_on_ack(&sk, 200, true, stamp));
+        CHECK(sk.u.tcp.rto_ms == 2U * TCP_RTO_MIN_MS);
+        for (unsigned i = 0; i < 16; i++)
+                tcp_rtt_on_timeout(&sk);
+        CHECK(sk.u.tcp.rto_ms == TCP_RTO_MAX_MS);
+        tcp_rtt_on_flight_acked(&sk);
+        stamp = tcp_options_now_ms();
+        tcp_rtt_note_xmit(&sk, 300, stamp);
+        CHECK(tcp_rtt_on_ack(&sk, 300, true, stamp));
+        CHECK(sk.u.tcp.rto_ms == TCP_RTO_MIN_MS);
+}
+
 static void test_duplicate_ack_recovery_entry(void) {
         struct nsock sk;
         const struct tcp_sack_block blocks[] = {
@@ -500,6 +527,7 @@ int main(void) {
         test_dsack_and_recovery_algorithms();
         test_newreno_vtable();
         test_raw_timestamp_rtt_sample();
+        test_rtt_loss_recovery_policy();
         test_duplicate_ack_recovery_entry();
         test_dsack_emission();
         test_ofo_duplicate_dsack();
