@@ -3,12 +3,13 @@
  * @brief Compiles a strictly validated JSON scenario into a runtime plan.
  *
  * This is startup-only control-plane code.  It rejects unknown schema fields,
- * unsupported escaped strings, and out-of-range values so the owner-local hot
+ * unsupported legacy strings, and out-of-range values so the owner-local hot
  * path can consume fixed-size, pointer-stable plan data without JSON parsing.
  */
 
 #include "scenario.h"
 #include "scenario_json.h"
+#include "workflow_plan.h"
 
 #include "../proto/registry.h"
 
@@ -21,9 +22,7 @@
 #include <string.h>
 
 /** @brief Largest accepted on-disk scenario document, in bytes. */
-#define TG_SCENARIO_MAX_BYTES (64U * 1024U)
-/** @brief Tokenization bound that limits parser stack and startup work. */
-#define TG_SCENARIO_MAX_TOKENS 2048U
+#define TG_SCENARIO_MAX_BYTES (32U * 1024U * 1024U)
 
 /** @brief Releases one protocol-owned class configuration. */
 static void tg_class_plan_fini(struct tg_class_plan *class_plan) {
@@ -97,7 +96,7 @@ static int tg_parse_peer(const struct tg_json_doc *doc, int object_index,
 static bool tg_class_key_allowed(const struct tg_json_doc *doc,
                                  const jsmntok_t *key_token) {
         static const char *const common[] = {"name", "weight", "transport",
-                                             "peer"};
+                                             "peer", "transaction"};
 
         for (size_t index = 0; index < sizeof(common) / sizeof(common[0]);
              index++) {
@@ -169,6 +168,24 @@ static int tg_parse_class(const struct tg_json_doc *doc, int object_index,
         weight_index = tg_json_object_value(doc, object_index, "weight");
         transport_index = tg_json_object_value(doc, object_index, "transport");
         peer_index = tg_json_object_value(doc, object_index, "peer");
+        /* Business classes own per-step protocol/target configuration; reject
+         * mixing transaction with the legacy class-level transport or peer. */
+        int workflow = tg_json_object_value(doc, object_index, "transaction");
+        if (workflow >= 0) {
+                static const char *const fields[] = {"name", "weight",
+                                                     "transaction"};
+                if (!tg_json_object_has_only(doc, object_index, fields, 3) ||
+                    name_index < 0 || weight_index < 0 ||
+                    tg_json_copy_string(class_plan->name,
+                                        sizeof(class_plan->name), doc,
+                                        &doc->tokens[name_index]) ||
+                    tg_json_parse_u32(doc, &doc->tokens[weight_index], 1,
+                                      UINT32_MAX, &class_plan->weight))
+                        return -1;
+                class_plan->proto = &tg_workflow_proto_ops;
+                return tg_workflow_compile(doc, workflow,
+                                           &class_plan->proto_config);
+        }
         for (size_t index = 0; index < tg_proto_scenario_count(); index++) {
                 const struct tg_proto_scenario *candidate =
                     tg_proto_scenario_at(index);
@@ -215,6 +232,7 @@ static int tg_parse_class(const struct tg_json_doc *doc, int object_index,
 static int tg_parse_classes(const struct tg_json_doc *doc, int array_index,
                             struct tg_plan *plan) {
         uint64_t total_weight = 0;
+        size_t dataset_bytes = 0;
 
         if (doc == NULL || doc->tokens == NULL || plan == NULL ||
             array_index < 0 || array_index >= doc->token_count ||
@@ -235,6 +253,22 @@ static int tg_parse_classes(const struct tg_json_doc *doc, int array_index,
                 if (tg_parse_class(doc, i, class_plan) != 0) {
                         tg_class_plan_fini(class_plan);
                         return -1;
+                }
+                /* The dataset budget belongs to the whole scenario, including
+                 * native configurations that bypass the script launcher. */
+                if (class_plan->proto == &tg_workflow_proto_ops) {
+                        const struct tg_workflow_plan *wf =
+                            class_plan->proto_config;
+                        int dataset = tg_wf_member(wf, 0, "dataset");
+                        if (dataset >= 0)
+                                dataset_bytes +=
+                                    wf->doc.view.tokens[dataset].end -
+                                    wf->doc.view.tokens[dataset].start;
+                        if (dataset_bytes > 16U * 1024U * 1024U) {
+                                tg_class_plan_fini(class_plan);
+                                errno = E2BIG;
+                                return -1;
+                        }
                 }
                 total_weight += plan->classes[plan->class_count].weight;
                 if (total_weight > UINT32_MAX) {
@@ -347,9 +381,10 @@ invalid:
 int tg_plan_load_file(struct tg_plan *plan, const char *path) {
         static const char *const allowed[] = {
             "name",       "duration_sec",        "max_concurrency",
-            "target_cps", "report_interval_sec", "classes", "phases", "load_model"};
-        jsmntok_t tokens[TG_SCENARIO_MAX_TOKENS];
-        jsmn_parser parser;
+            "target_cps", "report_interval_sec", "classes",
+            "phases",     "load_model",          "seed"};
+        struct tg_document parsed = {0};
+        jsmntok_t *tokens;
         struct tg_json_doc doc;
         char *json = NULL;
         size_t length;
@@ -372,12 +407,15 @@ int tg_plan_load_file(struct tg_plan *plan, const char *path) {
         if (tg_read_file(path, &json, &length) != 0)
                 return -1;
 
-        jsmn_init(&parser);
-        token_count =
-            jsmn_parse(&parser, json, length, tokens, TG_SCENARIO_MAX_TOKENS);
-        doc.text = json;
-        doc.tokens = tokens;
-        doc.token_count = token_count;
+        if (tg_document_parse(&parsed, json, length))
+                goto out;
+        doc = parsed.view;
+        tokens = parsed.tokens;
+        token_count = doc.token_count;
+        int seed = tg_json_object_value(&doc, 0, "seed");
+        if (seed >= 0 &&
+            tg_json_parse_u32(&doc, &tokens[seed], 0, UINT32_MAX, &plan->seed))
+                goto out;
         if (token_count <= 0 || tokens[0].type != JSMN_OBJECT ||
             !tg_json_object_has_only(&doc, 0, allowed,
                                      sizeof(allowed) / sizeof(allowed[0]))) {
@@ -436,6 +474,7 @@ int tg_plan_load_file(struct tg_plan *plan, const char *path) {
                 plan->report_interval_sec = 1;
         result = 0;
 out:
+        tg_document_free(&parsed);
         free(json);
         if (result != 0)
                 tg_plan_fini(plan);

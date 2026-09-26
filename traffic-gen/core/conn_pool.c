@@ -118,6 +118,33 @@ struct tg_flow *tg_conn_pool_take_idle(
         return flow;
 }
 
+/** @copydoc tg_conn_pool_take_matching */
+struct tg_flow *
+tg_conn_pool_take_matching(struct tg_conn_pool *pool,
+                           const struct tg_class_plan *class_plan,
+                           const struct sockaddr_in *peer, const char *host) {
+        if (!pool || pool->draining)
+                return NULL;
+        int index = tg_conn_pool_class_index(pool, class_plan, false);
+        if (index < 0)
+                return NULL;
+        struct tg_flow **link = &pool->idle_heads[index];
+        while (*link) {
+                struct tg_flow *f = *link;
+                if (f->peer.sin_addr.s_addr == peer->sin_addr.s_addr &&
+                    f->peer.sin_port == peer->sin_port &&
+                    f->handle.protocol == IPPROTO_TCP &&
+                    !strcmp(f->reuse_host, host)) {
+                        *link = f->pool_next;
+                        f->pool_next = NULL;
+                        f->in_idle_pool = false;
+                        return f;
+                }
+                link = &f->pool_next;
+        }
+        return NULL;
+}
+
 struct tg_flow *tg_conn_pool_take_any_idle(struct tg_conn_pool *pool) {
         if (pool == NULL)
                 return NULL;

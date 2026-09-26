@@ -108,6 +108,9 @@ struct tg_flow {
         enum tg_flow_state state;
         struct tg_txn txn;
         struct sockaddr_in peer;
+        /* Own the Host bytes: the business configuration may be reused after completion. */
+        char reuse_host[256]; /**< Dynamic workflow reuse key; empty for legacy
+                                 flows. */
         const struct tg_class_plan *class_plan;
         struct tg_conn_pool *conn_pool;
         struct tg_flow *pool_next;

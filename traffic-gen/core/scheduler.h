@@ -51,6 +51,10 @@ struct tg_scheduler {
         uint64_t phase_start_cycles;
         /* Per-shard current-phase arrivals: consumed = attempted + skipped;
          * seen = due by last tick; their difference is the pending backlog. */
+        /* Total planned arrivals in completed phases, shared in meaning across shards. */
+        uint64_t global_arrival_offset;
+        uint64_t dispatch_ordinal; /**< Global plan ordinal, including skipped
+                                      arrivals. */
         uint64_t phase_consumed;
         uint64_t phase_seen;
         uint64_t planned_total;
@@ -102,10 +106,13 @@ unsigned int tg_scheduler_tick(struct tg_scheduler *scheduler,
  * @param scheduler Owner-local scheduler that admitted the completed flow.
  */
 void tg_scheduler_on_flow_finished(struct tg_scheduler *scheduler);
+
 /** Records allocation of a socket that remains live through TCP teardown. */
 void tg_scheduler_on_socket_created(struct tg_scheduler *scheduler);
+
 /** Releases a socket-lifecycle slot after nsock_free() finishes. */
 void tg_scheduler_on_socket_released(struct tg_scheduler *scheduler);
+
 /**
  * Apply owner-local resource hysteresis before attempting admissions.
  * @p available must be false below low water and true only above high water.

@@ -57,7 +57,44 @@ static int test_capacity_and_drain(void) {
         return 0;
 }
 
+/* Dynamic DNS/Host targets must not inherit another endpoint's idle socket. */
+/* Failed class/Host lookups must leave candidates idle for later exact matches;
+ * both dynamic destination and Host participate in connection reuse. */
+static int test_dynamic_endpoint(void) {
+        struct tg_conn_pool pool;
+        struct tg_class_plan class_a = {0}, class_b = {0};
+        struct tg_flow a = {0}, b = {0};
+        struct sockaddr_in peer = {.sin_family = AF_INET,
+                                   .sin_port = htons(80)};
+        peer.sin_addr.s_addr = htonl(0xc0000201);
+        ASSERT_TRUE(tg_conn_pool_init(&pool, 2) == 0);
+        a.peer = peer;
+        a.handle.protocol = IPPROTO_TCP;
+        strcpy(a.reuse_host, "a.test");
+        b.peer = peer;
+        b.peer.sin_addr.s_addr = htonl(0xc0000202);
+        b.handle.protocol = IPPROTO_TCP;
+        strcpy(b.reuse_host, "b.test");
+        ASSERT_TRUE(tg_conn_pool_attach(&pool, &a, &class_a) == 0);
+        ASSERT_TRUE(tg_conn_pool_attach(&pool, &b, &class_a) == 0);
+        ASSERT_TRUE(tg_conn_pool_put_idle(&pool, &a) == 0 &&
+                    tg_conn_pool_put_idle(&pool, &b) == 0);
+        ASSERT_TRUE(tg_conn_pool_take_matching(&pool, &class_b, &peer,
+                                               "a.test") == NULL);
+        ASSERT_TRUE(tg_conn_pool_take_matching(&pool, &class_a, &peer,
+                                               "b.test") == NULL);
+        ASSERT_TRUE(
+            tg_conn_pool_take_matching(&pool, &class_a, &peer, "a.test") == &a);
+        ASSERT_TRUE(tg_conn_pool_take_matching(&pool, &class_a, &b.peer,
+                                               "b.test") == &b);
+        tg_conn_pool_detach(&pool, &a);
+        tg_conn_pool_detach(&pool, &b);
+        tg_conn_pool_fini(&pool);
+        return 0;
+}
+
 int main(void) {
+        ASSERT_TRUE(test_dynamic_endpoint() == 0);
         ASSERT_TRUE(test_class_keyed_reuse() == 0);
         ASSERT_TRUE(test_capacity_and_drain() == 0);
         return EXIT_SUCCESS;

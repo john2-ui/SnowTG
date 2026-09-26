@@ -16,6 +16,7 @@ LOG_LEVEL ?= LOG_LVL_WARN
 # @brief Location of the vendored llhttp parser source tree.
 LLHTTP_DIR := ../third_party/llhttp
 # @brief Application and parser sources compiled into the executable.
+# Workflow sources compile/execute native plans; no script interpreter is linked here.
 SRCS := main_tg.c \
 	app_args.c \
 	core/reactor.c \
@@ -25,6 +26,8 @@ SRCS := main_tg.c \
 	core/scenario.c \
 	core/scenario_json.c \
 	core/value.c \
+	core/workflow_plan.c \
+	core/workflow.c \
 	core/socket_capacity.c \
 	core/scheduler.c \
 	core/stats.c \

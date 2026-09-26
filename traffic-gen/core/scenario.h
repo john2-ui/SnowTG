@@ -82,6 +82,8 @@ struct tg_phase_plan {
  * protocol configuration; workers then treat their shard plans as immutable.
  */
 struct tg_plan {
+        /* Combined with planned ordinal and step index; never uses shared RNG state. */
+        uint32_t seed; /**< Deterministic business think-time seed. */
         char name[TG_PLAN_CLASS_NAME_CAP];
         uint32_t duration_sec; /**< Sum of phase durations; excludes drain time. */
         uint32_t max_concurrency;
@@ -110,6 +112,7 @@ struct tg_plan {
  * by the launcher before reaching this strict native schema.
  */
 int tg_plan_load_file(struct tg_plan *plan, const char *path);
+
 /**
  * Return the number of active scheduling shards for a worker count.
  *
@@ -118,6 +121,7 @@ int tg_plan_load_file(struct tg_plan *plan, const char *path);
  */
 unsigned int tg_plan_active_shards(const struct tg_plan *plan,
                                    unsigned int worker_count);
+
 /**
  * Copy an immutable source plan into one scheduling shard while preserving the
  * source plan's global CPS and concurrency totals across all shards.

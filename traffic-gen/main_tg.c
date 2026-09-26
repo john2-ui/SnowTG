@@ -9,17 +9,18 @@
  */
 
 #include "app_args.h"
+#include "core/conn_pool.h"
+#include "core/dataplane_stats.h"
 #include "core/flow.h"
 #include "core/flow_pool.h"
-#include "core/conn_pool.h"
+#include "core/latency.h"
 #include "core/reactor.h"
 #include "core/scenario.h"
 #include "core/scheduler.h"
 #include "core/socket_capacity.h"
 #include "core/stats.h"
-#include "core/latency.h"
 #include "core/stats_csv.h"
-#include "core/dataplane_stats.h"
+#include "core/workflow.h"
 
 #include "../pro-stack/arp.h"
 #include "../pro-stack/config.h"
@@ -74,6 +75,7 @@ struct tg_shard {
         struct tg_scheduler scheduler;
         struct tg_stats stats;
         struct tg_latency latency;
+        struct tg_workflow_engine workflow;
         struct tg_stats_snapshot runtime_totals;
         struct tg_stats_snapshot final_snapshot;
         struct owner_io_memory_snapshot memory;
@@ -501,6 +503,16 @@ static int tg_start_class(void *ctx, const struct tg_class_plan *class_plan) {
 
         if (shard == NULL || class_plan == NULL)
                 return -1;
+        if (class_plan->proto == &tg_workflow_proto_ops) {
+                int rc = tg_workflow_start(&shard->workflow, class_plan);
+                if (rc) {
+                        tg_latency_on_start_failed(
+                            &shard->latency, shard->scheduler.phase_index,
+                            (uint32_t)(class_plan - shard->plan.classes));
+                        tg_stats_on_resource_deferred(&shard->stats);
+                }
+                return rc;
+        }
         class_config = class_plan->proto_config;
         uint32_t class_index = (uint32_t)(class_plan - shard->plan.classes);
 
@@ -595,6 +607,9 @@ static void tg_shard_tick(void *ctx, unsigned int budget) {
         tg_flow_expire(&shard->flow_map, &shard->flow_pool, now_cycles);
         if (!shard->scheduling_enabled)
                 return;
+        /* Run only after Flow callbacks return. Admission may stop while
+         * existing businesses still need later steps and think-time wakeups. */
+        tg_workflow_tick(&shard->workflow, budget);
         if (owner_io_memory_snapshot(&shard->memory) == 0) {
                 bool available = shard->scheduler.resource_paused
                                      ? shard->memory.above_high_water
@@ -606,7 +621,7 @@ static void tg_shard_tick(void *ctx, unsigned int budget) {
         shard->scheduler_starts += tg_scheduler_tick(
             &shard->scheduler, now_cycles, budget, tg_start_class, shard);
         if (tg_scheduler_is_stopped(&shard->scheduler) &&
-            !shard->conn_pool.draining)
+            shard->scheduler.active == 0 && !shard->conn_pool.draining)
                 tg_close_idle_connections(shard);
         if (shard->stats_channel != NULL &&
             tg_stats_report_due(&shard->stats, now_cycles, rte_get_timer_hz(),
@@ -1034,6 +1049,12 @@ int main(int argc, char *argv[]) {
                         rte_exit(EXIT_FAILURE, "worker %u flow map failed\n",
                                  index);
 
+                /* A business can retain idle HTTP sockets while starting DNS or
+                 * another endpoint. Legacy-only plans keep their original caps. */
+                bool has_workflows = false;
+                for (unsigned c = 0; c < plan.class_count; c++)
+                        has_workflows |=
+                            plan.classes[c].proto == &tg_workflow_proto_ops;
                 /* Build the scheduler and flow pool for active shards only. */
                 if (worker->shard.scheduling_enabled) {
                         if (tg_plan_partition(&worker->shard.plan, &plan, index,
@@ -1043,10 +1064,12 @@ int main(int argc, char *argv[]) {
                                               rte_get_timer_hz()) != 0 ||
                             tg_conn_pool_init(
                                 &worker->shard.conn_pool,
-                                worker->shard.plan.max_concurrency) != 0 ||
+                                worker->shard.plan.max_concurrency *
+                                    (has_workflows ? 2U : 1U)) != 0 ||
                             tg_flow_pool_init(
                                 &worker->shard.flow_pool,
-                                worker->shard.plan.max_concurrency) != 0)
+                                worker->shard.plan.max_concurrency *
+                                    (has_workflows ? 2U : 1U)) != 0)
                                 rte_exit(EXIT_FAILURE,
                                          "worker %u scheduler initialization "
                                          "failed\n",
@@ -1058,14 +1081,43 @@ int main(int argc, char *argv[]) {
                                      rte_get_timer_hz()) != 0)
                         rte_exit(EXIT_FAILURE, "worker %u latency allocation failed\n", index);
 
+                if (worker->shard.scheduling_enabled) {
+                        struct tg_shard *sh = &worker->shard;
+                        sh->workflow = (struct tg_workflow_engine){
+                            .plan = &sh->plan,
+                            .map = &sh->flow_map,
+                            .flows = &sh->flow_pool,
+                            .connections = &sh->conn_pool,
+                            .scheduler = &sh->scheduler,
+                            .stats = &sh->stats,
+                            .latency = &sh->latency,
+                            .created = tg_on_socket_created,
+                            .released = tg_on_socket_released,
+                            .socket_ctx = sh};
+                        if (tg_workflow_engine_init(&sh->workflow))
+                                rte_exit(EXIT_FAILURE,
+                                         "workflow allocation failed\n");
+                        if (sh->workflow.step_count)
+                                fprintf(
+                                    stderr,
+                                    "workflow_memory worker=%u bytes=%" PRIu64
+                                    " capacity=%u\n",
+                                    index, sh->workflow.memory_bytes,
+                                    sh->workflow.capacity);
+                }
                 /* Attach the reactor and start-ready stack runtime context. */
                 tg_reactor_init(&worker->reactor, tg_shard_tick, tg_on_event,
                                 &worker->shard);
                 worker->shard.reactor = &worker->reactor;
                 if (stack_runtime_worker_init(
                         &worker->runtime, worker->lcore_id,
-                        worker->flow_queue_id, socket_id_capacity + 1U, mp,
-                        worker->ring, tg_reactor_run, &worker->reactor) != 0)
+                        worker->flow_queue_id,
+                        socket_id_capacity + 1U +
+                            (has_workflows
+                                 ? 2U * worker->shard.plan.max_concurrency
+                                 : 0U),
+                        mp, worker->ring, tg_reactor_run,
+                        &worker->reactor) != 0)
                         rte_exit(EXIT_FAILURE,
                                  "worker %u runtime initialization failed\n",
                                  index);
@@ -1246,6 +1298,13 @@ int main(int argc, char *argv[]) {
                 if (tg_latency_csv_write(latency_file, &plan, latencies,
                                            schedulers, active_shards) != 0)
                         exit_status = EXIT_FAILURE;
+                /* Workers have joined: merge private step buckets exactly once. */
+                struct tg_workflow_engine *engines[RTE_MAX_LCORE];
+                for (unsigned i = 0; i < active_shards; i++)
+                        engines[i] = &workers[i].shard.workflow;
+                if (tg_workflow_csv(latency_file, &plan, engines,
+                                    active_shards))
+                        exit_status = EXIT_FAILURE;
                 if (fclose(latency_file) != 0)
                         exit_status = EXIT_FAILURE;
                 if (exit_status != EXIT_SUCCESS)
@@ -1254,6 +1313,7 @@ int main(int argc, char *argv[]) {
 
         /* Stage 12: Release per-worker and global resources before exit. */
         for (unsigned int index = 0; index < worker_count; index++) {
+                tg_workflow_engine_fini(&workers[index].shard.workflow);
                 tg_latency_fini(&workers[index].shard.latency);
                 tg_conn_pool_fini(&workers[index].shard.conn_pool);
                 tg_flow_pool_fini(&workers[index].shard.flow_pool);

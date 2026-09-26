@@ -528,6 +528,19 @@ static int record_phase(void *ctx, const struct tg_class_plan *class_plan) {
         (void)class_plan;
         uint64_t due = r->scheduler->dispatch_planned_cycles;
         r->invalid |= due < r->last_due || due > r->scheduler->last_cycles;
+        /* Global ordinals include complete earlier phases and shard offsets.
+         * These choose dataset rows independently of owner execution order. */
+        const struct tg_plan *p = r->scheduler->plan;
+        if (p->phase_count) {
+                uint64_t offset = 0;
+                for (unsigned i = 0; i < r->scheduler->phase_index; i++)
+                        offset += ((uint64_t)p->phases[i].duration_sec *
+                                   (p->phases[i].start_cps + p->phases[i].target_cps) + 1) / 2;
+                unsigned shards = p->schedule_shard_count ? p->schedule_shard_count : 1;
+                uint64_t consumed = r->scheduler->phase_consumed - 1;
+                r->invalid |= r->scheduler->dispatch_ordinal !=
+                    offset + consumed * shards + (shards == 1 ? 0 : p->schedule_shard_index);
+        }
         r->last_due = due;
         r->count[r->scheduler->phase_index]++;
         return -1;
@@ -567,6 +580,19 @@ static int test_phased_open_arrivals(void) {
         tg_scheduler_tick(&s, 8000, 0, record_phase, &r);
         ASSERT_TRUE(s.stopped && s.planned_total == 28 && s.skipped_total == 28);
         ASSERT_TRUE(s.counts[0][0].skipped == 4 && s.counts[4][0].skipped == 6);
+        /* Force backlog loss before resuming: data ordinals must include both
+         * skipped phases and skipped arrivals within the active phase. */
+        plan.max_concurrency = 1;
+        ASSERT_TRUE(tg_scheduler_init(&s, &plan, 1000) == 0);
+        memset(&r, 0, sizeof(r));
+        r.scheduler = &s;
+        tg_scheduler_start_at(&s, 0);
+        tg_scheduler_set_resource_available(&s, false);
+        tg_scheduler_tick(&s, 2500, 100, record_phase, &r);
+        uint64_t missed = s.skipped_total;
+        tg_scheduler_set_resource_available(&s, true);
+        tg_scheduler_tick(&s, 3100, 100, record_phase, &r);
+        ASSERT_TRUE(missed > 4 && s.dispatch_ordinal >= missed && !r.invalid);
         tg_plan_fini(&plan);
         /* Max supported duration/rate must not overflow the arrival integral. */
         memset(&plan, 0, sizeof(plan));

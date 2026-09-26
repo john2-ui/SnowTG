@@ -167,6 +167,11 @@ unsigned int tg_scheduler_tick(struct tg_scheduler *s, uint64_t now,
                 if (!ended)
                         break;
                 tg_skip(s, due - s->phase_consumed);
+                s->global_arrival_offset +=
+                    ((uint64_t)phase.duration_sec *
+                         (phase.start_cps + phase.target_cps) +
+                     1) /
+                    2;
                 s->phase_start_cycles += duration;
                 s->phase_index++;
                 s->phase_consumed = s->phase_seen = 0;
@@ -187,6 +192,12 @@ unsigned int tg_scheduler_tick(struct tg_scheduler *s, uint64_t now,
                s->active < s->plan->max_concurrency) {
                 uint32_t selected = tg_select(s);
                 s->dispatch_planned_cycles = tg_due_cycles(s);
+                /* Interleave shard-local consumed counts, including skipped arrivals.
+                 * Dataset selection must not depend on worker completion order. */
+                s->dispatch_ordinal =
+                    s->global_arrival_offset +
+                    s->phase_consumed * tg_shards(s) +
+                    (tg_shards(s) == 1 ? 0 : s->plan->schedule_shard_index);
                 s->counts[s->phase_index][selected].attempted++;
                 s->phase_consumed++;
                 if (start(ctx, &s->plan->classes[selected]) == 0)

@@ -45,6 +45,18 @@ void tg_conn_pool_detach(struct tg_conn_pool *pool, struct tg_flow *flow);
 struct tg_flow *tg_conn_pool_take_idle(struct tg_conn_pool *pool,
                                        const struct tg_class_plan *class_plan);
 
+/**
+ * @brief Takes an idle TCP connection matching a dynamic business request.
+ *
+ * The pool provides owner isolation. Class, actual IPv4/port, and HTTP Host
+ * must also match; a newly resolved DNS target cannot inherit an old socket.
+ * @return A detached idle Flow, or NULL without removing unmatched candidates.
+ */
+struct tg_flow *
+tg_conn_pool_take_matching(struct tg_conn_pool *pool,
+                           const struct tg_class_plan *class_plan,
+                           const struct sockaddr_in *peer, const char *host);
+
 /** Take any idle connection, used when beginning shutdown drain. */
 struct tg_flow *tg_conn_pool_take_any_idle(struct tg_conn_pool *pool);
 

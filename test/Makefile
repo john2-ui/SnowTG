@@ -77,6 +77,7 @@ SCENARIO_SCHEDULER_OBJS := $(BUILD_DIR)/test_scenario_scheduler.o \
 	$(BUILD_DIR)/tg_scenario.o \
 	$(BUILD_DIR)/tg_scenario_json.o \
 	$(BUILD_DIR)/tg_value.o \
+	$(BUILD_DIR)/tg_workflow_plan.o \
 	$(BUILD_DIR)/tg_socket_capacity.o \
 	$(BUILD_DIR)/tg_registry.o \
 	$(BUILD_DIR)/tg_scheduler.o \
@@ -410,6 +411,17 @@ $(LATENCY_TEST): test_latency.c ../traffic-gen/core/latency.c \
 	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) test_latency.c \
 		../traffic-gen/core/latency.c -o $@ $(SANITIZER_LDFLAGS)
 
-# Shared scalar objects support protocol tests without EAL or a NIC.
+# Shared scalar/compiler objects also support protocol tests without EAL or a NIC.
 $(BUILD_DIR)/tg_value.o: ../traffic-gen/core/value.c ../traffic-gen/core/value.h
 	$(CC) $(TEST_CFLAGS) -c $< -o $@
+$(BUILD_DIR)/tg_workflow_plan.o: ../traffic-gen/core/workflow_plan.c ../traffic-gen/core/workflow_plan.h
+	$(CC) $(TEST_CFLAGS) -c $< -o $@
+
+# Reuse plugin/parser objects, excluding the original HTTP test entry point.
+WORKFLOW_PROTOCOL_OBJS := $(filter-out $(BUILD_DIR)/test_http_client.o,$(HTTP_CLIENT_OBJS)) $(BUILD_DIR)/tg_dns_client.o $(BUILD_DIR)/tg_workflow_plan.o $(BUILD_DIR)/tg_scenario_json.o
+$(BUILD_DIR)/test_workflow_protocol: test_workflow_protocol.c $(WORKFLOW_PROTOCOL_OBJS)
+	$(CC) $(HTTP_CLIENT_CFLAGS) $^ -o $@ $(SANITIZER_LDFLAGS)
+.PHONY: test-workflow-protocol
+test-workflow-protocol: $(BUILD_DIR)/test_workflow_protocol
+	$(BUILD_DIR)/test_workflow_protocol
+test: test-workflow-protocol

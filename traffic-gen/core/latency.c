@@ -1,4 +1,5 @@
 #include "latency.h"
+#include "workflow.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -215,7 +216,7 @@ static void tg_csv_row(FILE *f, const char *scope, int worker,
             tg_histogram_quantile(hist, 500), tg_histogram_quantile(hist, 900),
             tg_histogram_quantile(hist, 950), tg_histogram_quantile(hist, 990),
             tg_histogram_quantile(hist, 999), hist->max_us);
-        if (g->admitted) {
+        if (g->admitted && strcmp(scope, "step") != 0) {
                 fprintf(f, ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64,
                         tg_us(g->planned_first - epoch, hz),
                         tg_us(g->planned_last - epoch, hz),
@@ -233,7 +234,7 @@ static void tg_csv_row(FILE *f, const char *scope, int worker,
                                 tg_hist_upper(i), hist->buckets[i]);
                         first = false;
                 }
-        fputs("\"\n", f);
+        fputs("\"", f);
 }
 
 static const char *const tg_metric_names[] = {
@@ -245,10 +246,12 @@ static void tg_write_group(FILE *f, const char *scope, int worker,
                            const char *cls, const struct tg_latency_group *g,
                            uint64_t attempts, uint64_t skipped, uint64_t epoch,
                            uint64_t hz) {
-        for (unsigned int m = 0; m < TG_LAT_METRICS; m++)
+        for (unsigned int m = 0; m < TG_LAT_METRICS; m++) {
                 tg_csv_row(f, scope, worker, phase, proto, cls,
                            tg_metric_names[m], &g->hist[m], g, attempts,
                            skipped, epoch, hz);
+                fputs(",,0,0,0,0\n", f);
+        }
 }
 
 int tg_latency_csv_write(FILE *f, const struct tg_plan *plan,
@@ -260,7 +263,8 @@ int tg_latency_csv_write(FILE *f, const struct tg_plan *plan,
               "admitted,success,failed,start_failed,samples,p50_us,p90_us,p95_"
               "us,p99_us,"
               "p999_us,max_us,planned_first_us,planned_last_us,actual_first_us,"
-              "actual_last_us,buckets\n",
+              "actual_last_us,buckets,step,reached,started,branch_skipped,not_"
+              "reached\n",
               f);
         struct tg_latency_group *merged = calloc(1, sizeof(*merged));
         if (!merged)
@@ -346,7 +350,37 @@ int tg_latency_csv_write(FILE *f, const struct tg_plan *plan,
                 tg_csv_row(f, w < count ? "worker" : "run",
                            w < count ? (int)w : -1, "drain", "all", "all",
                            "drain", &merged->hist[0], merged, 0, 0, epoch, hz);
+                fputs(",,0,0,0,0\n", f);
         }
         free(merged);
+        return ferror(f) ? -1 : 0;
+}
+
+/**
+ * @brief Writes one merged step histogram using the common CSV representation.
+ *
+ * Internal failed includes start_failed; split them so CSV consumers can enforce
+ * reached = started + start_failed and started = success + failed independently.
+ * @return 0 on success; -1 on allocation or stream failure.
+ */
+int tg_latency_csv_step(FILE *f, const char *phase, const char *cls,
+                        const char *protocol, const char *step,
+                        const char *metric, const struct tg_histogram *hist,
+                        const struct tg_step_counts *n) {
+        struct tg_latency_group *g = calloc(1, sizeof(*g));
+        if (!g)
+                return -1;
+        /* No admission timestamp range is exported for merged step rows. */
+        g->admitted = n->started;
+        g->success = n->success;
+        g->failed = n->failed - n->start_failed;
+        g->start_failed = n->start_failed;
+        tg_csv_row(f, "step", -1, phase, protocol, cls, metric, hist, g,
+                   n->reached, 0, 0, 1);
+        fputc(',', f);
+        tg_csv_text(f, step);
+        fprintf(f, ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 "\n",
+                n->reached, n->started, n->branch_skipped, n->not_reached);
+        free(g);
         return ferror(f) ? -1 : 0;
 }
