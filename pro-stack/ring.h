@@ -10,6 +10,7 @@
 #define NETARCH_RING_H
 
 #include <rte_ring.h>
+#include <rte_ring_peek.h>
 
 /**
  * @brief A pair of single-producer/consumer style rings.

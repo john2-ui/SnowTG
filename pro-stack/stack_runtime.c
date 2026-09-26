@@ -34,7 +34,7 @@ void stack_runtime_tx_drain(struct stack_runtime_worker *worker,
                 return;
         for (unsigned int burst = 0; burst < burst_budget; burst++) {
                 struct rte_mbuf *packets[BURST_SIZE];
-                unsigned int count = rte_ring_sc_dequeue_burst(
+                unsigned int count = rte_ring_dequeue_burst_start(
                     worker->ring->out, (void **)packets, BURST_SIZE, NULL);
                 if (count == 0)
                         break;
@@ -46,11 +46,21 @@ void stack_runtime_tx_drain(struct stack_runtime_worker *worker,
                         worker->metrics.nic_tx_sampled_packets += sent;
                         worker->metrics.nic_tx_sampled_bursts++;
                 }
-                for (unsigned int i = sent; i < count; i++)
-                        rte_pktmbuf_free(packets[i]);
+                /* Keep unsent packets at the head of this SPSC ring. NIC
+                 * descriptor pressure is backpressure, not packet loss.
+                 * At shutdown producers have stopped; reclaim any leftovers.
+                 */
+                if (burst_budget == UINT_MAX) {
+                        for (unsigned int i = sent; i < count; i++)
+                                rte_pktmbuf_free(packets[i]);
+                        worker->metrics.tx_nic_drops += count - sent;
+                }
+                rte_ring_dequeue_finish(worker->ring->out,
+                    burst_budget == UINT_MAX ? count : sent);
                 worker->metrics.tx_packets += sent;
                 worker->metrics.tx_bursts++;
-                worker->metrics.tx_nic_drops += count - sent;
+                if (sent != count && burst_budget != UINT_MAX)
+                        break;
         }
 }
 

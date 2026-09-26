@@ -145,11 +145,10 @@ int main(int argc, char *argv[]) {
                 ipv4_reassembly_maintain(&reassembly, now_cycles);
 
                 struct rte_mbuf *tx[BURST_SIZE];
-                unsigned int nb_tx = rte_ring_sc_dequeue_burst(
+                unsigned int nb_tx = rte_ring_dequeue_burst_start(
                     ring->out, (void **)tx, BURST_SIZE, NULL);
                 unsigned int sent =
                     rte_eth_tx_burst(g_net.port_id, 0, tx, nb_tx);
-                for (unsigned int i = sent; i < nb_tx; i++)
-                        rte_pktmbuf_free(tx[i]);
+                rte_ring_dequeue_finish(ring->out, sent);
         }
 }

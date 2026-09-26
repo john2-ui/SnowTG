@@ -343,7 +343,7 @@ static void tg_close_idle_connections(struct tg_shard *shard) {
 }
 
 static void tg_transmit(struct tg_worker *worker, struct rte_mbuf **tx,
-                         unsigned int count, bool sample) {
+                         unsigned int count, bool sample, bool shutdown) {
         uint64_t start = sample ? rte_get_timer_cycles() : 0;
         unsigned int sent = rte_eth_tx_burst(g_net.port_id,
                                             worker->tx_queue_id, tx, count);
@@ -351,27 +351,30 @@ static void tg_transmit(struct tg_worker *worker, struct rte_mbuf **tx,
                 g_dataplane.main.nic_tx_cycles += rte_get_timer_cycles() - start;
                 g_dataplane.main.sampled_tx_packets += sent;
         }
-        for (unsigned int i = sent; i < count; i++)
-                rte_pktmbuf_free(tx[i]);
-        if (sent != count)
-                atomic_fetch_add(&worker->shard.tx_nic_drops, count - sent);
+        unsigned int dropped = shutdown ? count - sent : 0;
+        if (shutdown) {
+                for (unsigned int i = sent; i < count; i++)
+                        rte_pktmbuf_free(tx[i]);
+                atomic_fetch_add(&worker->shard.tx_nic_drops, dropped);
+        }
+        rte_ring_dequeue_finish(worker->ring->out, shutdown ? count : sent);
         if (g_dataplane.file != NULL) {
                 g_dataplane.main.tx_burst_calls++;
                 g_dataplane.main.tx_packets += sent;
                 g_dataplane.main.tx_partial_bursts += sent != count;
-                g_dataplane.main.tx_nic_drops += count - sent;
+                g_dataplane.main.tx_nic_drops += dropped;
         }
 }
 
 static void tg_drain_tx_ring(struct tg_worker *worker) {
         for (;;) {
                 struct rte_mbuf *tx[BURST_SIZE];
-                unsigned int nb_tx = rte_ring_sc_dequeue_burst(
+                unsigned int nb_tx = rte_ring_dequeue_burst_start(
                     worker->ring->out, (void **)tx, BURST_SIZE, NULL);
                 if (nb_tx == 0)
                         return;
 
-                tg_transmit(worker, tx, nb_tx, false);
+                tg_transmit(worker, tx, nb_tx, false, true);
         }
 }
 
@@ -1234,12 +1237,12 @@ int main(int argc, char *argv[]) {
                 for (unsigned int index = 0; !direct_tx && index < worker_count; index++) {
                         struct tg_worker *worker = &workers[index];
                         struct rte_mbuf *tx[BURST_SIZE];
-                        unsigned int nb_tx = rte_ring_sc_dequeue_burst(
+                        unsigned int nb_tx = rte_ring_dequeue_burst_start(
                             worker->ring->out, (void **)tx, BURST_SIZE, NULL);
                         if (g_dataplane.file != NULL)
                                 g_dataplane.main.tx_ring_polls++;
                         if (nb_tx != 0)
-                                tg_transmit(worker, tx, nb_tx, sample);
+                                tg_transmit(worker, tx, nb_tx, sample, false);
                 }
                 if (sample && !direct_tx)
                         g_dataplane.main.tx_ring_scan_cycles +=

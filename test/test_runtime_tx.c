@@ -25,42 +25,59 @@ struct tx_case {
         struct stack_runtime_worker worker;
         struct inout_ring ring;
         unsigned int phase;
+        unsigned int next_packet;
 };
 
 /** Verifies queue ownership and limits how many packets reach the null PMD. */
 static uint16_t limit_tx(uint16_t port, uint16_t queue,
                          struct rte_mbuf **packets, uint16_t count, void *ctx) {
         struct tx_case *test = ctx;
-        (void)packets;
         assert(port == test->worker.port_id);
         assert(queue == test->worker.tx_queue_id);
         assert(rte_lcore_id() == test->worker.lcore_id);
-        return test->phase == 0 ? 0 : test->phase == 1 ? count / 2 : count;
+        uint16_t accepted = test->phase == 0 ? 0 : test->phase == 1 ? count / 2 : count;
+        for (uint16_t i = 0; i < accepted; i++) {
+                uint32_t sequence;
+                memcpy(&sequence, rte_pktmbuf_mtod(packets[i], void *), sizeof(sequence));
+                assert(sequence == test->next_packet++);
+        }
+        return accepted;
 }
 
 /** Runs on the owner lcore to check bounded drains and final unsampled drain. */
 static int drain_case(void *ctx) {
         struct tx_case *test = ctx;
         struct stack_runtime_worker *worker = &test->worker;
-        /* Each budgeted call dequeues one burst, even when TX rejects packets. */
+        /* A blocked NIC must preserve every queued packet for the next turn. */
         stack_runtime_tx_drain(worker, 1, true);
-        assert(rte_ring_count(test->ring.out) == 4 * BURST_SIZE + 3);
-        assert(worker->metrics.tx_nic_drops == BURST_SIZE);
+        assert(rte_ring_count(test->ring.out) == 5 * BURST_SIZE + 3);
+        assert(worker->metrics.tx_nic_drops == 0);
         test->phase = 1;
         stack_runtime_tx_drain(worker, 1, true);
-        assert(rte_ring_count(test->ring.out) == 3 * BURST_SIZE + 3);
-        /* Finish the three full bursts and short tail without timing samples. */
+        assert(rte_ring_count(test->ring.out) == 5 * BURST_SIZE + 3 - BURST_SIZE / 2);
+        /* The next turn accepts all preserved packets, including the tail. */
         test->phase = 2;
         stack_runtime_tx_drain(worker, UINT_MAX, false);
         assert(rte_ring_empty(test->ring.out));
-        assert(worker->metrics.tx_nic_drops == BURST_SIZE + BURST_SIZE / 2);
-        assert(worker->metrics.tx_packets == 3 * BURST_SIZE + 3 + BURST_SIZE / 2);
-        assert(worker->metrics.tx_bursts == 6);
+        assert(worker->metrics.tx_nic_drops == 0);
+        assert(worker->metrics.tx_packets == 5 * BURST_SIZE + 3);
+        assert(worker->metrics.tx_bursts == 7);
         assert(worker->metrics.nic_tx_sampled_bursts == 2);
         assert(worker->metrics.nic_tx_sampled_packets == BURST_SIZE / 2);
         /* Polling an empty ring must not add a TX burst. */
         stack_runtime_tx_drain(worker, UINT_MAX, false);
-        assert(worker->metrics.tx_bursts == 6);
+        assert(worker->metrics.tx_bursts == 7);
+        assert(test->next_packet == 5 * BURST_SIZE + 3);
+        /* Final shutdown must reclaim packets even if the NIC stays blocked. */
+        for (unsigned int i = 0; i < 3; i++) {
+                struct rte_mbuf *m = rte_pktmbuf_alloc(worker->mp);
+                assert(m != NULL);
+                assert(rte_ring_sp_enqueue(test->ring.out, m) == 0);
+        }
+        test->phase = 0;
+        stack_runtime_tx_drain(worker, UINT_MAX, false);
+        assert(rte_ring_empty(test->ring.out));
+        assert(worker->metrics.tx_nic_drops == 3);
         return 0;
 }
 
@@ -82,6 +99,7 @@ int main(int argc, char **argv) {
                     RING_F_SP_ENQ | RING_F_SC_DEQ);
                 assert(cases[i].ring.out != NULL);
                 cases[i].worker.ring = &cases[i].ring;
+                cases[i].worker.mp = mp;
                 cases[i].worker.port_id = 0;
                 cases[i].worker.tx_queue_id = i;
                 cases[i].worker.lcore_id = i + 1;
@@ -100,10 +118,12 @@ int main(int argc, char **argv) {
                 for (unsigned int i = 0; i < workers; i++) {
                         memset(&cases[i].worker.metrics, 0, sizeof(cases[i].worker.metrics));
                         cases[i].phase = 0;
+                        cases[i].next_packet = 0;
                         for (unsigned int p = 0; p < 5 * BURST_SIZE + 3; p++) {
                                 struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mp);
                                 assert(mbuf != NULL);
                                 assert(rte_pktmbuf_append(mbuf, 64) != NULL);
+                                memcpy(rte_pktmbuf_mtod(mbuf, void *), &p, sizeof(p));
                                 assert(rte_ring_sp_enqueue(cases[i].ring.out, mbuf) == 0);
                         }
                         /* The Main lcore cannot consume a worker-owned ring. */
