@@ -78,6 +78,7 @@ enum tg_flow_result {
  */
 typedef void (*tg_flow_finish_fn)(void *ctx, const struct tg_flow *flow,
                                   enum tg_flow_result result);
+
 /** Observes creation of an owner-local TCP socket before connect begins. */
 typedef void (*tg_flow_socket_created_fn)(void *ctx);
 
@@ -91,6 +92,8 @@ struct tg_flow_map {
         struct tg_flow **by_socket_id;
         uint32_t capacity;
         uint16_t owner_lcore;
+        uint64_t expire_interval_cycles; /**< Cached one-millisecond interval. */
+        uint64_t next_expire_cycles; /**< Earliest next full timeout scan. */
 };
 
 /**
@@ -143,6 +146,7 @@ struct tg_flow {
  * @return 0 on success; -1 with @c errno set otherwise.
  */
 int tg_flow_map_init(struct tg_flow_map *map, uint16_t owner_lcore);
+
 /** @brief Allocates a socket-id map with an explicit owner capacity. */
 int tg_flow_map_init_with_capacity(struct tg_flow_map *map,
                                    uint16_t owner_lcore, uint32_t capacity);
@@ -249,7 +253,10 @@ void tg_flow_close_connection(struct tg_flow_map *map,
                               bool finish_transaction,
                               enum tg_flow_result result);
 
-/** Reclaims owner-local UDP and TCP flows whose deadlines have expired. */
+/** Reclaims expired UDP/TCP flows, scanning at most once per millisecond.
+ * The first call scans immediately. Detection may lag by one scan interval
+ * plus worker scheduling delay; packet processing remains unthrottled.
+ */
 void tg_flow_expire(struct tg_flow_map *map, struct tg_flow_pool *pool,
                     uint64_t now_cycles);
 

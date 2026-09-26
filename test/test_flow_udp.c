@@ -595,7 +595,48 @@ int main(int argc, char **argv) {
         assert(tg_flow_map_lookup(&map, old_handle) == NULL);
         flow->deadline_cycles = 1;
         tg_flow_expire(&map, &pool, 2);
+        assert(finish.calls == 3);
+        assert(only_flow(&map) == flow);
+
+        uint64_t scan_interval = rte_get_timer_hz() / 1000U +
+                                 (rte_get_timer_hz() % 1000U != 0);
+        assert(scan_interval > 1);
+        tg_flow_expire(&map, &pool, 2 + scan_interval - 1);
+        assert(finish.calls == 3);
+        assert(only_flow(&map) == flow);
+
+        /* A second map on this owner must not inherit the first map's gate. */
+        struct tg_flow_map other_map;
+        struct finish_context other_finish = {0};
+        assert(tg_flow_map_init_with_capacity(&other_map, rte_lcore_id(), 16) == 0);
+        struct tg_flow *other_flow =
+            start_udp_flow(&other_map, &pool, &peer, &other_finish);
+        assert(other_flow != NULL);
+        other_flow->deadline_cycles = 1;
+        tg_flow_expire(&other_map, &pool, 2);
+        assert(other_finish.calls == 1);
+        assert(other_finish.result == TG_FLOW_RESULT_IO_FAILURE);
+        assert(only_flow(&other_map) == NULL);
+        tg_flow_map_fini(&other_map);
+
+        tg_flow_expire(&map, &pool, 2 + scan_interval);
         assert(finish.calls == 4);
+        assert(finish.result == TG_FLOW_RESULT_IO_FAILURE);
+        assert(only_flow(&map) == NULL);
+
+        /* Delayed turns scan once, and unexpired flows remain alive. */
+        uint64_t delayed_scan = 2 + 10 * scan_interval;
+        flow = start_udp_flow(&map, &pool, &peer, &finish);
+        assert(flow != NULL);
+        flow->deadline_cycles = delayed_scan + 1;
+        tg_flow_expire(&map, &pool, delayed_scan);
+        tg_flow_expire(&map, &pool, delayed_scan + 1);
+        assert(finish.calls == 4);
+        assert(only_flow(&map) == flow);
+        tg_flow_expire(&map, &pool, delayed_scan + scan_interval);
+        assert(finish.calls == 5);
+        assert(only_flow(&map) == NULL);
+        assert(pool.free_count == pool.capacity);
 
         drain_output_ring();
         drain_ready_events();

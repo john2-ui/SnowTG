@@ -55,6 +55,11 @@ int tg_flow_map_init_with_capacity(struct tg_flow_map *map,
 
         map->capacity = capacity;
         map->owner_lcore = owner_lcore;
+        uint64_t timer_hz = rte_get_timer_hz();
+        map->expire_interval_cycles = timer_hz / 1000U +
+                                       (timer_hz % 1000U != 0);
+        if (map->expire_interval_cycles == 0)
+                map->expire_interval_cycles = 1;
         return 0;
 }
 
@@ -758,6 +763,10 @@ void tg_flow_expire(struct tg_flow_map *map, struct tg_flow_pool *pool,
                     uint64_t now_cycles) {
         if (map == NULL || pool == NULL || map->by_socket_id == NULL)
                 return;
+        if (now_cycles < map->next_expire_cycles)
+                return;
+        /* Schedule from this scan, without catch-up scans after a busy turn. */
+        map->next_expire_cycles = now_cycles + map->expire_interval_cycles;
 
         for (uint32_t socket_id = 0; socket_id < map->capacity; socket_id++) {
                 struct tg_flow *flow = map->by_socket_id[socket_id];
