@@ -1956,19 +1956,16 @@ static int tcp_state_syn_sent(struct nsock *sk, struct rte_tcp_hdr *hdr,
         tcp_sndbuf_reset(&sk->u.tcp.sndbuf, sk->u.tcp.sent_seq);
         tcp_sack_state_reset(&sk->u.tcp, sk->u.tcp.sent_seq);
 
-        struct tcp_fragment *ack_f = tcp_make_fragment(
-            sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
-        if (tcp_enqueue_fragment(sk, ack_f) != 0) {
-                /* Stay SYN_SENT; RTO may retry SYN. Do not wake connect yet. */
-                return 0;
-        }
-
         (void)owner_timer_cancel(&sk->u.tcp.timer);
         tcp_update_snd_wnd(sk, ntohl(hdr->sent_seq), ntohl(hdr->recv_ack),
                            ntohs(hdr->rx_win), 0);
         tcp_rtt_reset(sk);
         tcp_cc_init_default(&sk->u.tcp, sk->u.tcp.syn_retransmitted);
         tcp_stream_set_status(sk, TCP_STATUS_ESTABLISHED);
+        /* The first application segment can carry the final handshake ACK.
+         * Without data, the same owner turn still flushes a pure ACK. */
+        sk->u.tcp.ack_pending = true;
+        tcp_mark_tx_dirty(sk);
 
         LOG_TCP_INFO("tcp handshake done (active) " TCP_ID_FMT " peer " IP_FMT
                      ":%u",
@@ -2126,17 +2123,25 @@ static bool tcp_receive_stream_segment(struct nsock *sk,
         if (sk->u.tcp.recv_ack != old_recv_ack)
                 tcp_options_note_receive_progress(sk);
 
-        /* ACK accepted bytes, the current SACK view, or the established EOF. */
-        struct tcp_fragment *ack_f = tcp_make_fragment(
-            sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
-        uint16_t ack_win = ack_f == NULL ? 0 : ack_f->rx_win;
-        (void)tcp_enqueue_fragment(sk, ack_f);
-        LOG_TCP_DEBUG(TCP_SK_FMT " event=ack-queue reason=%s ack=%u win=%u",
-                      TCP_SK_ARG(sk),
-                      has_fin       ? "data-fin"
-                      : payload_len ? "data"
-                                    : "ooo",
-                      sk->u.tcp.recv_ack, ack_win);
+        /* Ordinary cumulative ACKs can share the next application segment.
+         * Keep FIN, duplicate and out-of-order ACKs on the immediate path. */
+        if (!has_fin && ntohl(hdr->sent_seq) == old_recv_ack &&
+            sk->u.tcp.recv_ack != old_recv_ack && sk->u.tcp.ofo == NULL &&
+            !sk->u.tcp.dsack_pending && !sk->u.tcp.peer_eof) {
+                sk->u.tcp.ack_pending = true;
+                tcp_mark_tx_dirty(sk);
+        } else {
+                struct tcp_fragment *ack_f = tcp_make_fragment(
+                    sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
+                uint16_t ack_win = ack_f == NULL ? 0 : ack_f->rx_win;
+                (void)tcp_enqueue_fragment(sk, ack_f);
+                LOG_TCP_DEBUG(TCP_SK_FMT " event=ack-queue reason=%s ack=%u win=%u",
+                              TCP_SK_ARG(sk),
+                              has_fin       ? "data-fin"
+                              : payload_len ? "data"
+                                            : "ooo",
+                              sk->u.tcp.recv_ack, ack_win);
+        }
 
         if (nsock_tcp_rx_count(sk) != 0 || sk->u.tcp.peer_eof) {
                 socket_owner_wake_recv(sk);
@@ -2965,6 +2970,7 @@ tcp_tx_flush_recovery_retransmit(struct nsock *sk, struct rte_mempool *mp) {
                 goto out;
         }
 
+        sk->u.tcp.ack_pending = false;
         tcp_sack_commit_candidate(&sk->u.tcp, seq + seglen);
         tcp_rtt_on_retransmit(sk);
         struct tcp_cc_tx_event cc_tx = {
@@ -3099,6 +3105,7 @@ tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
                 goto out;
         }
 
+        sk->u.tcp.ack_pending = false;
         LOG_TCP_PACKET(TCP_SK_FMT " event=tx-data seq=%u ack=%u len=%u una=%u",
                        TCP_SK_ARG(sk), f.sent_seq, f.recv_ack, seglen,
                        sk->u.tcp.snd_una);
@@ -3231,6 +3238,13 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
                                         return SOCK_TX_FLUSH_RETRY;
                                 return SOCK_TX_FLUSH_IDLE;
                         }
+                        /* A current control ACK (including FIN+ACK) can also
+                         * satisfy the pending receive/window update. */
+                        if ((f->tcp_flags & RTE_TCP_ACK_FLAG) &&
+                            !(f->tcp_flags & RTE_TCP_SYN_FLAG) &&
+                            f->recv_ack == sk->u.tcp.recv_ack &&
+                            f->rx_win == tcp_wire_rcv_wnd(sk, f->tcp_flags))
+                                sk->u.tcp.ack_pending = false;
                         /*
                          * App data uses sndbuf + data RTO (kept until ACK).
                          * Control segments on send_buf (SYN / SYN+ACK / FIN)
@@ -3279,6 +3293,18 @@ int tcp_tx_flush(struct nsock *sk, struct rte_mempool *mp) {
                         return SOCK_TX_FLUSH_DESTROYED;
                 if (sndbuf_result == TCP_SNDBUF_SENT)
                         continue;
+
+                /* No data could carry this ACK. Flush it now, even when the
+                 * peer window or cwnd blocks data; never wait for a timer. */
+                if (sk->u.tcp.ack_pending) {
+                        struct tcp_fragment *ack_f = tcp_make_fragment(
+                            sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq,
+                            sk->u.tcp.recv_ack);
+                        if (tcp_enqueue_fragment(sk, ack_f) != 0)
+                                return SOCK_TX_FLUSH_RETRY;
+                        sk->u.tcp.ack_pending = false;
+                        continue;
+                }
 
                 /* A congestion/window-limited close defers FIN until every
                  * buffered payload byte has received a sequence number. */
@@ -3416,16 +3442,10 @@ ssize_t tcp_recv(struct nsock *sk, void *buf, size_t len,
         if (!tcp_apply_peer_eof(sk))
                 return (ssize_t)n;
 
-        /* Promptly advertise space, including recovery from a zero window. */
-        struct tcp_fragment *ack_f = tcp_make_fragment(
-            sk, RTE_TCP_ACK_FLAG, sk->u.tcp.sent_seq, sk->u.tcp.recv_ack);
-        uint16_t ack_win = ack_f == NULL ? 0 : ack_f->rx_win;
-        (void)tcp_enqueue_fragment(sk, ack_f);
-        LOG_TCP_DEBUG(TCP_SK_FMT
-                      " event=ack-queue reason=window-update ack=%u win=%u "
-                      "app_read=%zu rcvbuf_used=%u",
-                      TCP_SK_ARG(sk), sk->u.tcp.recv_ack, ack_win, n,
-                      sk->u.tcp.rcvbuf_used);
+        /* Advertise the final window once per owner turn, on data if possible.
+         * tcp_tx_flush also sends this when no data is eligible (zero window). */
+        sk->u.tcp.ack_pending = true;
+        tcp_mark_tx_dirty(sk);
 
         if (b->off < b->len)
                 return (ssize_t)n;
@@ -3452,6 +3472,7 @@ static void tcp_drain_send(struct nsock *sk) {
         while ((f = nsock_tcp_tx_dequeue(sk)) != NULL) {
                 tcp_fragment_free(f);
         }
+        sk->u.tcp.ack_pending = false;
         tcp_sndbuf_reset(&sk->u.tcp.sndbuf, sk->u.tcp.sent_seq);
         sk->u.tcp.snd_una = sk->u.tcp.sent_seq;
         tcp_sack_score_clear(sk);

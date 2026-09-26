@@ -446,3 +446,12 @@ $(BUILD_DIR)/test_flow_tcp: test_flow_tcp.c ../traffic-gen/core/flow.c \
 		$(filter-out $(BUILD_DIR)/test_http_client.o,$(HTTP_CLIENT_OBJS)) \
 		$(STACK_LIB) -Wl,--wrap=owner_io_recv -Wl,--wrap=owner_io_send \
 		-Wl,--wrap=owner_io_close -o $@ $(DPDK_LIBS) $(SANITIZER_LDFLAGS)
+
+.PHONY: test-tcp-ack
+test: test-tcp-ack
+test-tcp-ack: $(BUILD_DIR)/test_tcp_ack
+	$(BUILD_DIR)/test_tcp_ack --no-huge --no-pci --file-prefix tcp-ack-test
+
+$(BUILD_DIR)/test_tcp_ack: test_tcp_ack.c $(STACK_LIB) | $(BUILD_DIR)
+	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) test_tcp_ack.c $(STACK_LIB) \
+		-o $@ $(DPDK_LIBS) $(SANITIZER_LDFLAGS)

@@ -327,6 +327,8 @@ struct tcp_stream {
         struct tcp_sack_block sack_history[TCP_SACK_MAX_BLOCKS]; /**< MRU. */
         /** One-shot RFC 2883 duplicate block for the next generated ACK. */
         bool dsack_pending;
+        /** In-order ACK/window update, piggybacked or flushed this owner turn. */
+        bool ack_pending;
         struct tcp_sack_block dsack_block; /**< Duplicate half-open range. */
         /** SACK blocks decoded from the segment currently in ingress. */
         uint8_t rx_sack_count;
