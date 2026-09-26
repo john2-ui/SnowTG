@@ -28,8 +28,6 @@
 #define TG_FLOW_TCP_RESPONSE_TIMEOUT_MS 5000U
 /** @brief Default timeout for an idle reusable TCP connection. */
 #define TG_FLOW_TCP_IDLE_TIMEOUT_MS 30000U
-/** @brief Maximum logical requests served by one reusable TCP connection. */
-#define TG_FLOW_TCP_MAX_REQUESTS 100U
 
 /** @brief Transport lifecycle states for a short-lived TCP flow. */
 enum tg_flow_state {
@@ -44,6 +42,8 @@ enum tg_flow_state {
         TG_FLOW_RECEIVING,
         /** @brief TCP connection has no active transaction and is reusable. */
         TG_FLOW_IDLE,
+        /** Response accounted; waiting for the peer's promised FIN. */
+        TG_FLOW_CLOSING,
         /** @brief Protocol completed successfully before object reclamation. */
         TG_FLOW_DONE,
         /** @brief Terminal transport or protocol failure before reclamation. */
@@ -121,7 +121,7 @@ struct tg_flow {
         bool completion_notified;
         tg_flow_finish_fn on_finish;
         void *on_finish_ctx;
-        uint32_t requests_started;
+        uint64_t requests_started; /**< Physical-connection lifetime counter. */
         /** Reassigned for each logical transaction, including Keep-Alive reuse. */
         uint64_t planned_cycles; /**< Open-arrival deadline, before admission. */
         uint32_t load_phase_index; /**< Immutable attribution across phase transitions. */
@@ -208,6 +208,8 @@ int tg_flow_start_tcp(
  *
  * The connection remains mapped and owned by the same worker. The caller
  * accounts logical admission separately from physical socket creation.
+ * ESTALE means the idle socket is no longer reusable and no new request bytes
+ * were sent; callers may close it and create a fresh connection safely.
  */
 int tg_flow_rearm_tcp(struct tg_flow *flow, const struct tg_proto_ops *proto,
                       const void *class_config, const uint8_t *request,

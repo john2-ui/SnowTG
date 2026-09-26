@@ -21,6 +21,7 @@ struct tg_conn_pool {
         struct tg_flow *idle_heads[TG_PLAN_MAX_CLASSES];
         const struct tg_class_plan *class_keys[TG_PLAN_MAX_CLASSES];
         uint32_t max_connections;
+        uint32_t max_requests; /**< Requests per TCP connection; 0 is unlimited. */
         uint32_t connections;
         bool draining;
 };

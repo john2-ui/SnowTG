@@ -23,6 +23,7 @@ static int test_defaults(void) {
         ASSERT_TRUE(tg_app_config_parse(1, argv, &config) == 0);
         ASSERT_TRUE(config.worker_count == 1);
         ASSERT_TRUE(config.socket_id_max_override == 0);
+        ASSERT_TRUE(config.max_requests_per_connection == 0);
         ASSERT_TRUE(config.stats_csv_path == NULL);
         ASSERT_TRUE(config.latency_csv_path == NULL);
         ASSERT_TRUE(config.dataplane_csv_path == NULL);
@@ -139,9 +140,31 @@ static int test_invalid_options(void) {
         return 0;
 }
 
+static int test_connection_request_limit(void) {
+        struct tg_app_config config;
+        char *args[] = {"traffic-gen", "--max-requests-per-connection", "0"};
+        const char *valid[] = {"0", "1", "100", "4294967295"};
+        const uint32_t expected[] = {0, 1, 100, UINT32_MAX};
+        for (unsigned i = 0; i < 4; i++) {
+                args[2] = (char *)valid[i];
+                ASSERT_TRUE(tg_app_config_parse(3, args, &config) == 0);
+                ASSERT_TRUE(config.max_requests_per_connection == expected[i]);
+        }
+        const char *invalid[] = {"-1", "4294967296", "1.5", "", "abc"};
+        for (unsigned i = 0; i < 5; i++) {
+                args[2] = (char *)invalid[i];
+                ASSERT_TRUE(expect_invalid(3, args) == 0);
+        }
+        ASSERT_TRUE(expect_invalid(2, args) == 0);
+        char *twice[] = {"traffic-gen", "--max-requests-per-connection", "0",
+                         "--max-requests-per-connection", "100"};
+        ASSERT_TRUE(expect_invalid(5, twice) == 0);
+        return 0;
+}
+
 int main(void) {
         if (test_defaults() != 0 || test_overrides_and_order() != 0 ||
-            test_invalid_options() != 0)
+            test_invalid_options() != 0 || test_connection_request_limit() != 0)
                 return 1;
         puts("app argument tests passed");
         return 0;

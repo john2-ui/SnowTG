@@ -588,12 +588,15 @@ static int network(struct tg_business *b) {
                         flow->on_finish_ctx = b;
                         if (tg_flow_rearm_tcp(flow, proto, config,
                                               (uint8_t *)b->request, length)) {
+                                bool stale = errno == ESTALE;
                                 tg_flow_close_connection(
                                     e->map, e->flows, flow, false,
                                     TG_FLOW_RESULT_IO_FAILURE);
-                                return -1;
-                        }
-                        tg_stats_on_connection_reused(e->stats);
+                                if (!stale)
+                                        return -1;
+                                flow = NULL;
+                        } else
+                                tg_stats_on_connection_reused(e->stats);
                 }
         } else {
                 memset(&b->dns, 0, sizeof(b->dns));

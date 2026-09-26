@@ -34,6 +34,8 @@ struct tg_txn {
         uint64_t response_bytes;
         /** True when the completed response permits TCP connection reuse. */
         bool connection_reusable;
+        /** The peer is expected to close after this complete response. */
+        bool peer_closes;
 };
 
 /**

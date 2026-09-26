@@ -431,3 +431,18 @@ test: test-workflow-protocol
 test-workflow-scripts:
 	python3 test_workflow_scripts.py
 test: test-workflow-scripts
+
+.PHONY: test-flow-tcp
+test-flow-tcp: $(BUILD_DIR)/test_flow_tcp
+	$(BUILD_DIR)/test_flow_tcp --no-huge --no-pci --file-prefix flow-tcp-test
+test: test-flow-tcp
+
+$(BUILD_DIR)/test_flow_tcp: test_flow_tcp.c ../traffic-gen/core/flow.c \
+		../traffic-gen/core/flow.h ../traffic-gen/core/flow_pool.c \
+		../traffic-gen/core/conn_pool.c $(HTTP_CLIENT_OBJS) $(STACK_LIB)
+	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) $(HTTP_CLIENT_CFLAGS) \
+		test_flow_tcp.c ../traffic-gen/core/flow.c \
+		../traffic-gen/core/flow_pool.c ../traffic-gen/core/conn_pool.c \
+		$(filter-out $(BUILD_DIR)/test_http_client.o,$(HTTP_CLIENT_OBJS)) \
+		$(STACK_LIB) -Wl,--wrap=owner_io_recv -Wl,--wrap=owner_io_send \
+		-Wl,--wrap=owner_io_close -o $@ $(DPDK_LIBS) $(SANITIZER_LDFLAGS)

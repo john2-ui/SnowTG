@@ -49,6 +49,7 @@ int tg_app_config_parse(int argc, char *argv[],
         };
         bool workers_seen = false;
         bool socket_id_max_seen = false;
+        bool max_requests_seen = false;
         bool stats_csv_seen = false;
         bool latency_csv_seen = false;
         bool dataplane_csv_seen = false;
@@ -85,6 +86,14 @@ int tg_app_config_parse(int argc, char *argv[],
                                 goto invalid;
                         config.socket_id_max_override = (uint32_t)value;
                         socket_id_max_seen = true;
+                        continue;
+                }
+                if (strcmp(argv[i], "--max-requests-per-connection") == 0) {
+                        if (max_requests_seen || ++i == argc ||
+                            tg_parse_unsigned(argv[i], 0, UINT32_MAX, &value) != 0)
+                                goto invalid;
+                        config.max_requests_per_connection = (uint32_t)value;
+                        max_requests_seen = true;
                         continue;
                 }
                 if (strcmp(argv[i], "--stats-csv") == 0) {

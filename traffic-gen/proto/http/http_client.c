@@ -209,6 +209,8 @@ static int tg_http_on_message_complete(llhttp_t *parser) {
         if (context->txn != NULL)
                 context->txn->connection_reusable =
                     context->connection_reusable;
+        if (context->txn != NULL)
+                context->txn->peer_closes = !context->connection_reusable;
         return 0;
 }
 
@@ -401,6 +403,8 @@ static enum tg_proto_result tg_http_on_eof(struct tg_txn *txn) {
 
         if (context == NULL)
                 return TG_PROTO_FAILED;
+        context->connection_reusable = false;
+        txn->connection_reusable = false;
         if (context->message_complete)
                 return TG_PROTO_COMPLETE;
         if (!llhttp_message_needs_eof(&context->parser))

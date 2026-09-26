@@ -544,6 +544,10 @@ static int tg_start_class(void *ctx, const struct tg_class_plan *class_plan) {
                                     idle_flow, false,
                                     TG_FLOW_RESULT_IO_FAILURE);
                                 errno = saved_errno;
+                                /* Only preflight ESTALE guarantees that no
+                                 * bytes of this request reached the peer. */
+                                if (saved_errno != ESTALE)
+                                        goto start_failed;
                         }
                 } else if (!tg_conn_pool_can_create(&shard->conn_pool)) {
                         errno = EAGAIN;
@@ -575,6 +579,7 @@ static int tg_start_class(void *ctx, const struct tg_class_plan *class_plan) {
         }
 
         if (start_result != 0) {
+start_failed:
                 tg_latency_on_start_failed(&shard->latency,
                     shard->scheduler.phase_index, class_index);
                 if (errno == ENOBUFS || errno == ENFILE)
@@ -892,6 +897,7 @@ int main(int argc, char *argv[]) {
         if (tg_app_config_parse(argc, argv, &app_config) != 0)
                 rte_exit(EXIT_FAILURE, "usage: traffic-gen [--workers N] "
                                        "[--socket-id-max N] "
+                                       "[--max-requests-per-connection N] "
                                        "[--stats-csv PATH] [--mtu BYTES] "
                                        "[--dataplane-csv PATH] [--metrics-sample N] "
                                        "[--tx-mode main|worker|auto] "
@@ -1079,6 +1085,8 @@ int main(int argc, char *argv[]) {
                                          index);
                 }
 
+                worker->shard.conn_pool.max_requests =
+                    app_config.max_requests_per_connection;
                 if (worker->shard.scheduling_enabled && latency_file != NULL &&
                     tg_latency_init(&worker->shard.latency, &worker->shard.plan,
                                      rte_get_timer_hz()) != 0)

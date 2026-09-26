@@ -3706,10 +3706,10 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
         if (sk->local_port == 0) {
                 sk->local_port = tcp_alloc_ephemeral_port(sk);
                 if (sk->local_port == 0) {
-                        errno = EADDRNOTAVAIL;
                         LOG_ERROR("tcp_connect: " TCP_ID_FMT
                                   " local port allocation failed",
                                   TCP_ID_ARG(sk));
+                        errno = EADDRNOTAVAIL;
                         return -1;
                 }
                 int bind_rc =

@@ -29,6 +29,7 @@ struct tg_app_config {
         enum tg_rx_mode rx_mode;
         unsigned int worker_count;
         uint32_t socket_id_max_override;
+        uint32_t max_requests_per_connection; /**< 0 permits unlimited reuse. */
         uint32_t local_ip; /**< Network byte order. */
         uint16_t port_id;
         uint16_t requested_mtu;

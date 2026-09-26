@@ -393,8 +393,19 @@ int tg_flow_rearm_tcp(struct tg_flow *flow, const struct tg_proto_ops *proto,
         if (flow == NULL || proto == NULL || request == NULL ||
             request_len == 0 || flow->state != TG_FLOW_IDLE ||
             flow->conn_pool == NULL || flow->conn_pool->draining ||
-            flow->requests_started >= TG_FLOW_TCP_MAX_REQUESTS) {
+            (flow->conn_pool->max_requests != 0 &&
+             flow->requests_started >= flow->conn_pool->max_requests)) {
                 errno = EINVAL;
+                return -1;
+        }
+        /* RX may have recorded FIN/error before its queued readiness event
+         * reaches the bounded reactor burst. Check before sending any bytes;
+         * ESTALE lets callers replace the idle socket without replaying a
+         * request that might already have reached the peer.
+         */
+        uint8_t byte;
+        if (owner_io_recv(flow->handle, &byte, 1) >= 0 || errno != EAGAIN) {
+                errno = ESTALE;
                 return -1;
         }
         if (tg_txn_rearm_with_request(&flow->txn, proto, class_config, request,
@@ -409,7 +420,8 @@ int tg_flow_rearm_tcp(struct tg_flow *flow, const struct tg_proto_ops *proto,
         flow->idle_since_cycles = 0;
         flow->response_prefix_len = 0;
         flow->completion_notified = false;
-        flow->requests_started++;
+        if (flow->requests_started != UINT64_MAX)
+                flow->requests_started++;
         flow->state = TG_FLOW_SENDING;
         if (tg_flow_send_pending(flow) != 0)
                 return -1;
@@ -517,11 +529,24 @@ static void tg_flow_finish_transaction(struct tg_flow_map *map,
         bool reusable = allow_reuse && result == TG_FLOW_RESULT_SUCCESS &&
                         flow->txn.connection_reusable &&
                         flow->conn_pool != NULL && !flow->conn_pool->draining &&
-                        flow->requests_started < TG_FLOW_TCP_MAX_REQUESTS;
+                        (flow->conn_pool->max_requests == 0 ||
+                         flow->requests_started < flow->conn_pool->max_requests);
+        bool wait_for_eof = allow_reuse && result == TG_FLOW_RESULT_SUCCESS &&
+                            flow->txn.peer_closes;
 
         if (!flow->completion_notified && flow->on_finish != NULL) {
                 flow->completion_notified = true;
                 flow->on_finish(flow->on_finish_ctx, flow, result);
+        }
+        if (wait_for_eof) {
+                /* HTTP completion and transport teardown are independent.
+                 * Let a Connection: close peer send its FIN first, avoiding
+                 * unnecessary active-close TIME_WAIT/ephemeral-port pressure.
+                 * The original deadline bounds peers that never send FIN.
+                 */
+                tg_txn_reset(&flow->txn);
+                flow->state = TG_FLOW_CLOSING;
+                return;
         }
         if (!reusable) {
                 tg_flow_close_connection(map, pool, flow, false, result);
@@ -547,8 +572,9 @@ static enum tg_flow_result tg_flow_io_result(void) {
 
 /** Keep parser violations distinct from local receive-memory exhaustion. */
 static enum tg_flow_result tg_flow_rx_result(void) {
-        return errno == ENOBUFS ? TG_FLOW_RESULT_RESOURCE_PRESSURE
-                                : TG_FLOW_RESULT_PROTOCOL_FAILURE;
+        if (errno == EPROTO)
+                return TG_FLOW_RESULT_PROTOCOL_FAILURE;
+        return tg_flow_io_result();
 }
 
 /** @brief Compares one received UDP peer with the flow's configured peer. */
@@ -674,7 +700,27 @@ void tg_flow_on_event(struct tg_flow_map *map, struct tg_flow_pool *pool,
                 return;
         }
 
+        if (flow->state == TG_FLOW_CLOSING) {
+                if (!(events & (OWNER_IO_EV_ERROR | OWNER_IO_EV_HUP))) {
+                        uint8_t byte;
+                        if (!(events & OWNER_IO_EV_READ))
+                                return;
+                        if (owner_io_recv(flow->handle, &byte, 1) < 0 &&
+                            errno == EAGAIN)
+                                return;
+                }
+                /* The response was already counted; do not notify twice. */
+                tg_flow_close_connection(map, pool, flow, false,
+                                         TG_FLOW_RESULT_SUCCESS);
+                return;
+        }
+
         if (events & OWNER_IO_EV_ERROR) {
+                if (flow->state == TG_FLOW_IDLE) {
+                        tg_flow_close_connection(map, pool, flow, false,
+                                                 TG_FLOW_RESULT_IO_FAILURE);
+                        return;
+                }
                 bool connecting = flow->state == TG_FLOW_CONNECTING;
 
                 flow->state = TG_FLOW_FAILED;
@@ -717,7 +763,8 @@ void tg_flow_on_event(struct tg_flow_map *map, struct tg_flow_pool *pool,
                 if (complete) {
                         flow->state = TG_FLOW_DONE;
                         tg_flow_finish_transaction(
-                            map, pool, flow, TG_FLOW_RESULT_SUCCESS, true);
+                            map, pool, flow, TG_FLOW_RESULT_SUCCESS,
+                            !eof && !(events & OWNER_IO_EV_HUP));
                         return;
                 }
                 if (eof) {
@@ -730,7 +777,7 @@ void tg_flow_on_event(struct tg_flow_map *map, struct tg_flow_pool *pool,
                             flow->state == TG_FLOW_DONE
                                 ? TG_FLOW_RESULT_SUCCESS
                                 : TG_FLOW_RESULT_PROTOCOL_FAILURE,
-                            flow->state == TG_FLOW_DONE);
+                            false);
                         return;
                 }
         }
@@ -780,6 +827,14 @@ void tg_flow_expire(struct tg_flow_map *map, struct tg_flow_pool *pool,
                         flow->state = TG_FLOW_FAILED;
                         tg_flow_finish_transaction(
                             map, pool, flow, TG_FLOW_RESULT_IO_FAILURE, false);
+                        continue;
+                }
+                if (flow->state == TG_FLOW_CLOSING) {
+                        if (flow->deadline_cycles != 0 &&
+                            now_cycles >= flow->deadline_cycles)
+                                tg_flow_close_connection(
+                                    map, pool, flow, false,
+                                    TG_FLOW_RESULT_SUCCESS);
                         continue;
                 }
                 if (flow->state == TG_FLOW_IDLE) {
