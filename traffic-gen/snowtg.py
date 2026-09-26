@@ -51,8 +51,93 @@ def dns(name, ip, qname, port=53, *, weight=1, qtype="A"):
                 peer=dict(ip=ip, port=port), dns=dict(qname=qname, qtype=qtype))
 
 
+def ref(name):
+    """Describe a typed vars/data/ctx lookup without evaluating it in Python."""
+    return {"ref": name}
+
+
+def extract(source, path="", *, index=0):
+    """Select a response scalar for native extraction.
+
+    Sources are DNS address or HTTP status/header/json. Header index is zero-based;
+    JSON path is a JSON Pointer. Export happens before protocol parser reset.
+    """
+    return dict(source=source, path=path, index=index)
+
+
+def check(left, op, right=None):
+    """Build a typed comparison; exists intentionally omits the right operand.
+
+    Keep literal types, including False and None. Native execution rejects
+    incompatible operand types instead of implicitly converting strings.
+    """
+    return dict(left=left, op=op, **({} if op == "exists" else {"right": right}))
+
+
+def transaction(name, *, steps, weight=1, vars=None, dataset=None, timeout_ms=None):
+    """Build a weighted business class with ordered native steps.
+
+    One admission covers the entire business, including think time. Dataset paths
+    are expanded relative to the script directory before execution; immutable rows
+    cycle by global planned ordinal, including arrivals skipped under overload.
+    """
+    config = dict(steps=list(steps))
+    for key, value in (("vars", vars), ("dataset", dataset), ("timeout_ms", timeout_ms)):
+        if value is not None:
+            config[key] = {"file": str(value)} if key == "dataset" and isinstance(value, (str, Path)) else value
+    return dict(name=name, weight=weight, transaction=config)
+
+
+def http_step(name, ip, port=80, *, path="/", method="GET", host=None,
+              keepalive=False, headers=None, body=None, extract=None, checks=None,
+              next=None, timeout_ms=None):
+    """Build a network step, without independent class weight or admission.
+
+    Templates are resolved against the active native context. keepalive requests
+    reuse only when endpoint/Host and response policy permit it. next names a
+    later step or end; headers/body cannot override plugin-owned framing.
+    """
+    step = http(name, ip, port, path=path, method=method, host=host, keepalive=keepalive)
+    step.pop("weight"); step.pop("transport"); step["type"] = "http"
+    for key, value in (("headers", headers), ("body", body)):
+        if value is not None: step["http"][key] = value
+    step.update({k: v for k, v in dict(extract=extract, checks=checks, next=next, timeout_ms=timeout_ms).items() if v is not None})
+    return step
+
+
+def dns_step(name, ip, qname, port=53, *, extract=None, checks=None, next=None, timeout_ms=None):
+    """Build an A-query step whose exported address may feed a later HTTP target.
+
+    Extraction and checks run on the complete datagram. The native resolver only
+    accepts addresses matching the question or an answer-section CNAME chain.
+    """
+    step = dns(name, ip, qname, port)
+    step.pop("weight"); step.pop("transport"); step["type"] = "dns"
+    step.update({k: v for k, v in dict(extract=extract, checks=checks, next=next, timeout_ms=timeout_ms).items() if v is not None})
+    return step
+
+
+def think(name, ms=None, *, minimum=None, maximum=None, next=None):
+    """Describe fixed milliseconds or an inclusive minimum/maximum range.
+
+    The native compiler rejects conflicting forms. An owner timer schedules the
+    continuation; this helper neither sleeps nor samples a Python random number.
+    """
+    return dict(name=name, type="think", **{k: v for k, v in
+        dict(ms=ms, min_ms=minimum, max_ms=maximum, next=next).items() if v is not None})
+
+
+def branch(name, condition, *, then, otherwise):
+    """Build a forward-only conditional jump using a check/ref description.
+
+    otherwise maps to JSON else. Targets name later steps or end; this is not
+    a Python callback, and the unselected path does not count as request failure.
+    """
+    return dict(name=name, type="branch", condition=condition, then=then, **{"else": otherwise})
+
+
 def assertion(metric, op, value, *, class_name=None, protocol=None, phase=None,
-              quantile=None, latency_metric=None, critical=True):
+              quantile=None, latency_metric=None, critical=True, step=None):
     """Build an SLO spec; the managed runner validates selectors and thresholds.
 
     Rates are fractions, latency_ms is milliseconds with quantile in (0,1].
@@ -61,12 +146,12 @@ def assertion(metric, op, value, *, class_name=None, protocol=None, phase=None,
     result = dict(metric=metric, op=op, value=value, critical=critical)
     result.update({k: v for k, v in dict(
         **{"class": class_name}, protocol=protocol, phase=phase,
-        quantile=quantile, latency_metric=latency_metric).items() if v is not None})
+        quantile=quantile, latency_metric=latency_metric, step=step).items() if v is not None})
     return result
 
 
 def scenario(name, *, classes, concurrency=256, phases=None, duration=None,
-             cps=None, report_interval=1, assertions=None, purpose=None, service=None):
+             cps=None, report_interval=1, assertions=None, purpose=None, service=None, seed=None):
     """Open arrivals: provide phases OR duration/cps; concurrency is global."""
     result = dict(name=name, load_model="open", max_concurrency=concurrency,
                   report_interval_sec=report_interval, classes=list(classes))
@@ -78,7 +163,7 @@ def scenario(name, *, classes, concurrency=256, phases=None, duration=None,
         if duration is None or cps is None:
             raise ValueError("provide phases or both duration and cps")
         result.update(duration_sec=duration, target_cps=cps)
-    for key, value in (("assertions", assertions), ("purpose", purpose), ("service", service)):
+    for key, value in (("assertions", assertions), ("purpose", purpose), ("service", service), ("seed", seed)):
         if value is not None:
             result[key] = value
     return result
@@ -159,6 +244,11 @@ def main(argv=None):
             text = load_lua(path)
         else:
             text = load_script(path) if path.suffix == ".py" else path.read_text()
+        from snowtg_datasets import expand_datasets
+        plan = json.loads(text)
+        if not isinstance(plan, dict): raise ValueError("scenario must be an object")
+        if expand_datasets(plan, path.parent):
+            text = json.dumps(plan, ensure_ascii=False, allow_nan=False, indent=2) + "\n"
         if options.emit_json:
             if managed or options.output or options.baseline or options.timeout is not None:
                 raise ValueError("--emit-json cannot be combined with managed-run options")
@@ -172,7 +262,7 @@ def main(argv=None):
         if not isinstance(plan, dict):
             raise ValueError("scenario must be an object")
         if managed or options.output or options.baseline or options.timeout is not None or any(
-                key in plan for key in ("assertions", "purpose", "service")):
+                key in plan for key in ("assertions", "purpose", "service", "dataset_sources")):
             # Managed mode waits for the native child and evaluates final CSVs;
             # scripts still execute only at startup, never in the packet path.
             from snowtg_results import run

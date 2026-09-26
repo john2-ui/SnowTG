@@ -1,0 +1,185 @@
+{
+  "name": "business-http-dns",
+  "load_model": "open",
+  "max_concurrency": 16,
+  "report_interval_sec": 1,
+  "classes": [
+    {
+      "name": "business",
+      "weight": 1,
+      "transaction": {
+        "steps": [
+          {
+            "name": "resolve",
+            "peer": {
+              "ip": "${vars.peer}",
+              "port": 15353
+            },
+            "dns": {
+              "qname": "alias.snowtg.test",
+              "qtype": "A"
+            },
+            "type": "dns",
+            "extract": {
+              "address": {
+                "source": "address",
+                "path": "",
+                "index": 0
+              }
+            }
+          },
+          {
+            "name": "fetch",
+            "peer": {
+              "ip": "${ctx.address}",
+              "port": 18080
+            },
+            "http": {
+              "method": "GET",
+              "path": "/chunked",
+              "keepalive": true
+            },
+            "type": "http",
+            "extract": {
+              "token": {
+                "source": "json",
+                "path": "/token",
+                "index": 0
+              },
+              "repeat": {
+                "source": "header",
+                "path": "x-repeat",
+                "index": 1
+              }
+            },
+            "checks": [
+              {
+                "left": {
+                  "source": "status",
+                  "path": "",
+                  "index": 0
+                },
+                "op": "==",
+                "right": 200
+              },
+              {
+                "left": {
+                  "source": "json",
+                  "path": "/items/0",
+                  "index": 0
+                },
+                "op": "==",
+                "right": 7
+              }
+            ]
+          },
+          {
+            "name": "pause",
+            "type": "think",
+            "min_ms": 3,
+            "max_ms": 8
+          },
+          {
+            "name": "route",
+            "type": "branch",
+            "condition": {
+              "left": {
+                "ref": "data.route"
+              },
+              "op": "==",
+              "right": "A"
+            },
+            "then": "route_a",
+            "else": "route_b"
+          },
+          {
+            "name": "route_a",
+            "peer": {
+              "ip": "${ctx.address}",
+              "port": 18080
+            },
+            "http": {
+              "method": "POST",
+              "path": "/use",
+              "keepalive": true,
+              "headers": {
+                "X-Route": "A"
+              },
+              "body": "{\"token\":${ctx.token|json},\"user\":${data.user|json}}"
+            },
+            "type": "http",
+            "next": "finish"
+          },
+          {
+            "name": "route_b",
+            "peer": {
+              "ip": "${ctx.address}",
+              "port": 18080
+            },
+            "http": {
+              "method": "POST",
+              "path": "/use",
+              "keepalive": true,
+              "headers": {
+                "X-Route": "B"
+              },
+              "body": "{\"token\":${ctx.token|json},\"user\":${data.user|json}}"
+            },
+            "type": "http"
+          },
+          {
+            "name": "finish",
+            "peer": {
+              "ip": "${ctx.address}",
+              "port": 18080
+            },
+            "http": {
+              "method": "GET",
+              "path": "/close",
+              "keepalive": false
+            },
+            "type": "http"
+          }
+        ],
+        "vars": {
+          "peer": "192.168.10.234"
+        },
+        "dataset": {
+          "file": "workflow-users.csv"
+        }
+      }
+    }
+  ],
+  "duration_sec": 5,
+  "target_cps": 20,
+  "assertions": [
+    {
+      "metric": "success_rate",
+      "op": "==",
+      "value": 1,
+      "critical": true
+    },
+    {
+      "metric": "success_rate",
+      "op": "==",
+      "value": 1,
+      "critical": true,
+      "step": "fetch"
+    },
+    {
+      "metric": "latency_ms",
+      "op": "<",
+      "value": 100,
+      "critical": true,
+      "quantile": 0.99,
+      "step": "fetch"
+    },
+    {
+      "metric": "drained_live_sockets",
+      "op": "==",
+      "value": 0,
+      "critical": true
+    }
+  ],
+  "seed": 17
+}

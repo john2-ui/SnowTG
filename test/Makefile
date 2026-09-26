@@ -425,3 +425,9 @@ $(BUILD_DIR)/test_workflow_protocol: test_workflow_protocol.c $(WORKFLOW_PROTOCO
 test-workflow-protocol: $(BUILD_DIR)/test_workflow_protocol
 	$(BUILD_DIR)/test_workflow_protocol
 test: test-workflow-protocol
+
+# Dataset/frontend checks are local; test_workflow_live.py requires an explicit peer.
+.PHONY: test-workflow-scripts
+test-workflow-scripts:
+	python3 test_workflow_scripts.py
+test: test-workflow-scripts

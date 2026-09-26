@@ -23,7 +23,8 @@ import subprocess
 import time
 import uuid
 
-SCHEMA = 1
+# Version 2 adds step groups and explicit TPS/RPS units; the loader still accepts v1.
+SCHEMA = 2
 OPS = {"<": operator.lt, "<=": operator.le, "==": operator.eq,
        ">=": operator.ge, ">": operator.gt, "!=": operator.ne}
 LATENCIES = {"schedule", "connect", "first_rx", "complete", "scheduled_complete",
@@ -32,7 +33,7 @@ COUNTS = ("planned", "attempted", "skipped", "admitted", "success", "failed", "s
 SCOPED = {"success_rate", "admitted_success_rate", "error_rate", "skipped_rate",
           "success_rps", "latency_ms"}
 GLOBAL = {"tx_alloc_fail", "drained_live_sockets", "tcp_forced_cleanup", "drain_ms"}
-EXTRA = {"assertions", "purpose", "service"}
+EXTRA = {"assertions", "purpose", "service", "dataset_sources"}
 LIMITS = ["Latency is client-observed software timing, not NIC timestamps or server-only time.",
           "Histogram quantiles use bucket upper bounds (up to ~6.25% plus microsecond rounding).",
           "Success rate uses planned arrivals; skipped/start-failed requests have no latency sample.",
@@ -71,11 +72,12 @@ def validate_assertions(plan):
     if not isinstance(assertions, list):
         raise ValueError("assertions must be an array")
     classes = {c["name"] for c in plan["classes"]}
-    protocols = {"http" if "http" in c else "dns" for c in plan["classes"]}
+    protocols = {"transaction" if "transaction" in c else "http" if "http" in c else "dns" for c in plan["classes"]}
+    steps = [(c["name"], step) for c in plan["classes"] for step in c.get("transaction", {}).get("steps", [])]
     phase_names = {p["name"] for p in phases(plan)}
     for item in assertions:
         if not isinstance(item, dict) or set(item) - {
-                "metric", "op", "value", "class", "protocol", "phase", "quantile", "latency_metric", "critical"}:
+                "metric", "op", "value", "class", "protocol", "phase", "quantile", "latency_metric", "critical", "step"}:
             raise ValueError("invalid assertion fields")
         metric, value = item.get("metric"), item.get("value")
         if metric not in SCOPED | GLOBAL or item.get("op") not in OPS:
@@ -84,10 +86,13 @@ def validate_assertions(plan):
             raise ValueError("assertion value must be finite numeric")
         if type(item.get("critical", True)) is not bool:
             raise ValueError("critical must be boolean")
-        for key, names in (("class", classes), ("protocol", protocols), ("phase", phase_names)):
+        scoped_protocols = {step["type"] for cls, step in steps if step["name"] == item["step"] and ("class" not in item or item["class"] == cls)} if "step" in item else protocols
+        if "step" in item and (metric not in SCOPED or not scoped_protocols):
+            raise ValueError("invalid assertion step")
+        for key, names in (("class", classes), ("protocol", scoped_protocols), ("phase", phase_names)):
             if key in item and (metric not in SCOPED or item[key] not in names):
                 raise ValueError("invalid assertion selector: " + key)
-        if "class" in item and "protocol" in item:
+        if "class" in item and "protocol" in item and "step" not in item:
             cls = next(c for c in plan["classes"] if c["name"] == item["class"])
             if item["protocol"] not in cls:
                 raise ValueError("class/protocol selectors do not match")
@@ -95,7 +100,7 @@ def validate_assertions(plan):
             q = item.get("quantile")
             if type(q) not in (int, float) or not math.isfinite(q) or not 0 < q <= 1:
                 raise ValueError("latency quantile must be in (0,1]")
-            if item.get("latency_metric", "complete_success") not in LATENCIES:
+            if item.get("latency_metric", "complete_success") not in ({"complete", "complete_success", "complete_failure"} if "step" in item else LATENCIES):
                 raise ValueError("unknown latency_metric")
         elif "quantile" in item or "latency_metric" in item:
             raise ValueError("quantile/latency_metric apply only to latency_ms")
@@ -142,8 +147,13 @@ def distribution(hist):
 
 
 def selected(result, spec):
-    return [g for g in result["groups"] if all(
-        key not in spec or spec[key] == g[key] for key in ("phase", "class", "protocol"))]
+    """Select either business groups or step groups, never both.
+
+    Omitting step preserves legacy class-level SLO semantics; mixing the two
+    populations would count the same business more than once.
+    """
+    return [g for g in result.get("steps" if "step" in spec else "groups", []) if all(
+        key not in spec or spec[key] == g[key] for key in ("phase", "class", "protocol", "step"))]
 
 
 def measure(result, spec):
@@ -277,6 +287,50 @@ def collect(result, output):
         summary[name] = measure(result, dict(metric="latency_ms", quantile=.95 if name == "p95_ms" else .99))
     result["latency"] = {metric: distribution(histogram([g["latency"][metric] for g in groups.values()]))
                          for metric in sorted(LATENCIES)}
+    # Keep step rows separate from class-level business totals and their histograms.
+    result["steps"] = []
+    step_groups = {}
+    for row in latency:
+        if row["scope"] != "step": continue
+        key = (row["load_phase"], row["class"], row["step"])
+        counters = {k: int(row[k]) for k in COUNTS}
+        counters.update(reached=int(row["reached"]), started=int(row["started"]),
+                        branch_skipped=int(row["branch_skipped"]), not_reached=int(row["not_reached"]))
+        group = step_groups.setdefault(key, dict(phase=key[0], **{"class": key[1]}, step=key[2],
+                                                 protocol=row["protocol"], latency={}, **counters))
+        if any(group[k] != v for k, v in counters.items()) or row["metric"] in group["latency"]:
+            raise ValueError("duplicate/inconsistent step counters")
+        bins = [list(map(int, pair.split(":"))) for pair in row["buckets"].split(";") if pair]
+        samples = int(row["samples"])
+        if sum(n for _, n in bins) != samples or any(n < 0 for _, n in bins):
+            raise ValueError("invalid step histogram")
+        group["latency"][row["metric"]] = distribution(dict(samples=samples, max_us=int(row["max_us"]), buckets=bins))
+    expected_steps = {(p["name"], c["name"], step["name"])
+                      for p in phases(result["scenario"]) for c in result["scenario"]["classes"]
+                      for step in c.get("transaction", {}).get("steps", [])}
+    if set(step_groups) != expected_steps:
+        raise ValueError("missing/unexpected workflow step groups")
+    # Every admitted business must reach, bypass, or never reach each step.
+    # CSV failed excludes start_failed; complete step samples include preparation
+    # failures, so their population is reached rather than started.
+    parents = {(g["phase"], g["class"]): g for g in groups.values()}
+    for g in step_groups.values():
+        if (set(g["latency"]) != {"complete", "complete_success", "complete_failure"} or
+            g["reached"] != g["started"] + g["start_failed"] or g["started"] != g["success"] + g["failed"] or
+            g["reached"] + g["branch_skipped"] + g["not_reached"] != parents[(g["phase"], g["class"])]["admitted"] or
+            g["latency"]["complete"]["samples"] != g["reached"] or
+            g["latency"]["complete_success"]["samples"] != g["success"] or
+            g["latency"]["complete_failure"]["samples"] != g["failed"] + g["start_failed"]):
+            raise ValueError("step accounting mismatch")
+    result["steps"] = list(step_groups.values())
+    # Retain success_rps as the legacy class-completion alias. Network RPS counts
+    # only successful HTTP/DNS exchanges; think/branch successes are not requests.
+    summary["transaction_success_tps"] = summary["success_rps"]
+    summary["request_success_rps"] = (sum(g["success"] for g in result["groups"] if g["protocol"] != "transaction") +
+        sum(g["success"] for g in result["steps"] if g["protocol"] in ("http", "dns"))) / summary["duration_sec"]
+    result["metric_units"] = dict(transaction_success_tps="business transactions/second", request_success_rps="network steps/second",
+        success_rps="legacy alias: completed class-level work/second")
+    result["dataset_sources"] = result["scenario"].get("dataset_sources", [])
     log = (output / "traffic-gen.log").read_text(errors="replace")
     meta = {}
     for line in log.splitlines():
@@ -284,6 +338,8 @@ def collect(result, output):
             meta.update(dict(re.findall(r"(\w+)=([^\s]+)", line)))
     if "epoch_cycles" not in meta or "timer_hz" not in meta:
         invalid.append("missing native clock metadata; rebuild traffic-gen")
+    result["workflow_memory"] = [dict(worker=int(w), reserved_bytes=int(n), capacity=int(c))
+        for w,n,c in re.findall(r"workflow_memory worker=(\d+) bytes=(\d+) capacity=(\d+)", log)]
     result["environment"]["dataplane"] = meta
     result["environment"]["worker_lcores"] = sorted(int(r["lcore"]) for r in stats
         if r["scope"] == "worker" and r["phase"] == "final")
@@ -376,7 +432,13 @@ def run(plan, binary, args, output=None, timeout=None, baseline=None):
                   build={}, invalid_reasons=[], limitations=LIMITS[:], summary={}, groups=[],
                   assertions=[], valid=False, exit_code=1,
                   controller_sha256=digest({p.name: hashlib.sha256(p.read_bytes()).hexdigest()
-                      for p in (Path(__file__), Path(__file__).with_name("snowtg.py"), Path(__file__).with_name("snowtg.lua"))}))
+                      for p in (Path(__file__), Path(__file__).with_name("snowtg.py"), Path(__file__).with_name("snowtg.lua"), Path(__file__).with_name("snowtg_datasets.py"))}))
+    # Stopping offered load does not stop admitted businesses. Match the native
+    # default deadline, then retain time for socket drain before killing the child.
+    business_timeout = max((c["transaction"].get("timeout_ms", sum(
+        step.get("timeout_ms", 5000) if step["type"] in ("http", "dns") else step.get("max_ms", step.get("ms", 0))
+        for step in c["transaction"]["steps"])) / 1000
+        for c in plan["classes"] if "transaction" in c), default=0)
     start = time.monotonic()
     try:
         sha = hashlib.sha256(binary.read_bytes()).hexdigest()
@@ -390,7 +452,7 @@ def run(plan, binary, args, output=None, timeout=None, baseline=None):
         with (output / "traffic-gen.log").open("w") as log:
             proc = subprocess.Popen(command, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
             try:
-                result["native_exit_code"] = proc.wait(timeout=timeout or duration + 90)
+                result["native_exit_code"] = proc.wait(timeout=timeout or duration + (business_timeout + 150 if business_timeout else 90))
             except (subprocess.TimeoutExpired, KeyboardInterrupt) as error:
                 os.killpg(proc.pid, signal.SIGTERM)
                 try:
@@ -425,7 +487,7 @@ def run(plan, binary, args, output=None, timeout=None, baseline=None):
 
 def load_result(path):
     data = json.loads(Path(path).read_text())
-    if not isinstance(data, dict) or data.get("schema_version") != SCHEMA:
+    if not isinstance(data, dict) or data.get("schema_version") not in (1, SCHEMA):
         raise ValueError("unsupported result schema")
     if any(not isinstance(data.get(k), dict) for k in ("scenario", "summary", "environment")):
         raise ValueError("incomplete result object")
@@ -452,8 +514,18 @@ def compare(baseline, candidate, tolerance=5.0):
     reasons = []
     if not baseline.get("valid") or not candidate.get("valid"):
         reasons.append("one or both runs invalid")
+    if baseline.get("schema_version", 1) != candidate.get("schema_version", 1) and any(
+            "transaction" in c for r in (baseline,candidate) for c in r.get("scenario", {}).get("classes", [])):
+        reasons.append("workflow metric schema differs")
     if baseline.get("workload_sha256") != candidate.get("workload_sha256"):
         reasons.append("workloads differ")
+    # File locations may differ across machines; content digests must agree.
+    def dataset_digests(result):
+        return [s["sha256"] for s in result.get("scenario", {}).get("dataset_sources", [])]
+    if dataset_digests(baseline) != dataset_digests(candidate):
+        reasons.append("dataset source digests differ")
+    if baseline.get("schema_version", 1) == candidate.get("schema_version", 1) and baseline.get("metric_units") != candidate.get("metric_units"):
+        reasons.append("statistical units differ")
     if baseline.get("scenario", {}).get("assertions", []) != candidate.get("scenario", {}).get("assertions", []):
         reasons.append("acceptance criteria differ")
     def effective_args(result):
@@ -475,7 +547,7 @@ def compare(baseline, candidate, tolerance=5.0):
         if baseline["environment"].get("dataplane", {}).get(key) != candidate["environment"].get("dataplane", {}).get(key):
             reasons.append("dataplane differs: " + key)
     metrics = {key: change(baseline.get("summary", {}).get(key), candidate.get("summary", {}).get(key))
-               for key in ("success_rps", "p95_ms", "p99_ms", "error_rate", "maximum_sustainable_cps")}
+               for key in ("success_rps", "transaction_success_tps", "request_success_rps", "p95_ms", "p99_ms", "error_rate", "maximum_sustainable_cps")}
     metrics["error_rate"]["delta_percentage_points"] = (
         metrics["error_rate"]["delta"] * 100 if metrics["error_rate"]["delta"] is not None else None)
     if any(metrics[k]["baseline"] is None or metrics[k]["candidate"] is None
@@ -549,6 +621,13 @@ def report(result):
                   g.get("latency", {}).get("complete_success", {}).get("p99_us")) for g in result.get("groups", [])]),
              "<h2>基线差异</h2>", baseline_html,
              "<h2>随时间变化（每条线一个 worker）</h2>"]
+    if result.get("steps"):
+        parts.extend(["<h2>业务步骤（事务 TPS 与网络请求 RPS 分列于关键结果）</h2>", table(
+            ["阶段", "类别", "步骤", "类型", "到达", "成功", "失败含启动失败", "分支未执行", "上游失败未到达", "成功 P99 μs"],
+            [(g["phase"],g["class"],g["step"],g["protocol"],g["reached"],g["success"],g["failed"]+g["start_failed"],
+              g["branch_skipped"],g["not_reached"],g["latency"]["complete_success"]["p99_us"]) for g in result["steps"]]),
+            "<p>思考耗时单列；事务延迟包含思考及后续步骤等待。步骤成功率以到达数为分母。</p>",
+            "<h2>事务上下文预分配内存（响应捕获额外按需分配）</h2>",pre(result.get("workflow_memory",[]))])
     timeline = result.get("timeline", [])
     for key, title in (("success_rps", "成功 RPS"), ("complete_mean_us", "区间平均终止延迟 μs"),
                        ("completed_error_rate", "已完成事务错误率"), ("active", "在途事务数"),

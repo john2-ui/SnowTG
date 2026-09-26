@@ -44,9 +44,9 @@ end
 -- Concurrency is global. Use phases OR duration/cps; native validation checks
 -- protocol/rate limits after the launcher removes managed-run metadata.
 function M.scenario(name, options)
-    options = checked(options, "classes concurrency report_interval phases duration cps assertions purpose service")
+    options = checked(options, "classes concurrency report_interval phases duration cps assertions purpose service seed")
     local result = {name=name, load_model="open", classes=options.classes,
-        assertions=options.assertions, purpose=options.purpose, service=options.service,
+        assertions=options.assertions, purpose=options.purpose, service=options.service, seed=options.seed,
         max_concurrency=default(options.concurrency, 256),
         report_interval_sec=default(options.report_interval, 1)}
     if options.phases ~= nil then
@@ -64,10 +64,60 @@ end
 -- Ratios use [0,1], latency uses ms and quantile in (0,1]. Selectors/thresholds
 -- are validated by the managed runner; critical failures yield exit code 2.
 function M.assertion(metric, op, value, options)
-    options = checked(options, "class_name protocol phase quantile latency_metric critical")
+    options = checked(options, "class_name protocol phase quantile latency_metric critical step")
     return {metric=metric, op=op, value=value, class=options.class_name,
         protocol=options.protocol, phase=options.phase, quantile=options.quantile,
-        latency_metric=options.latency_metric, critical=default(options.critical, true)}
+        latency_metric=options.latency_metric, critical=default(options.critical, true), step=options.step}
+end
+
+-- Business helpers mirror Python; they build plain tables, never callbacks.
+-- Return declarative selectors; values are resolved by the native business owner.
+function M.ref(name) return {ref=name} end
+-- Header indices are zero-based. JSON paths are Pointers, not Lua expressions.
+function M.extract(source, path, options)
+    options=checked(options,"index")
+    return {source=source,path=default(path,""),index=default(options.index,0)}
+end
+-- Preserve a false right operand; using "right or default" would change its type/value.
+function M.check(left, op, right)
+    local result={left=left,op=op}
+    if op ~= "exists" then result.right=right end
+    return result
+end
+-- One weighted class owns the entire ordered business. String datasets become file
+-- references for launcher expansion; workers never execute Lua or read those files.
+function M.transaction(name, options)
+    options=checked(options,"steps weight vars dataset timeout_ms")
+    local data=options.dataset
+    if type(data)=="string" then data={file=data} end
+    return {name=name,weight=default(options.weight,1),transaction={steps=options.steps,
+        vars=options.vars,dataset=data,timeout_ms=options.timeout_ms}}
+end
+-- Per-step connection policy, extraction, and checks accompany the protocol fields.
+-- Dynamic endpoint/Host/body templates are expanded only in the native context.
+function M.http_step(name, ip, port, options)
+    options=checked(options,"path method host keepalive headers body extract checks next timeout_ms")
+    return {name=name,type="http",peer={ip=ip,port=default(port,80)},
+        http={path=default(options.path,"/"),method=default(options.method,"GET"),
+              host=options.host,keepalive=default(options.keepalive,false),headers=options.headers,body=options.body},
+        extract=options.extract,checks=options.checks,next=options.next,timeout_ms=options.timeout_ms}
+end
+-- The business DNS path uses A records; export address into ctx for later requests.
+function M.dns_step(name, ip, qname, port, options)
+    options=checked(options,"extract checks next timeout_ms")
+    return {name=name,type="dns",peer={ip=ip,port=default(port,53)},dns={qname=qname,qtype="A"},
+        extract=options.extract,checks=options.checks,next=options.next,timeout_ms=options.timeout_ms}
+end
+-- Pass ms for fixed waits, or nil plus minimum/maximum for deterministic native sampling.
+function M.think(name, ms, options)
+    options=checked(options,"minimum maximum next")
+    return {name=name,type="think",ms=ms,min_ms=options.minimum,max_ms=options.maximum,next=options.next}
+end
+-- Lua reserves then: callers use {["then"]="step", otherwise="other"}.
+-- Both targets must be forward names or end; unselected work is skipped, not failed.
+function M.branch(name, condition, options)
+    options=checked(options,"then otherwise")
+    return {name=name,type="branch",condition=condition,["then"]=options["then"],["else"]=options.otherwise}
 end
 
 if ... == "snowtg" then return M end
