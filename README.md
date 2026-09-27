@@ -1,5 +1,13 @@
 # SnowTG
 
+![SnowTG 项目标志](docs/assets/snowtg-logo-small.png)
+
+[![Language: C](https://img.shields.io/badge/Language-C-00599C?style=flat-square&logo=c&logoColor=white)](pro-stack/)
+[![Platform: Linux](https://img.shields.io/badge/Platform-Linux-FCC624?style=flat-square&logo=linux&logoColor=black)](#使用指南)
+[![Network: DPDK](https://img.shields.io/badge/Network-DPDK-167D9A?style=flat-square)](pro-stack/Makefile)
+[![Docker: supported](https://img.shields.io/badge/Docker-supported-2496ED?style=flat-square&logo=docker&logoColor=white)](#docker-一键构建与自检)
+[![Checks: ASan / UBSan](https://img.shields.io/badge/Checks-ASan%20%2F%20UBSan-6C5CE7?style=flat-square)](run-sanitizers.sh)
+
 **基于 DPDK 的用户态 TCP/IP 协议栈与 HTTP/DNS 混合流量发生器。** 从收发包、TCP 状态机到应用层事务调度均在仓库内实现；核心设计是单 owner、per-core reactor 和无锁热路径。
 
 [English](README-en.md) · [使用指南](#使用指南) · [测评与复现条件](docs/BENCHMARK.md) · [架构与路线图](docs/TODO.md)
