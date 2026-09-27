@@ -1,0 +1,4947 @@
+{
+  "metadata": {
+    "source_commit": "0f081eb",
+    "date": "2026-09-26",
+    "mode": "short connections",
+    "workers": [
+      0,
+      2
+    ],
+    "main_cpu": 8,
+    "source_ip": "192.168.10.86",
+    "server_ip": "192.168.10.234",
+    "target_ports": 16,
+    "client_ports": [
+      49152,
+      65535
+    ],
+    "payload_request_bytes": 88,
+    "response_body_bytes": 3,
+    "dpdk_memory_mib": 2048,
+    "duration_sec": 30,
+    "dperf_slow_start_sec": 10,
+    "window": "traffic onset +12 to +27 seconds",
+    "dperf_concurrency": "no cc option supported in short mode; controlled by CPS",
+    "source_archive_sha256": "74338352cabfc31bf4606d21c48c9e01282737d3226e9d14033a2257851c7250",
+    "snowtg_binary_sha256": "65197da9544c218730a67c28cae6347bee2feb7eedd82d40a775e645738efb25",
+    "snowtg_comparison_concurrency": 512,
+    "snowtg_exploration_concurrency": 8192,
+    "snowtg_socket_id_max": 16384,
+    "hardware": "NUC i5-1240P / I225-V -> HP Ryzen 7 7730U / RTL8153, 1 Gbps",
+    "server": "nginx 16 workers; RPS mask 5155",
+    "descriptors": {
+      "snowtg": 1024,
+      "dperf": 4096
+    },
+    "conntrack": "Only benchmark TCP flows bypass conntrack for base_port >= 21000; earlier diagnostics excluded.",
+    "comparison": "Fixed offered 120000 CPS, 16 destination ports, 3 runs per tool. dperf short mode does not support cc; concurrent sockets are not matched. Not an absolute capacity test.",
+    "metrics": "server_rps: nginx requests minus monitor requests in common window; PPS: server NIC counters, including retransmissions/background. Native errors cover full run; definitions and durations differ.",
+    "raw_directory": "/home/snow/snowtg-short-20260926",
+    "common_files_sha256": {
+      "peer.jsonl": "5c2611d8c8e1e4f4c0a33cb6a1a3b4e71c5ce8279cb303cbc552b5b769db9059",
+      "analyze.py": "e6a11e4c81701d409fd0dfc47ff1a5b61ea2b33a3fa0808a18e6986fee43f6dc",
+      "run.py": "713221f5150c4ace76f6db6c943e8103d65d76ab3ca78820a8b604a94e9bd841",
+      "batch.py": "07de34dd891c8349c3dd47688e1ec315e8597a4fb28fa404953cebf504230ecf",
+      "conntrack-diagnostic.txt": "7060e1fea182dc288101057ca874ae883d31eee669686cc1ed1d2582a4e4eeba"
+    }
+  },
+  "runs": [
+    {
+      "start": 1790426114.1156638,
+      "end": 1790426169.6692698,
+      "exit": 0,
+      "tool": "dperf",
+      "rate": 120000,
+      "base_port": 21064,
+      "ports": 16,
+      "workers": 2,
+      "concurrency": null,
+      "duration": 30,
+      "name": "dperf-120000-cc0-r0-p21064",
+      "valid": true,
+      "server_rps": 119999.87548113005,
+      "server_rx_pps": 480023.07862458925,
+      "server_tx_pps": 599959.4168970586,
+      "steady_start": 1790426135.8955774,
+      "steady_end": 1790426150.9104013,
+      "steady_seconds": 15.014823913574219,
+      "link_speeds": [
+        "1000"
+      ],
+      "server_cpu": {
+        "cpu": 0.4982832618025751,
+        "cpu0": 0.6766304347826086,
+        "cpu1": 0.3075313807531381,
+        "cpu2": 0.6841397849462365,
+        "cpu3": 0.3034965034965035,
+        "cpu4": 0.6755102040816326,
+        "cpu5": 0.3054393305439331,
+        "cpu6": 0.6741803278688525,
+        "cpu7": 0.3068340306834031,
+        "cpu8": 0.6775288526816021,
+        "cpu9": 0.29823321554770316,
+        "cpu10": 0.2573632538569425,
+        "cpu11": 0.2585128561501042,
+        "cpu12": 0.676132521974307,
+        "cpu13": 0.29582448690728946,
+        "cpu14": 0.6777476255088195,
+        "cpu15": 0.8271844660194175
+      },
+      "client_cpu": {
+        "cpu": 0.1278934221482098,
+        "cpu0": 1.0,
+        "cpu1": 0.0,
+        "cpu2": 1.0,
+        "cpu3": 0.0,
+        "cpu4": 0.0,
+        "cpu5": 0.0,
+        "cpu6": 0.0026702269692923898,
+        "cpu7": 0.0,
+        "cpu8": 0.04119601328903655,
+        "cpu9": 0.0,
+        "cpu10": 0.0,
+        "cpu11": 0.0,
+        "cpu12": 0.0,
+        "cpu13": 0.0,
+        "cpu14": 0.0,
+        "cpu15": 0.0
+      },
+      "native": {
+        "pktRx": 20991664,
+        "pktTx": 16795396,
+        "dropTx": 0,
+        "rstRx": 0,
+        "rstTx": 6089,
+        "synRt": 33,
+        "finRt": 40,
+        "pushRt": 12,
+        "tcpDrop": 143,
+        "skOpen": 4197308,
+        "skClose": 4197308,
+        "skCon": 0,
+        "skErr": 4,
+        "httpGet": 4197316,
+        "http2XX": 4197304,
+        "httpErr": 0,
+        "imissed": 0
+      },
+      "mode": "short",
+      "profile": "ack",
+      "stage": "comparison",
+      "files_sha256": {
+        "client.jsonl": "40725177fa1df819eb34a32b8e699ba53f1831e4f208a60174393b7e3928a8fe",
+        "command.json": "0134616b7fb93f9bd6c3c2d4c136b0136fc7205ab77d379c875a827fe1714651",
+        "dperf.conf": "ba883dfae18428b7b659bdd3d873a9b896f5a7fd3a0c4267b227f44125ad6677",
+        "output.txt": "71e7eff6c18426149949a7a0e9a71e0fd84327561c1623a2b4662f71d7fa39b0",
+        "run.json": "f1872c2742e467f42dd9534d83ae7f317c148ec4d041fd2aae7ed7e445902574"
+      },
+      "command": [
+        "taskset",
+        "-c",
+        "8",
+        "stdbuf",
+        "-oL",
+        "-eL",
+        "/home/lca/work/snowtg-compare-20260926/dperf/build/dperf",
+        "-c",
+        "/home/lca/work/snowtg-short-20260926/runs/dperf-120000-cc0-r0-p21064/dperf.conf"
+      ],
+      "config": "mode client\ncpu 0 2\nprotocol http\nduration 30s\nsocket_mem 2048\nport 0000:64:00.0 192.168.10.86 192.168.10.234\nclient 192.168.10.86 1\nserver 192.168.10.234 1\nlisten 21064 16\ncps 120000\nclient_port_range 49152 65535\npayload_file /home/lca/work/snowtg-compare-20260926/configs/short.http\nrss\nslow_start 10\n"
+    },
+    {
+      "start": 1790426434.3365796,
+      "end": 1790426489.8116636,
+      "exit": 0,
+      "tool": "dperf",
+      "rate": 120000,
+      "base_port": 21224,
+      "ports": 16,
+      "workers": 2,
+      "rep": 1,
+      "concurrency": null,
+      "duration": 30,
+      "name": "dperf-120000-cc0-r1-p21224",
+      "valid": true,
+      "server_rps": 119992.55151253217,
+      "server_rx_pps": 479975.9341523384,
+      "server_tx_pps": 599918.5978909743,
+      "steady_start": 1790426456.268343,
+      "steady_end": 1790426471.2820415,
+      "steady_seconds": 15.01369857788086,
+      "link_speeds": [
+        "1000"
+      ],
+      "server_cpu": {
+        "cpu": 0.4880998660964969,
+        "cpu0": 0.660455486542443,
+        "cpu1": 0.29775280898876405,
+        "cpu2": 0.6629910406616126,
+        "cpu3": 0.299860529986053,
+        "cpu4": 0.660958904109589,
+        "cpu5": 0.2984550561797753,
+        "cpu6": 0.6643598615916955,
+        "cpu7": 0.29543859649122806,
+        "cpu8": 0.6607142857142857,
+        "cpu9": 0.2952783650458069,
+        "cpu10": 0.2659279778393352,
+        "cpu11": 0.25331472435450103,
+        "cpu12": 0.6607142857142857,
+        "cpu13": 0.29754385964912283,
+        "cpu14": 0.6732876712328767,
+        "cpu15": 0.8142394822006472
+      },
+      "client_cpu": {
+        "cpu": 0.1272674200408657,
+        "cpu0": 1.0,
+        "cpu1": 0.0,
+        "cpu2": 1.0,
+        "cpu3": 0.0,
+        "cpu4": 0.0006680026720106881,
+        "cpu5": 0.0,
+        "cpu6": 0.0006680026720106881,
+        "cpu7": 0.0,
+        "cpu8": 0.03127124405166554,
+        "cpu9": 0.0,
+        "cpu10": 0.0,
+        "cpu11": 0.0,
+        "cpu12": 0.0,
+        "cpu13": 0.0,
+        "cpu14": 0.0,
+        "cpu15": 0.0
+      },
+      "native": {
+        "pktRx": 20983271,
+        "pktTx": 16787484,
+        "dropTx": 0,
+        "rstRx": 0,
+        "rstTx": 0,
+        "synRt": 68,
+        "finRt": 64,
+        "pushRt": 18,
+        "tcpDrop": 266,
+        "skOpen": 4196842,
+        "skClose": 4196842,
+        "skCon": 0,
+        "skErr": 12,
+        "httpGet": 4196848,
+        "http2XX": 4196830,
+        "httpErr": 0,
+        "imissed": 0
+      },
+      "mode": "short",
+      "profile": "ack",
+      "stage": "comparison",
+      "files_sha256": {
+        "client.jsonl": "ef1125eb7f7b5e438fa5dcb3696318a4158c303348c714d2732527d2623d3486",
+        "command.json": "0d845f26181a79c7768a724e454972242ba7de3bee3315821b2acd6995a0fbf9",
+        "dperf.conf": "9282a6d20e21a53c0d68abc62fb5ed06f50dc808a7461d78ba8d8a911cdca8a5",
+        "output.txt": "d2c09a9201b5db7eb1fc1c335c1b50a52aac78c4f3d90d6574b958c7c6aec4bb",
+        "run.json": "a66d1dfbb1d2c9043a06892b2b2c88a76c40c61d07c1867896e35ac869d998d3"
+      },
+      "command": [
+        "taskset",
+        "-c",
+        "8",
+        "stdbuf",
+        "-oL",
+        "-eL",
+        "/home/lca/work/snowtg-compare-20260926/dperf/build/dperf",
+        "-c",
+        "/home/lca/work/snowtg-short-20260926/runs/dperf-120000-cc0-r1-p21224/dperf.conf"
+      ],
+      "config": "mode client\ncpu 0 2\nprotocol http\nduration 30s\nsocket_mem 2048\nport 0000:64:00.0 192.168.10.86 192.168.10.234\nclient 192.168.10.86 1\nserver 192.168.10.234 1\nlisten 21224 16\ncps 120000\nclient_port_range 49152 65535\npayload_file /home/lca/work/snowtg-compare-20260926/configs/short.http\nrss\nslow_start 10\n"
+    },
+    {
+      "start": 1790426578.8108628,
+      "end": 1790426634.2828832,
+      "exit": 0,
+      "tool": "dperf",
+      "rate": 120000,
+      "base_port": 21320,
+      "ports": 16,
+      "workers": 2,
+      "rep": 2,
+      "concurrency": null,
+      "duration": 30,
+      "name": "dperf-120000-cc0-r2-p21320",
+      "valid": true,
+      "server_rps": 119997.72042552043,
+      "server_rx_pps": 480031.0389072162,
+      "server_tx_pps": 599989.7342544467,
+      "steady_start": 1790426600.427165,
+      "steady_end": 1790426615.4431503,
+      "steady_seconds": 15.015985250473022,
+      "link_speeds": [
+        "1000"
+      ],
+      "server_cpu": {
+        "cpu": 0.4975186104218362,
+        "cpu0": 0.6716929403701165,
+        "cpu1": 0.3140096618357488,
+        "cpu2": 0.6757307953772943,
+        "cpu3": 0.30998613037447986,
+        "cpu4": 0.6641689373297003,
+        "cpu5": 0.30446927374301674,
+        "cpu6": 0.6758389261744966,
+        "cpu7": 0.3068340306834031,
+        "cpu8": 0.6696245733788396,
+        "cpu9": 0.3161865569272977,
+        "cpu10": 0.263705759888966,
+        "cpu11": 0.2674897119341564,
+        "cpu12": 0.671448087431694,
+        "cpu13": 0.3106796116504854,
+        "cpu14": 0.6791553133514986,
+        "cpu15": 0.8194263363754889
+      },
+      "client_cpu": {
+        "cpu": 0.12771184676244013,
+        "cpu0": 1.0,
+        "cpu1": 0.0,
+        "cpu2": 1.0,
+        "cpu3": 0.0,
+        "cpu4": 0.0013333333333333333,
+        "cpu5": 0.0,
+        "cpu6": 0.00266844563042028,
+        "cpu7": 0.0,
+        "cpu8": 0.03933333333333333,
+        "cpu9": 0.0,
+        "cpu10": 0.0,
+        "cpu11": 0.0,
+        "cpu12": 0.0,
+        "cpu13": 0.0,
+        "cpu14": 0.0,
+        "cpu15": 0.0
+      },
+      "native": {
+        "pktRx": 20984504,
+        "pktTx": 16788466,
+        "dropTx": 0,
+        "rstRx": 0,
+        "rstTx": 0,
+        "synRt": 0,
+        "finRt": 0,
+        "pushRt": 0,
+        "tcpDrop": 0,
+        "skOpen": 4197116,
+        "skClose": 4197116,
+        "skCon": 0,
+        "skErr": 0,
+        "httpGet": 4197116,
+        "http2XX": 4197116,
+        "httpErr": 0,
+        "imissed": 0
+      },
+      "mode": "short",
+      "profile": "ack",
+      "stage": "comparison",
+      "files_sha256": {
+        "client.jsonl": "8d9deb4994dbd8e9060b0100965c292de1e19fe6f82e9ec2128135f88e35e30b",
+        "command.json": "9121d10bc85d8c659cfd65eeda897810d82672b0177ab2ca681fdd1f65bb21f0",
+        "dperf.conf": "339ffba8ac7b1cae6986ff440338c151012da4cf442aaab1de945c7f79996f27",
+        "output.txt": "f420f21a64a58244f999926b631f7161cf41fb32ec4cc1af5ce3924018f43761",
+        "run.json": "c3484606e757dd2f0e02bb888d674511c533b6e9cdefdfb2bb194280cf477558"
+      },
+      "command": [
+        "taskset",
+        "-c",
+        "8",
+        "stdbuf",
+        "-oL",
+        "-eL",
+        "/home/lca/work/snowtg-compare-20260926/dperf/build/dperf",
+        "-c",
+        "/home/lca/work/snowtg-short-20260926/runs/dperf-120000-cc0-r2-p21320/dperf.conf"
+      ],
+      "config": "mode client\ncpu 0 2\nprotocol http\nduration 30s\nsocket_mem 2048\nport 0000:64:00.0 192.168.10.86 192.168.10.234\nclient 192.168.10.86 1\nserver 192.168.10.234 1\nlisten 21320 16\ncps 120000\nclient_port_range 49152 65535\npayload_file /home/lca/work/snowtg-compare-20260926/configs/short.http\nrss\nslow_start 10\n"
+    },
+    {
+      "start": 1790426297.499443,
+      "end": 1790426352.975183,
+      "exit": 0,
+      "tool": "dperf",
+      "rate": 160000,
+      "base_port": 21160,
+      "ports": 16,
+      "workers": 2,
+      "concurrency": null,
+      "duration": 30,
+      "name": "dperf-160000-cc0-r0-p21160",
+      "valid": true,
+      "server_rps": 121680.35479008025,
+      "server_rx_pps": 485591.5308176852,
+      "server_tx_pps": 575572.1960307581,
+      "steady_start": 1790426319.1114216,
+      "steady_end": 1790426334.1235244,
+      "steady_seconds": 15.012102842330933,
+      "link_speeds": [
+        "1000"
+      ],
+      "server_cpu": {
+        "cpu": 0.5363341268123782,
+        "cpu0": 0.7187713310580205,
+        "cpu1": 0.3224431818181818,
+        "cpu2": 0.7236662106703147,
+        "cpu3": 0.32696390658174096,
+        "cpu4": 0.7230142566191446,
+        "cpu5": 0.33216538192011213,
+        "cpu6": 0.7211997273346966,
+        "cpu7": 0.3229018492176387,
+        "cpu8": 0.7228668941979522,
+        "cpu9": 0.3302687411598303,
+        "cpu10": 0.2838709677419355,
+        "cpu11": 0.288135593220339,
+        "cpu12": 0.7233898305084746,
+        "cpu13": 0.324113475177305,
+        "cpu14": 0.7408163265306122,
+        "cpu15": 0.8900455432661027
+      },
+      "client_cpu": {
+        "cpu": 0.12804497189256714,
+        "cpu0": 1.0,
+        "cpu1": 0.0,
+        "cpu2": 1.0,
+        "cpu3": 0.0,
+        "cpu4": 0.00066711140760507,
+        "cpu5": 0.0,
+        "cpu6": 0.0013360053440213762,
+        "cpu7": 0.0,
+        "cpu8": 0.04584717607973422,
+        "cpu9": 0.0,
+        "cpu10": 0.0,
+        "cpu11": 0.0,
+        "cpu12": 0.0,
+        "cpu13": 0.0,
+        "cpu14": 0.0,
+        "cpu15": 0.0
+      },
+      "native": {
+        "pktRx": 21138578,
+        "pktTx": 17713092,
+        "dropTx": 0,
+        "rstRx": 372193,
+        "rstTx": 0,
+        "synRt": 30263,
+        "finRt": 441620,
+        "pushRt": 34436,
+        "tcpDrop": 222051,
+        "skOpen": 4443436,
+        "skClose": 4442924,
+        "skCon": 512,
+        "skErr": 2827,
+        "httpGet": 4474538,
+        "http2XX": 4440097,
+        "httpErr": 0,
+        "imissed": 0
+      },
+      "mode": "short",
+      "profile": "ack",
+      "stage": "exploration",
+      "files_sha256": {
+        "client.jsonl": "019616660d47d5f1bccd50d70a8ce790c69c27d1eedccec01792485c805b0db8",
+        "command.json": "53b21d0d0e331658b5cc2ff5f7f67a3b2d96144d52c721744b55d0cdfca5736e",
+        "dperf.conf": "5c17d2a5dc2ac27cfb982551f44f129e400740bea83b962a3e884e64e1015d27",
+        "output.txt": "6deaa15ca939f780731697d4dbbb31f5049281e4d54793a0e9499961cad9ff1a",
+        "run.json": "a6bf15ccf9387babc39e419ddb17fba5f8da99a2517718cc53aa28552f4fb129"
+      },
+      "command": [
+        "taskset",
+        "-c",
+        "8",
+        "stdbuf",
+        "-oL",
+        "-eL",
+        "/home/lca/work/snowtg-compare-20260926/dperf/build/dperf",
+        "-c",
+        "/home/lca/work/snowtg-short-20260926/runs/dperf-160000-cc0-r0-p21160/dperf.conf"
+      ],
+      "config": "mode client\ncpu 0 2\nprotocol http\nduration 30s\nsocket_mem 2048\nport 0000:64:00.0 192.168.10.86 192.168.10.234\nclient 192.168.10.86 1\nserver 192.168.10.234 1\nlisten 21160 16\ncps 160000\nclient_port_range 49152 65535\npayload_file /home/lca/work/snowtg-compare-20260926/configs/short.http\nrss\nslow_start 10\n"
+    },
+    {
+      "start": 1790425435.401539,
+      "end": 1790425493.391506,
+      "exit": 0,
+      "tool": "dperf",
+      "rate": 240000,
+      "base_port": 20064,
+      "ports": 16,
+      "workers": 2,
+      "concurrency": null,
+      "duration": 30,
+      "name": "dperf-240000-cc0-r0-p20064",
+      "valid": false,
+      "excluded": "server conntrack table exhaustion diagnostic",
+      "server_rps": 104899.57578887398,
+      "server_rx_pps": 426869.1547495625,
+      "server_tx_pps": 483354.43552784354,
+      "steady_start": 1790425457.9314842,
+      "steady_end": 1790425471.5292037,
+      "steady_seconds": 13.597719430923462,
+      "link_speeds": [
+        "1000"
+      ],
+      "server_cpu": {
+        "cpu": 0.6180273196582758,
+        "cpu0": 0.833808844507846,
+        "cpu1": 0.3742378048780488,
+        "cpu2": 0.8410220014194464,
+        "cpu3": 0.3808446455505279,
+        "cpu4": 0.8388928317955997,
+        "cpu5": 0.3709923664122137,
+        "cpu6": 0.8351101634683724,
+        "cpu7": 0.3765151515151515,
+        "cpu8": 0.83793347487615,
+        "cpu9": 0.3742378048780488,
+        "cpu10": 0.37056213017751477,
+        "cpu11": 0.343027591349739,
+        "cpu12": 0.8355776045357902,
+        "cpu13": 0.38199697428139184,
+        "cpu14": 0.8716502115655853,
+        "cpu15": 0.9005602240896359
+      },
+      "client_cpu": {
+        "cpu": 0.12823828421099567,
+        "cpu0": 1.0,
+        "cpu1": 0.0,
+        "cpu2": 1.0,
+        "cpu3": 0.0,
+        "cpu4": 0.000715307582260372,
+        "cpu5": 0.0,
+        "cpu6": 0.000715307582260372,
+        "cpu7": 0.0,
+        "cpu8": 0.04946996466431095,
+        "cpu9": 0.0,
+        "cpu10": 0.0,
+        "cpu11": 0.0,
+        "cpu12": 0.0,
+        "cpu13": 0.0,
+        "cpu14": 0.0,
+        "cpu15": 0.0
+      },
+      "native": {
+        "pktRx": 19599562,
+        "pktTx": 17098363,
+        "dropTx": 0,
+        "rstRx": 392001,
+        "rstTx": 0,
+        "synRt": 160732,
+        "finRt": 813676,
+        "pushRt": 174040,
+        "tcpDrop": 543651,
+        "skOpen": 4232861,
+        "skClose": 4228577,
+        "skCon": 4284,
+        "skErr": 22286,
+        "httpGet": 4386475,
+        "http2XX": 4206812,
+        "httpErr": 0,
+        "imissed": 0
+      },
+      "mode": "short",
+      "profile": "ack",
+      "stage": "excluded",
+      "files_sha256": {
+        "client.jsonl": "9c01a8be0d79a31f493aeb2f68232b04408c39d1493b0b552a210d41c96be3ef",
+        "command.json": "e64f3d8718d34506a58132c33a7399241675ac00a565572e66ad017e064dff03",
+        "dperf.conf": "8573be2efe26f47aa75ab7d3aae65a4697906516fcea6a90a7e63f2072349918",
+        "output.txt": "09e133f0c0c94f6c04330d73ae56ed85b7d0cec8ca564bfde4e9f1d8551c8571",
+        "run.json": "1533c352aa64361946cebca9a7848940b0049ce46ba45d7a826f9d5853210dde"
+      },
+      "command": [
+        "taskset",
+        "-c",
+        "8",
+        "stdbuf",
+        "-oL",
+        "-eL",
+        "/home/lca/work/snowtg-compare-20260926/dperf/build/dperf",
+        "-c",
+        "/home/lca/work/snowtg-short-20260926/runs/dperf-240000-cc0-r0-p20064/dperf.conf"
+      ],
+      "config": "mode client\ncpu 0 2\nprotocol http\nduration 30s\nsocket_mem 2048\nport 0000:64:00.0 192.168.10.86 192.168.10.234\nclient 192.168.10.86 1\nserver 192.168.10.234 1\nlisten 20064 16\ncps 240000\nclient_port_range 49152 65535\npayload_file /home/lca/work/snowtg-compare-20260926/configs/short.http\nrss\nslow_start 10\n"
+    },
+    {
+      "start": 1790425384.7172751,
+      "end": 1790425384.7219684,
+      "exit": 1,
+      "tool": "dperf",
+      "rate": 240000,
+      "base_port": 20000,
+      "ports": 16,
+      "workers": 2,
+      "concurrency": 512,
+      "duration": 30,
+      "name": "dperf-240000-cc512-r0-p20000",
+      "valid": false,
+      "excluded": "server conntrack table exhaustion diagnostic",
+      "mode": "short",
+      "profile": "ack",
+      "stage": "excluded",
+      "files_sha256": {
+        "client.jsonl": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "command.json": "342622cf0fe1ae2270b651306cbed9d757a6269052f3b7197c5d77e4082b2965",
+        "dperf.conf": "2b006bf148f7d100843a5dc9858f3a5f634d6e28b4e26afef03511459ed65744",
+        "output.txt": "f9f8aa41295f9010980b29332df7374d940c3cd97d675ceb1d7aefce2eb10df3",
+        "run.json": "f4c9f465eee5024a420af0b31bd904acdb7a969c779b33bd463d8122ee3f27fc"
+      },
+      "command": [
+        "taskset",
+        "-c",
+        "8",
+        "stdbuf",
+        "-oL",
+        "-eL",
+        "/home/lca/work/snowtg-compare-20260926/dperf/build/dperf",
+        "-c",
+        "/home/lca/work/snowtg-short-20260926/runs/dperf-240000-cc512-r0-p20000/dperf.conf"
+      ],
+      "config": "mode client\ncpu 0 2\nprotocol http\nduration 30s\nsocket_mem 2048\nport 0000:64:00.0 192.168.10.86 192.168.10.234\nclient 192.168.10.86 1\nserver 192.168.10.234 1\nlisten 20000 16\ncps 240000\ncc 512\nclient_port_range 49152 65535\npayload_file /home/lca/work/snowtg-compare-20260926/configs/short.http\nrss\nslow_start 10\n"
+    },
+    {
+      "start": 1790425701.2025518,
+      "end": 1790425756.7653706,
+      "exit": 0,
+      "tool": "dperf",
+      "rate": 64000,
+      "base_port": 20160,
+      "ports": 16,
+      "workers": 2,
+      "concurrency": null,
+      "duration": 30,
+      "name": "dperf-64000-cc0-r0-p20160",
+      "valid": false,
+      "excluded": "server conntrack table exhaustion diagnostic",
+      "server_rps": 62978.69465262789,
+      "server_rx_pps": 253145.35313440667,
+      "server_tx_pps": 314898.7935161611,
+      "steady_start": 1790425724.1361463,
+      "steady_end": 1790425739.1730251,
+      "steady_seconds": 15.036878824234009,
+      "link_speeds": [
+        "1000"
+      ],
+      "server_cpu": {
+        "cpu": 0.39738511988416164,
+        "cpu0": 0.5654801880456682,
+        "cpu1": 0.21567267683772537,
+        "cpu2": 0.5683501683501684,
+        "cpu3": 0.22191592005513439,
+        "cpu4": 0.564808596373405,
+        "cpu5": 0.21730103806228374,
+        "cpu6": 0.5622057834566241,
+        "cpu7": 0.2261168384879725,
+        "cpu8": 0.5686406460296097,
+        "cpu9": 0.2146341463414634,
+        "cpu10": 0.19724137931034483,
+        "cpu11": 0.18598195697432338,
+        "cpu12": 0.5669344042838019,
+        "cpu13": 0.21681723419041002,
+        "cpu14": 0.5989232839838493,
+        "cpu15": 0.6210807204803203
+      },
+      "client_cpu": {
+        "cpu": 0.1276498271625505,
+        "cpu0": 1.0,
+        "cpu1": 0.0,
+        "cpu2": 1.0,
+        "cpu3": 0.0,
+        "cpu4": 0.0006680026720106881,
+        "cpu5": 0.0,
+        "cpu6": 0.0006675567423230974,
+        "cpu7": 0.0,
+        "cpu8": 0.03877005347593583,
+        "cpu9": 0.0,
+        "cpu10": 0.0006657789613848203,
+        "cpu11": 0.0,
+        "cpu12": 0.0,
+        "cpu13": 0.0,
+        "cpu14": 0.0,
+        "cpu15": 0.0
+      },
+      "native": {
+        "pktRx": 11022416,
+        "pktTx": 8863123,
+        "dropTx": 0,
+        "rstRx": 18,
+        "rstTx": 0,
+        "synRt": 36195,
+        "finRt": 0,
+        "pushRt": 125,
+        "tcpDrop": 0,
+        "skOpen": 2212852,
+        "skClose": 2211307,
+        "skCon": 1545,
+        "skErr": 6653,
+        "httpGet": 2204806,
+        "http2XX": 2204636,
+        "httpErr": 0,
+        "imissed": 0
+      },
+      "mode": "short",
+      "profile": "ack",
+      "stage": "excluded",
+      "files_sha256": {
+        "client.jsonl": "8ee56b44cabf302377262d57d03c8d3808e704fab14097b073c6b88381430c90",
+        "command.json": "f5ca610dc61f26085d2bdc0dd0c6dd1decdc3de73e30218bd06264743bfea768",
+        "dperf.conf": "aae01c42edc3019af9c898e8e61b319e888dc3479e74c297b21ee7ef88a58316",
+        "output.txt": "2277205a5ee5292531009284766019931d39814894ca3738b450e1d36b248ae1",
+        "run.json": "6f844cd2429c0d6360f82f0463dfbd7db3b1ff40eb71ac8dda8416c253a4bfa3"
+      },
+      "command": [
+        "taskset",
+        "-c",
+        "8",
+        "stdbuf",
+        "-oL",
+        "-eL",
+        "/home/lca/work/snowtg-compare-20260926/dperf/build/dperf",
+        "-c",
+        "/home/lca/work/snowtg-short-20260926/runs/dperf-64000-cc0-r0-p20160/dperf.conf"
+      ],
+      "config": "mode client\ncpu 0 2\nprotocol http\nduration 30s\nsocket_mem 2048\nport 0000:64:00.0 192.168.10.86 192.168.10.234\nclient 192.168.10.86 1\nserver 192.168.10.234 1\nlisten 20160 16\ncps 64000\nclient_port_range 49152 65535\npayload_file /home/lca/work/snowtg-compare-20260926/configs/short.http\nrss\nslow_start 10\n"
+    },
+    {
+      "start": 1790425834.4169188,
+      "end": 1790425892.2981722,
+      "exit": 0,
+      "tool": "dperf",
+      "rate": 96000,
+      "base_port": 20192,
+      "ports": 16,
+      "workers": 2,
+      "concurrency": null,
+      "duration": 30,
+      "name": "dperf-96000-cc0-r0-p20192",
+      "valid": false,
+      "excluded": "server conntrack table exhaustion diagnostic",
+      "server_rps": 56907.78183318732,
+      "server_rx_pps": 253019.28632495864,
+      "server_tx_pps": 284587.0246496261,
+      "steady_start": 1790425856.878942,
+      "steady_end": 1790425871.4480567,
+      "steady_seconds": 14.569114685058594,
+      "link_speeds": [
+        "1000"
+      ],
+      "server_cpu": {
+        "cpu": 0.3752072439739829,
+        "cpu0": 0.5187457396046353,
+        "cpu1": 0.20247083047357584,
+        "cpu2": 0.5293720459149224,
+        "cpu3": 0.20110192837465565,
+        "cpu4": 0.5210027100271003,
+        "cpu5": 0.2062841530054645,
+        "cpu6": 0.535833891493637,
+        "cpu7": 0.20670773442847365,
+        "cpu8": 0.5228046289993192,
+        "cpu9": 0.2158322056833559,
+        "cpu10": 0.19064005505849965,
+        "cpu11": 0.16990291262135923,
+        "cpu12": 0.5300878972278567,
+        "cpu13": 0.1990324809951624,
+        "cpu14": 0.5929682217714672,
+        "cpu15": 0.6299212598425197
+      },
+      "client_cpu": {
+        "cpu": 0.12751957354656004,
+        "cpu0": 1.0,
+        "cpu1": 0.0,
+        "cpu2": 1.0,
+        "cpu3": 0.0,
+        "cpu4": 0.00133422281521014,
+        "cpu5": 0.0,
+        "cpu6": 0.00066711140760507,
+        "cpu7": 0.0,
+        "cpu8": 0.037358238825883926,
+        "cpu9": 0.0,
+        "cpu10": 0.0,
+        "cpu11": 0.0,
+        "cpu12": 0.0,
+        "cpu13": 0.0,
+        "cpu14": 0.0,
+        "cpu15": 0.0
+      },
+      "native": {
+        "pktRx": 12707914,
+        "pktTx": 10873136,
+        "dropTx": 0,
+        "rstRx": 367,
+        "rstTx": 0,
+        "synRt": 580738,
+        "finRt": 47,
+        "pushRt": 1656,
+        "tcpDrop": 143,
+        "skOpen": 2665630,
+        "skClose": 2665630,
+        "skCon": 0,
+        "skErr": 123807,
+        "httpGet": 2543810,
+        "http2XX": 2541456,
+        "httpErr": 0,
+        "imissed": 0
+      },
+      "mode": "short",
+      "profile": "ack",
+      "stage": "excluded",
+      "files_sha256": {
+        "client.jsonl": "1e7f92a73b34c78687aa5c8567566dddccbb2a4f758f7e5c0125a7657e6aeb6f",
+        "command.json": "ceb2ec3d8ffef2c2fe08050494eb4884c898fc69fbcf3cb4d2f1e7fe384197a3",
+        "dperf.conf": "c51225613a4d797b53a32a76b7064d5deea6cc27684071bfa0c26a57d3b69e24",
+        "output.txt": "c38586c725f07edb3e0ced839ae661fe276d56d6c825566458d5a2a341b57c71",
+        "run.json": "826ff8acf76725b668e41a4cda57b8ea7da367f70afae59ee8d0215ad5fa1fc3"
+      },
+      "command": [
+        "taskset",
+        "-c",
+        "8",
+        "stdbuf",
+        "-oL",
+        "-eL",
+        "/home/lca/work/snowtg-compare-20260926/dperf/build/dperf",
+        "-c",
+        "/home/lca/work/snowtg-short-20260926/runs/dperf-96000-cc0-r0-p20192/dperf.conf"
+      ],
+      "config": "mode client\ncpu 0 2\nprotocol http\nduration 30s\nsocket_mem 2048\nport 0000:64:00.0 192.168.10.86 192.168.10.234\nclient 192.168.10.86 1\nserver 192.168.10.234 1\nlisten 20192 16\ncps 96000\nclient_port_range 49152 65535\npayload_file /home/lca/work/snowtg-compare-20260926/configs/short.http\nrss\nslow_start 10\n"
+    },
+    {
+      "start": 1790426053.182958,
+      "end": 1790426108.703322,
+      "exit": 0,
+      "tool": "dperf",
+      "rate": 96000,
+      "base_port": 21032,
+      "ports": 16,
+      "workers": 2,
+      "concurrency": null,
+      "duration": 30,
+      "name": "dperf-96000-cc0-r0-p21032",
+      "valid": true,
+      "server_rps": 68003.50653445457,
+      "server_rx_pps": 281261.23644028197,
+      "server_tx_pps": 328516.0117659643,
+      "steady_start": 1790426074.811298,
+      "steady_end": 1790426089.8438315,
+      "steady_seconds": 15.032533645629883,
+      "link_speeds": [
+        "1000"
+      ],
+      "server_cpu": {
+        "cpu": 0.6006674082313682,
+        "cpu0": 0.7381111855324849,
+        "cpu1": 0.45136459062281314,
+        "cpu2": 0.7409152086137282,
+        "cpu3": 0.448907681465821,
+        "cpu4": 0.7381111855324849,
+        "cpu5": 0.45625,
+        "cpu6": 0.7368421052631579,
+        "cpu7": 0.4530812324929972,
+        "cpu8": 0.734185733512786,
+        "cpu9": 0.4495798319327731,
+        "cpu10": 0.4284712482468443,
+        "cpu11": 0.4286708420320111,
+        "cpu12": 0.7371621621621621,
+        "cpu13": 0.4523809523809524,
+        "cpu14": 0.7513404825737265,
+        "cpu15": 0.8123359580052494
+      },
+      "client_cpu": {
+        "cpu": 0.12921085464753587,
+        "cpu0": 1.0,
+        "cpu1": 0.0,
+        "cpu2": 1.0,
+        "cpu3": 0.0,
+        "cpu4": 0.0018796992481203006,
+        "cpu5": 0.0,
+        "cpu6": 0.0031289111389236545,
+        "cpu7": 0.0006246096189881324,
+        "cpu8": 0.0599388379204893,
+        "cpu9": 0.0,
+        "cpu10": 0.0,
+        "cpu11": 0.0006242197253433209,
+        "cpu12": 0.0006242197253433209,
+        "cpu13": 0.0,
+        "cpu14": 0.0006246096189881324,
+        "cpu15": 0.0
+      },
+      "native": {
+        "pktRx": 14293859,
+        "pktTx": 11721308,
+        "dropTx": 0,
+        "rstRx": 1214,
+        "rstTx": 0,
+        "synRt": 119965,
+        "finRt": 65994,
+        "pushRt": 121727,
+        "tcpDrop": 80502,
+        "skOpen": 2881765,
+        "skClose": 2880722,
+        "skCon": 1043,
+        "skErr": 11937,
+        "httpGet": 2996092,
+        "http2XX": 2868586,
+        "httpErr": 0,
+        "imissed": 0
+      },
+      "mode": "short",
+      "profile": "ack",
+      "stage": "exploration",
+      "files_sha256": {
+        "client.jsonl": "2883cd69944ef4119162cb1c98b4af82eb72849e5abd6862c42464525434648d",
+        "command.json": "dc5489ea9b2009d57070e78222872f51eea2bf50a79f2d70d208c880321386de",
+        "dperf.conf": "1dabce632d7330af86b00ee5b512027b2ff205eb3577841208e2164342d35fe7",
+        "output.txt": "3d8ac603f4aacb431ce84b0bb60a84ad1d37c5458d75dde75debf777e768b1e0",
+        "run.json": "0c359f08356315673401b6bff8e787c3b1b44571cc1cf6d5ebe571dec5cef6a8"
+      },
+      "command": [
+        "taskset",
+        "-c",
+        "8",
+        "stdbuf",
+        "-oL",
+        "-eL",
+        "/home/lca/work/snowtg-compare-20260926/dperf/build/dperf",
+        "-c",
+        "/home/lca/work/snowtg-short-20260926/runs/dperf-96000-cc0-r0-p21032/dperf.conf"
+      ],
+      "config": "mode client\ncpu 0 2\nprotocol http\nduration 30s\nsocket_mem 2048\nport 0000:64:00.0 192.168.10.86 192.168.10.234\nclient 192.168.10.86 1\nserver 192.168.10.234 1\nlisten 21032 16\ncps 96000\nclient_port_range 49152 65535\npayload_file /home/lca/work/snowtg-compare-20260926/configs/short.http\nrss\nslow_start 10\n"
+    },
+    {
+      "start": 1790426358.245536,
+      "end": 1790426394.9143066,
+      "exit": 0,
+      "tool": "snowtg",
+      "rate": 120000,
+      "base_port": 21192,
+      "ports": 16,
+      "workers": 2,
+      "rep": 0,
+      "concurrency": 512,
+      "duration": 30,
+      "name": "snowtg-120000-cc512-r0-p21192",
+      "valid": true,
+      "server_rps": 118183.89739872943,
+      "server_rx_pps": 530508.5407597345,
+      "server_tx_pps": 590935.4046088739,
+      "steady_start": 1790426376.169855,
+      "steady_end": 1790426391.184667,
+      "steady_seconds": 15.014811992645264,
+      "link_speeds": [
+        "1000"
+      ],
+      "server_cpu": {
+        "cpu": 0.5073104959339316,
+        "cpu0": 0.6933333333333334,
+        "cpu1": 0.2938718662952646,
+        "cpu2": 0.7018012008005337,
+        "cpu3": 0.31053351573187415,
+        "cpu4": 0.6986666666666667,
+        "cpu5": 0.3151803948264125,
+        "cpu6": 0.6929238985313751,
+        "cpu7": 0.3069511355815554,
+        "cpu8": 0.6911274182788526,
+        "cpu9": 0.3062068965517241,
+        "cpu10": 0.26068965517241377,
+        "cpu11": 0.25786593707250344,
+        "cpu12": 0.6955363091272485,
+        "cpu13": 0.314499659632403,
+        "cpu14": 0.7074468085106383,
+        "cpu15": 0.8045397225725095
+      },
+      "client_cpu": {
+        "cpu": 0.1256572907102913,
+        "cpu0": 1.0,
+        "cpu1": 0.0,
+        "cpu2": 1.0,
+        "cpu3": 0.0,
+        "cpu4": 0.0006666666666666666,
+        "cpu5": 0.0,
+        "cpu6": 0.002006688963210702,
+        "cpu7": 0.0,
+        "cpu8": 0.004797806716929404,
+        "cpu9": 0.0,
+        "cpu10": 0.0,
+        "cpu11": 0.0,
+        "cpu12": 0.0,
+        "cpu13": 0.0,
+        "cpu14": 0.0,
+        "cpu15": 0.0
+      },
+      "native": {
+        "scope": "aggregate",
+        "phase": "final",
+        "timestamp_us": "474381578879",
+        "sequence": "31",
+        "worker": "18446744073709551615",
+        "lcore": "18446744073709551615",
+        "started": "3537112",
+        "done": "3537112",
+        "success": "3537112",
+        "fail": "0",
+        "fail_connect": "0",
+        "fail_io": "0",
+        "fail_proto": "0",
+        "fail_resource": "0",
+        "deferred_resource": "62888",
+        "bytes_tx": "311265856",
+        "bytes_rx": "488121456",
+        "http_success_total": "3537112",
+        "active": "0",
+        "live_sockets": "0",
+        "connect_samples": "3537112",
+        "connect_sum_cycles": "10081104251948",
+        "connect_avg_us": "1349",
+        "connect_max_us": "7339",
+        "first_rx_samples": "3537112",
+        "first_rx_sum_cycles": "21200211797664",
+        "first_rx_avg_us": "2837",
+        "first_rx_max_us": "11644",
+        "complete_samples": "3537112",
+        "complete_sum_cycles": "21202052373903",
+        "complete_avg_us": "2838",
+        "complete_max_us": "11644",
+        "memory_paused": "0",
+        "memory_pauses": "0",
+        "tx_available": "16382",
+        "tx_peak": "195",
+        "payload_available": "16382",
+        "payload_peak": "197",
+        "tx_alloc_fail": "0",
+        "worker_turns": "221137452",
+        "rx_packets": "17687266",
+        "socket_scans": "14063494",
+        "tx_flush_calls": "14063494",
+        "dirty_tx_enqueues": "14063494",
+        "dirty_tx_dedup_hits": "12422416",
+        "dirty_tx_requeues": "0",
+        "dirty_tx_arp_waits": "94",
+        "dirty_tx_arp_wakeups": "94",
+        "dirty_tx_depth": "0",
+        "dirty_tx_high_water": "47",
+        "dirty_tx_budget_exhausted": "0",
+        "turn_avg_us": "0",
+        "rx_us": "11147653",
+        "maintenance_us": "1391934",
+        "reactor_us": "32001496",
+        "tx_flush_us": "5885179",
+        "reactor_turns": "221137452",
+        "reactor_events": "12019027",
+        "reactor_burst_high_water": "32",
+        "scheduler_starts": "3600000",
+        "tokens": "0",
+        "socket_releases": "3537112",
+        "ring_hwm_in": "2",
+        "ring_hwm_out": "49",
+        "rx_ring_drops": "0",
+        "tx_nic_drops": "0",
+        "udp_tx_queue_drops": "0",
+        "rx_owner_hits": "0",
+        "rx_software_hashes": "0",
+        "rx_parse_fallbacks": "0",
+        "stats_queue_drops": "0",
+        "connections_created": "3537112",
+        "connections_reused": "0",
+        "ofo_segments_current": "0",
+        "ofo_segments_peak": "0",
+        "ofo_bytes_current": "0",
+        "ofo_bytes_peak": "0",
+        "ofo_accepted_segments": "0",
+        "ofo_accepted_bytes": "0",
+        "ofo_released_segments": "0",
+        "ofo_released_bytes": "0",
+        "ofo_reorder_distance_max": "0",
+        "ofo_drop_rcvbuf": "0",
+        "ofo_drop_seg_limit": "0",
+        "ofo_drop_byte_limit": "0",
+        "ofo_drop_owner_limit": "0",
+        "ofo_drop_alloc": "0",
+        "ofo_drop_pressure": "0",
+        "ofo_pressure_transitions": "0",
+        "ofo_pressure_active": "0",
+        "tcp_drain_residual": "0",
+        "tcp_forced_cleanup": "0",
+        "tcp_pool_objects_in_use": "0",
+        "tx_packets": "15875812",
+        "tx_bursts": "10417499",
+        "nic_tx_cycles": "0",
+        "nic_tx_sampled_packets": "0",
+        "nic_tx_sampled_bursts": "0",
+        "nic_rx_packets": "17687086",
+        "rx_burst_calls": "221137452",
+        "rx_empty_bursts": "209092141",
+        "rx_full_bursts": "930",
+        "rx_handoffs": "180",
+        "rx_handoff_drops": "0",
+        "load_phase_index": "1",
+        "arrivals_planned": "3600000",
+        "arrivals_skipped": "0"
+      },
+      "native_rps": 117903.73333333334,
+      "mode": "short",
+      "profile": "ack",
+      "stage": "comparison",
+      "files_sha256": {
+        "client.jsonl": "5ba30f6e2f0cfb942576714160b7d175d5e31fd746c444d1233f614a490c45cf",
+        "command.json": "df54421c0669c3a013b0be5881e4807b823785847f5e435c58a61d0a9817a44e",
+        "output.txt": "1088635167dd30da06e9693d56385fe906ac528bff798961cba365cb4cc99919",
+        "run.json": "2ac8d387e5001260b6fb737551443603076829e3fb8f042091da815b637a9b2b",
+        "scenario.json": "408f79400c4388c71558d42e948510c887c7caa3b57d42d0976c2437b04830e3",
+        "workers.csv": "1a9153822455fbcd4a7cbecc5ce64f15a506d4ae9589cc0330a010726407b2db"
+      },
+      "command": [
+        "taskset",
+        "-c",
+        "8",
+        "stdbuf",
+        "-oL",
+        "-eL",
+        "/home/lca/work/snowtg-short-20260926/source/traffic-gen/build/traffic-gen",
+        "-l",
+        "8,0,2",
+        "--main-lcore",
+        "8",
+        "-a",
+        "0000:64:00.0",
+        "--file-prefix",
+        "snowtg-short",
+        "-m",
+        "2048",
+        "--",
+        "--workers",
+        "2",
+        "--socket-id-max",
+        "16384",
+        "--max-requests-per-connection",
+        "1",
+        "--rx-mode",
+        "worker",
+        "--tx-mode",
+        "worker",
+        "--local-ip",
+        "192.168.10.86",
+        "--stats-csv",
+        "/home/lca/work/snowtg-short-20260926/runs/snowtg-120000-cc512-r0-p21192/workers.csv",
+        "/home/lca/work/snowtg-short-20260926/runs/snowtg-120000-cc512-r0-p21192/scenario.json"
+      ],
+      "scenario": {
+        "name": "compare-short-2w",
+        "duration_sec": 30,
+        "max_concurrency": 512,
+        "target_cps": 120000,
+        "report_interval_sec": 1,
+        "classes": [
+          {
+            "name": "http_0",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21192
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_1",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21193
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_2",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21194
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_3",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21195
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_4",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21196
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_5",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21197
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_6",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21198
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_7",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21199
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_8",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21200
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_9",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21201
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_10",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21202
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_11",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21203
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_12",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21204
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_13",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21205
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_14",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21206
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_15",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21207
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "start": 1790426495.0609212,
+      "end": 1790426531.530275,
+      "exit": 0,
+      "tool": "snowtg",
+      "rate": 120000,
+      "base_port": 21256,
+      "ports": 16,
+      "workers": 2,
+      "rep": 1,
+      "concurrency": 512,
+      "duration": 30,
+      "name": "snowtg-120000-cc512-r1-p21256",
+      "valid": true,
+      "server_rps": 117336.12347115156,
+      "server_rx_pps": 527546.561567919,
+      "server_tx_pps": 586635.7263400749,
+      "steady_start": 1790426513.3318725,
+      "steady_end": 1790426528.3460126,
+      "steady_seconds": 15.014140129089355,
+      "link_speeds": [
+        "1000"
+      ],
+      "server_cpu": {
+        "cpu": 0.5054366149696561,
+        "cpu0": 0.692358803986711,
+        "cpu1": 0.29213483146067415,
+        "cpu2": 0.7018012008005337,
+        "cpu3": 0.3115201090661213,
+        "cpu4": 0.6973509933774834,
+        "cpu5": 0.3041379310344828,
+        "cpu6": 0.6871247498332221,
+        "cpu7": 0.31143052703627655,
+        "cpu8": 0.6850865512649801,
+        "cpu9": 0.3175355450236967,
+        "cpu10": 0.25587828492392806,
+        "cpu11": 0.2608991825613079,
+        "cpu12": 0.6876675603217158,
+        "cpu13": 0.3093278463648834,
+        "cpu14": 0.7123834886817576,
+        "cpu15": 0.7966857871255577
+      },
+      "client_cpu": {
+        "cpu": 0.12571452413735554,
+        "cpu0": 1.0,
+        "cpu1": 0.0,
+        "cpu2": 1.0,
+        "cpu3": 0.0,
+        "cpu4": 0.0006666666666666666,
+        "cpu5": 0.0,
+        "cpu6": 0.001336898395721925,
+        "cpu7": 0.0,
+        "cpu8": 0.004118050789293068,
+        "cpu9": 0.0006666666666666666,
+        "cpu10": 0.0,
+        "cpu11": 0.0,
+        "cpu12": 0.0,
+        "cpu13": 0.0,
+        "cpu14": 0.0,
+        "cpu15": 0.0
+      },
+      "native": {
+        "scope": "aggregate",
+        "phase": "final",
+        "timestamp_us": "474518231353",
+        "sequence": "31",
+        "worker": "18446744073709551615",
+        "lcore": "18446744073709551615",
+        "started": "3514963",
+        "done": "3514963",
+        "success": "3514963",
+        "fail": "0",
+        "fail_connect": "0",
+        "fail_io": "0",
+        "fail_proto": "0",
+        "fail_resource": "0",
+        "deferred_resource": "85037",
+        "bytes_tx": "309316744",
+        "bytes_rx": "485064894",
+        "http_success_total": "3514963",
+        "active": "0",
+        "live_sockets": "0",
+        "connect_samples": "3514963",
+        "connect_sum_cycles": "10010305103160",
+        "connect_avg_us": "1348",
+        "connect_max_us": "5961",
+        "first_rx_samples": "3514963",
+        "first_rx_sum_cycles": "21057475953965",
+        "first_rx_avg_us": "2836",
+        "first_rx_max_us": "11860",
+        "complete_samples": "3514963",
+        "complete_sum_cycles": "21059286993887",
+        "complete_avg_us": "2836",
+        "complete_max_us": "11860",
+        "memory_paused": "0",
+        "memory_pauses": "0",
+        "tx_available": "16382",
+        "tx_peak": "194",
+        "payload_available": "16382",
+        "payload_peak": "197",
+        "tx_alloc_fail": "0",
+        "worker_turns": "224251182",
+        "rx_packets": "17575210",
+        "socket_scans": "13992781",
+        "tx_flush_calls": "13992781",
+        "dirty_tx_enqueues": "13992781",
+        "dirty_tx_dedup_hits": "12335952",
+        "dirty_tx_requeues": "0",
+        "dirty_tx_arp_waits": "92",
+        "dirty_tx_arp_wakeups": "92",
+        "dirty_tx_depth": "0",
+        "dirty_tx_high_water": "48",
+        "dirty_tx_budget_exhausted": "0",
+        "turn_avg_us": "0",
+        "rx_us": "11033786",
+        "maintenance_us": "1410179",
+        "reactor_us": "32045947",
+        "tx_flush_us": "5832803",
+        "reactor_turns": "224251182",
+        "reactor_events": "11970396",
+        "reactor_burst_high_water": "32",
+        "scheduler_starts": "3600000",
+        "tokens": "0",
+        "socket_releases": "3514963",
+        "ring_hwm_in": "2",
+        "ring_hwm_out": "48",
+        "rx_ring_drops": "0",
+        "tx_nic_drops": "0",
+        "udp_tx_queue_drops": "0",
+        "rx_owner_hits": "0",
+        "rx_software_hashes": "0",
+        "rx_parse_fallbacks": "0",
+        "stats_queue_drops": "0",
+        "connections_created": "3514963",
+        "connections_reused": "0",
+        "ofo_segments_current": "0",
+        "ofo_segments_peak": "0",
+        "ofo_bytes_current": "0",
+        "ofo_bytes_peak": "0",
+        "ofo_accepted_segments": "0",
+        "ofo_accepted_bytes": "0",
+        "ofo_released_segments": "0",
+        "ofo_released_bytes": "0",
+        "ofo_reorder_distance_max": "0",
+        "ofo_drop_rcvbuf": "0",
+        "ofo_drop_seg_limit": "0",
+        "ofo_drop_byte_limit": "0",
+        "ofo_drop_owner_limit": "0",
+        "ofo_drop_alloc": "0",
+        "ofo_drop_pressure": "0",
+        "ofo_pressure_transitions": "0",
+        "ofo_pressure_active": "0",
+        "tcp_drain_residual": "0",
+        "tcp_forced_cleanup": "0",
+        "tcp_pool_objects_in_use": "0",
+        "tx_packets": "15783758",
+        "tx_bursts": "10392264",
+        "nic_tx_cycles": "0",
+        "nic_tx_sampled_packets": "0",
+        "nic_tx_sampled_bursts": "0",
+        "nic_rx_packets": "17575019",
+        "rx_burst_calls": "224251182",
+        "rx_empty_bursts": "212228010",
+        "rx_full_bursts": "1163",
+        "rx_handoffs": "191",
+        "rx_handoff_drops": "0",
+        "load_phase_index": "1",
+        "arrivals_planned": "3600000",
+        "arrivals_skipped": "0"
+      },
+      "native_rps": 117165.43333333333,
+      "mode": "short",
+      "profile": "ack",
+      "stage": "comparison",
+      "files_sha256": {
+        "client.jsonl": "1af2149d1efe048177f48e9dafc48086520830caa579ec8771fea0b028e9fc17",
+        "command.json": "98cb603c8a143e701de98ef315904f84c15020e93c99138defa6888b51a14bf7",
+        "output.txt": "07fb678a206ad21e77bc478367241176319578c2a9fc4f51c7fb93e3175fc771",
+        "run.json": "77540b9aaa870e9b52fc1ca94a52667ad9dcc1d83728b7fcc3817b04ec359760",
+        "scenario.json": "82f690cd841ab6d21a56f93937ce720cc6b699b8e56f593a5528f6b3755406e6",
+        "workers.csv": "2500c64b415b1d8c7aad308da64a2fa0c09502d4a07c9a93d458332dd3e8b6fc"
+      },
+      "command": [
+        "taskset",
+        "-c",
+        "8",
+        "stdbuf",
+        "-oL",
+        "-eL",
+        "/home/lca/work/snowtg-short-20260926/source/traffic-gen/build/traffic-gen",
+        "-l",
+        "8,0,2",
+        "--main-lcore",
+        "8",
+        "-a",
+        "0000:64:00.0",
+        "--file-prefix",
+        "snowtg-short",
+        "-m",
+        "2048",
+        "--",
+        "--workers",
+        "2",
+        "--socket-id-max",
+        "16384",
+        "--max-requests-per-connection",
+        "1",
+        "--rx-mode",
+        "worker",
+        "--tx-mode",
+        "worker",
+        "--local-ip",
+        "192.168.10.86",
+        "--stats-csv",
+        "/home/lca/work/snowtg-short-20260926/runs/snowtg-120000-cc512-r1-p21256/workers.csv",
+        "/home/lca/work/snowtg-short-20260926/runs/snowtg-120000-cc512-r1-p21256/scenario.json"
+      ],
+      "scenario": {
+        "name": "compare-short-2w",
+        "duration_sec": 30,
+        "max_concurrency": 512,
+        "target_cps": 120000,
+        "report_interval_sec": 1,
+        "classes": [
+          {
+            "name": "http_0",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21256
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_1",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21257
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_2",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21258
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_3",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21259
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_4",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21260
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_5",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21261
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_6",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21262
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_7",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21263
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_8",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21264
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_9",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21265
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_10",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21266
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_11",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21267
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_12",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21268
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_13",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21269
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_14",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21270
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_15",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21271
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "start": 1790426536.7828183,
+      "end": 1790426573.5525513,
+      "exit": 0,
+      "tool": "snowtg",
+      "rate": 120000,
+      "base_port": 21288,
+      "ports": 16,
+      "workers": 2,
+      "rep": 2,
+      "concurrency": 512,
+      "duration": 30,
+      "name": "snowtg-120000-cc512-r2-p21288",
+      "valid": true,
+      "server_rps": 118226.58800499116,
+      "server_rx_pps": 530730.4403722273,
+      "server_tx_pps": 591114.2930439364,
+      "steady_start": 1790426555.3776395,
+      "steady_end": 1790426570.393475,
+      "steady_seconds": 15.015835523605347,
+      "link_speeds": [
+        "1000"
+      ],
+      "server_cpu": {
+        "cpu": 0.5113412435537295,
+        "cpu0": 0.6981505944517834,
+        "cpu1": 0.3064182194616977,
+        "cpu2": 0.6947368421052632,
+        "cpu3": 0.30922865013774103,
+        "cpu4": 0.6971504307488403,
+        "cpu5": 0.3131381892443839,
+        "cpu6": 0.7047244094488189,
+        "cpu7": 0.30284130284130284,
+        "cpu8": 0.6988823142669297,
+        "cpu9": 0.31013094417643006,
+        "cpu10": 0.2608695652173913,
+        "cpu11": 0.2606019151846785,
+        "cpu12": 0.6988110964332893,
+        "cpu13": 0.3103922918100482,
+        "cpu14": 0.7241830065359477,
+        "cpu15": 0.803391959798995
+      },
+      "client_cpu": {
+        "cpu": 0.1257197696737044,
+        "cpu0": 1.0,
+        "cpu1": 0.0,
+        "cpu2": 1.0,
+        "cpu3": 0.0,
+        "cpu4": 0.0013351134846461949,
+        "cpu5": 0.0,
+        "cpu6": 0.002005347593582888,
+        "cpu7": 0.0,
+        "cpu8": 0.003429355281207133,
+        "cpu9": 0.0,
+        "cpu10": 0.0,
+        "cpu11": 0.0,
+        "cpu12": 0.0,
+        "cpu13": 0.0,
+        "cpu14": 0.0,
+        "cpu15": 0.0
+      },
+      "native": {
+        "scope": "aggregate",
+        "phase": "final",
+        "timestamp_us": "474560253348",
+        "sequence": "31",
+        "worker": "18446744073709551615",
+        "lcore": "18446744073709551615",
+        "started": "3533464",
+        "done": "3533464",
+        "success": "3533464",
+        "fail": "0",
+        "fail_connect": "0",
+        "fail_io": "0",
+        "fail_proto": "0",
+        "fail_resource": "0",
+        "deferred_resource": "66536",
+        "bytes_tx": "310944832",
+        "bytes_rx": "487618032",
+        "http_success_total": "3533464",
+        "active": "0",
+        "live_sockets": "0",
+        "connect_samples": "3533464",
+        "connect_sum_cycles": "9994249537853",
+        "connect_avg_us": "1339",
+        "connect_max_us": "9987",
+        "first_rx_samples": "3533464",
+        "first_rx_sum_cycles": "21001151233897",
+        "first_rx_avg_us": "2814",
+        "first_rx_max_us": "12633",
+        "complete_samples": "3533464",
+        "complete_sum_cycles": "21002967249350",
+        "complete_avg_us": "2814",
+        "complete_max_us": "12633",
+        "memory_paused": "0",
+        "memory_pauses": "0",
+        "tx_available": "16382",
+        "tx_peak": "194",
+        "payload_available": "16382",
+        "payload_peak": "195",
+        "tx_alloc_fail": "0",
+        "worker_turns": "222173463",
+        "rx_packets": "17667723",
+        "socket_scans": "14064764",
+        "tx_flush_calls": "14064764",
+        "dirty_tx_enqueues": "14064764",
+        "dirty_tx_dedup_hits": "12401724",
+        "dirty_tx_requeues": "0",
+        "dirty_tx_arp_waits": "89",
+        "dirty_tx_arp_wakeups": "89",
+        "dirty_tx_depth": "0",
+        "dirty_tx_high_water": "45",
+        "dirty_tx_budget_exhausted": "0",
+        "turn_avg_us": "0",
+        "rx_us": "11118378",
+        "maintenance_us": "1397965",
+        "reactor_us": "31991702",
+        "tx_flush_us": "5872308",
+        "reactor_turns": "222173463",
+        "reactor_events": "12029670",
+        "reactor_burst_high_water": "32",
+        "scheduler_starts": "3600000",
+        "tokens": "0",
+        "socket_releases": "3533464",
+        "ring_hwm_in": "1",
+        "ring_hwm_out": "48",
+        "rx_ring_drops": "0",
+        "tx_nic_drops": "0",
+        "udp_tx_queue_drops": "0",
+        "rx_owner_hits": "0",
+        "rx_software_hashes": "0",
+        "rx_parse_fallbacks": "0",
+        "stats_queue_drops": "0",
+        "connections_created": "3533464",
+        "connections_reused": "0",
+        "ofo_segments_current": "0",
+        "ofo_segments_peak": "0",
+        "ofo_bytes_current": "0",
+        "ofo_bytes_peak": "0",
+        "ofo_accepted_segments": "0",
+        "ofo_accepted_bytes": "0",
+        "ofo_released_segments": "0",
+        "ofo_released_bytes": "0",
+        "ofo_reorder_distance_max": "0",
+        "ofo_drop_rcvbuf": "0",
+        "ofo_drop_seg_limit": "0",
+        "ofo_drop_byte_limit": "0",
+        "ofo_drop_owner_limit": "0",
+        "ofo_drop_alloc": "0",
+        "ofo_drop_pressure": "0",
+        "ofo_pressure_transitions": "0",
+        "ofo_pressure_active": "0",
+        "tcp_drain_residual": "0",
+        "tcp_forced_cleanup": "0",
+        "tcp_pool_objects_in_use": "0",
+        "tx_packets": "15866009",
+        "tx_bursts": "10448290",
+        "nic_tx_cycles": "0",
+        "nic_tx_sampled_packets": "0",
+        "nic_tx_sampled_bursts": "0",
+        "nic_rx_packets": "17667539",
+        "rx_burst_calls": "222173463",
+        "rx_empty_bursts": "210082408",
+        "rx_full_bursts": "902",
+        "rx_handoffs": "184",
+        "rx_handoff_drops": "0",
+        "load_phase_index": "1",
+        "arrivals_planned": "3600000",
+        "arrivals_skipped": "0"
+      },
+      "native_rps": 117782.13333333333,
+      "mode": "short",
+      "profile": "ack",
+      "stage": "comparison",
+      "files_sha256": {
+        "client.jsonl": "f18ded42b61e2b04ee1c19cd1c54aa701540fe899316d099d303174901137195",
+        "command.json": "311c6321204abdfdc2e2c866ebacb3723160332c72ad116c133d1afd1418b500",
+        "output.txt": "1088635167dd30da06e9693d56385fe906ac528bff798961cba365cb4cc99919",
+        "run.json": "af6f3bd4d3365ff2c76775e684ab82d52da37bace24e43425d54490f57023412",
+        "scenario.json": "dd577462a977b270a3a82c1bd2a10c91d20ab80058b84f53ddd46a46210eb345",
+        "workers.csv": "74249abdc1d9c3d61b8ba168d005c1ad1ad8e7d794fa446cfdce06a67acdba5d"
+      },
+      "command": [
+        "taskset",
+        "-c",
+        "8",
+        "stdbuf",
+        "-oL",
+        "-eL",
+        "/home/lca/work/snowtg-short-20260926/source/traffic-gen/build/traffic-gen",
+        "-l",
+        "8,0,2",
+        "--main-lcore",
+        "8",
+        "-a",
+        "0000:64:00.0",
+        "--file-prefix",
+        "snowtg-short",
+        "-m",
+        "2048",
+        "--",
+        "--workers",
+        "2",
+        "--socket-id-max",
+        "16384",
+        "--max-requests-per-connection",
+        "1",
+        "--rx-mode",
+        "worker",
+        "--tx-mode",
+        "worker",
+        "--local-ip",
+        "192.168.10.86",
+        "--stats-csv",
+        "/home/lca/work/snowtg-short-20260926/runs/snowtg-120000-cc512-r2-p21288/workers.csv",
+        "/home/lca/work/snowtg-short-20260926/runs/snowtg-120000-cc512-r2-p21288/scenario.json"
+      ],
+      "scenario": {
+        "name": "compare-short-2w",
+        "duration_sec": 30,
+        "max_concurrency": 512,
+        "target_cps": 120000,
+        "report_interval_sec": 1,
+        "classes": [
+          {
+            "name": "http_0",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21288
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_1",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21289
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_2",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21290
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_3",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21291
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_4",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21292
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_5",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21293
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_6",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21294
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_7",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21295
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_8",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21296
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_9",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21297
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_10",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21298
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_11",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21299
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_12",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21300
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_13",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21301
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_14",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21302
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_15",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21303
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "start": 1790426174.8564963,
+      "end": 1790426214.6477947,
+      "exit": 0,
+      "tool": "snowtg",
+      "rate": 120000,
+      "base_port": 21096,
+      "ports": 16,
+      "workers": 2,
+      "concurrency": 8192,
+      "duration": 30,
+      "name": "snowtg-120000-cc8192-r0-p21096",
+      "valid": true,
+      "server_rps": 120012.15058998656,
+      "server_rx_pps": 536955.2132751558,
+      "server_tx_pps": 600210.1415784189,
+      "steady_start": 1790426195.9635978,
+      "steady_end": 1790426210.9781275,
+      "steady_seconds": 15.014529705047607,
+      "link_speeds": [
+        "1000"
+      ],
+      "server_cpu": {
+        "cpu": 0.5128657180036099,
+        "cpu0": 0.695244474212994,
+        "cpu1": 0.30684174153420873,
+        "cpu2": 0.703530979347102,
+        "cpu3": 0.3151803948264125,
+        "cpu4": 0.6978609625668449,
+        "cpu5": 0.3167574931880109,
+        "cpu6": 0.7091870456047588,
+        "cpu7": 0.3181198910081744,
+        "cpu8": 0.7035809018567639,
+        "cpu9": 0.3277367360644728,
+        "cpu10": 0.2717983651226158,
+        "cpu11": 0.26448534423994546,
+        "cpu12": 0.6945746818486269,
+        "cpu13": 0.32040816326530613,
+        "cpu14": 0.7067020570670206,
+        "cpu15": 0.80306905370844
+      },
+      "client_cpu": {
+        "cpu": 0.12556334501752628,
+        "cpu0": 1.0,
+        "cpu1": 0.0,
+        "cpu2": 1.0,
+        "cpu3": 0.0,
+        "cpu4": 0.00133422281521014,
+        "cpu5": 0.0,
+        "cpu6": 0.0006688963210702341,
+        "cpu7": 0.0,
+        "cpu8": 0.0027472527472527475,
+        "cpu9": 0.0,
+        "cpu10": 0.0,
+        "cpu11": 0.0,
+        "cpu12": 0.0,
+        "cpu13": 0.0,
+        "cpu14": 0.0,
+        "cpu15": 0.0
+      },
+      "native": {
+        "scope": "aggregate",
+        "phase": "final",
+        "timestamp_us": "474201344135",
+        "sequence": "31",
+        "worker": "18446744073709551615",
+        "lcore": "18446744073709551615",
+        "started": "3600000",
+        "done": "3600000",
+        "success": "3600000",
+        "fail": "0",
+        "fail_connect": "0",
+        "fail_io": "0",
+        "fail_proto": "0",
+        "fail_resource": "0",
+        "deferred_resource": "0",
+        "bytes_tx": "316800000",
+        "bytes_rx": "496800000",
+        "http_success_total": "3600000",
+        "active": "0",
+        "live_sockets": "0",
+        "connect_samples": "3600000",
+        "connect_sum_cycles": "11549501219356",
+        "connect_avg_us": "1519",
+        "connect_max_us": "1010283",
+        "first_rx_samples": "3600000",
+        "first_rx_sum_cycles": "24990359069607",
+        "first_rx_avg_us": "3286",
+        "first_rx_max_us": "1016011",
+        "complete_samples": "3600000",
+        "complete_sum_cycles": "24992267067027",
+        "complete_avg_us": "3287",
+        "complete_max_us": "1016011",
+        "memory_paused": "0",
+        "memory_pauses": "0",
+        "tx_available": "16382",
+        "tx_peak": "372",
+        "payload_available": "16382",
+        "payload_peak": "372",
+        "tx_alloc_fail": "0",
+        "worker_turns": "217105099",
+        "rx_packets": "18003927",
+        "socket_scans": "14217527",
+        "tx_flush_calls": "14217527",
+        "dirty_tx_enqueues": "14217529",
+        "dirty_tx_dedup_hits": "12692354",
+        "dirty_tx_requeues": "0",
+        "dirty_tx_arp_waits": "91",
+        "dirty_tx_arp_wakeups": "91",
+        "dirty_tx_depth": "0",
+        "dirty_tx_high_water": "46",
+        "dirty_tx_budget_exhausted": "0",
+        "turn_avg_us": "0",
+        "rx_us": "11434269",
+        "maintenance_us": "1366532",
+        "reactor_us": "31833790",
+        "tx_flush_us": "5938031",
+        "reactor_turns": "217105099",
+        "reactor_events": "12185087",
+        "reactor_burst_high_water": "24",
+        "scheduler_starts": "3600000",
+        "tokens": "0",
+        "socket_releases": "3600000",
+        "ring_hwm_in": "1",
+        "ring_hwm_out": "46",
+        "rx_ring_drops": "0",
+        "tx_nic_drops": "0",
+        "udp_tx_queue_drops": "0",
+        "rx_owner_hits": "0",
+        "rx_software_hashes": "0",
+        "rx_parse_fallbacks": "0",
+        "stats_queue_drops": "0",
+        "connections_created": "3600000",
+        "connections_reused": "0",
+        "ofo_segments_current": "0",
+        "ofo_segments_peak": "0",
+        "ofo_bytes_current": "0",
+        "ofo_bytes_peak": "0",
+        "ofo_accepted_segments": "0",
+        "ofo_accepted_bytes": "0",
+        "ofo_released_segments": "0",
+        "ofo_released_bytes": "0",
+        "ofo_reorder_distance_max": "0",
+        "ofo_drop_rcvbuf": "0",
+        "ofo_drop_seg_limit": "0",
+        "ofo_drop_byte_limit": "0",
+        "ofo_drop_owner_limit": "0",
+        "ofo_drop_alloc": "0",
+        "ofo_drop_pressure": "0",
+        "ofo_pressure_transitions": "0",
+        "ofo_pressure_active": "0",
+        "tcp_drain_residual": "0",
+        "tcp_forced_cleanup": "0",
+        "tcp_pool_objects_in_use": "0",
+        "tx_packets": "16110699",
+        "tx_bursts": "10575756",
+        "nic_tx_cycles": "0",
+        "nic_tx_sampled_packets": "0",
+        "nic_tx_sampled_bursts": "0",
+        "nic_rx_packets": "18003746",
+        "rx_burst_calls": "217105099",
+        "rx_empty_bursts": "204936513",
+        "rx_full_bursts": "25",
+        "rx_handoffs": "181",
+        "rx_handoff_drops": "0",
+        "load_phase_index": "1",
+        "arrivals_planned": "3600000",
+        "arrivals_skipped": "0"
+      },
+      "native_rps": 120000.0,
+      "mode": "short",
+      "profile": "ack",
+      "stage": "exploration",
+      "files_sha256": {
+        "client.jsonl": "f51e47259e179944a08379d1c29a42103ee97fc9daf95439693ba6892de9e090",
+        "command.json": "3b62d305e92c2c5d43a9fa1ff94fecfe9d436b85d1a097e076052f02a17214cf",
+        "output.txt": "34cbd8aaa1ce851ee26e74d15112a20914479fae3b8f2c5b1261e60912816c96",
+        "run.json": "e76498c1fa4f89ce125a8e40bf152baed8b2319c98bdc8472c361174b0407cd2",
+        "scenario.json": "e299167e37c305ef2633ef6ac7938d2b3c17b38dabb75ff3224ee327da2bf494",
+        "workers.csv": "05d1d25969f5ccf4311de912cbc33e0c5b3c2c7900d284c3e674bace0b7b9f0b"
+      },
+      "command": [
+        "taskset",
+        "-c",
+        "8",
+        "stdbuf",
+        "-oL",
+        "-eL",
+        "/home/lca/work/snowtg-short-20260926/source/traffic-gen/build/traffic-gen",
+        "-l",
+        "8,0,2",
+        "--main-lcore",
+        "8",
+        "-a",
+        "0000:64:00.0",
+        "--file-prefix",
+        "snowtg-short",
+        "-m",
+        "2048",
+        "--",
+        "--workers",
+        "2",
+        "--socket-id-max",
+        "16384",
+        "--max-requests-per-connection",
+        "1",
+        "--rx-mode",
+        "worker",
+        "--tx-mode",
+        "worker",
+        "--local-ip",
+        "192.168.10.86",
+        "--stats-csv",
+        "/home/lca/work/snowtg-short-20260926/runs/snowtg-120000-cc8192-r0-p21096/workers.csv",
+        "/home/lca/work/snowtg-short-20260926/runs/snowtg-120000-cc8192-r0-p21096/scenario.json"
+      ],
+      "scenario": {
+        "name": "compare-short-2w",
+        "duration_sec": 30,
+        "max_concurrency": 8192,
+        "target_cps": 120000,
+        "report_interval_sec": 1,
+        "classes": [
+          {
+            "name": "http_0",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21096
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_1",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21097
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_2",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21098
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_3",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21099
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_4",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21100
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_5",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21101
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_6",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21102
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_7",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21103
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_8",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21104
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_9",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21105
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_10",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21106
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_11",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21107
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_12",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21108
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_13",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21109
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_14",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21110
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_15",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21111
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "start": 1790426248.7390726,
+      "end": 1790426292.2343976,
+      "exit": 0,
+      "tool": "snowtg",
+      "rate": 160000,
+      "base_port": 21128,
+      "ports": 16,
+      "workers": 2,
+      "concurrency": 8192,
+      "duration": 30,
+      "name": "snowtg-160000-cc8192-r0-p21128",
+      "valid": true,
+      "server_rps": 112475.83090050364,
+      "server_rx_pps": 477414.1799409371,
+      "server_tx_pps": 552120.0304345078,
+      "steady_start": 1790426267.0480766,
+      "steady_end": 1790426282.064076,
+      "steady_seconds": 15.01599931716919,
+      "link_speeds": [
+        "1000"
+      ],
+      "server_cpu": {
+        "cpu": 0.5172399060029909,
+        "cpu0": 0.7095908786049631,
+        "cpu1": 0.3157529493407356,
+        "cpu2": 0.7083051991897367,
+        "cpu3": 0.3068820224719101,
+        "cpu4": 0.706199460916442,
+        "cpu5": 0.31027253668763105,
+        "cpu6": 0.7086137281292059,
+        "cpu7": 0.30833917309039943,
+        "cpu8": 0.706989247311828,
+        "cpu9": 0.3116701607267645,
+        "cpu10": 0.26718092566619916,
+        "cpu11": 0.2621696801112656,
+        "cpu12": 0.7064343163538874,
+        "cpu13": 0.3143254520166898,
+        "cpu14": 0.7163072776280324,
+        "cpu15": 0.8416938110749186
+      },
+      "client_cpu": {
+        "cpu": 0.12575125208681134,
+        "cpu0": 1.0,
+        "cpu1": 0.0,
+        "cpu2": 1.0,
+        "cpu3": 0.0,
+        "cpu4": 0.00266844563042028,
+        "cpu5": 0.0,
+        "cpu6": 0.00267379679144385,
+        "cpu7": 0.0,
+        "cpu8": 0.0054832076764907475,
+        "cpu9": 0.0006662225183211193,
+        "cpu10": 0.0006662225183211193,
+        "cpu11": 0.0,
+        "cpu12": 0.0,
+        "cpu13": 0.0,
+        "cpu14": 0.0,
+        "cpu15": 0.0
+      },
+      "native": {
+        "scope": "aggregate",
+        "phase": "final",
+        "timestamp_us": "474278892766",
+        "sequence": "37",
+        "worker": "18446744073709551615",
+        "lcore": "18446744073709551615",
+        "started": "3386775",
+        "done": "3386775",
+        "success": "3386741",
+        "fail": "34",
+        "fail_connect": "0",
+        "fail_io": "34",
+        "fail_proto": "0",
+        "fail_resource": "0",
+        "deferred_resource": "1413224",
+        "bytes_tx": "298036200",
+        "bytes_rx": "467370258",
+        "http_success_total": "3386741",
+        "active": "0",
+        "live_sockets": "0",
+        "connect_samples": "3386775",
+        "connect_sum_cycles": "219610155826906",
+        "connect_avg_us": "30702",
+        "connect_max_us": "3050573",
+        "first_rx_samples": "3386741",
+        "first_rx_sum_cycles": "505896101559661",
+        "first_rx_avg_us": "70727",
+        "first_rx_max_us": "4019587",
+        "complete_samples": "3386775",
+        "complete_sum_cycles": "506257638115628",
+        "complete_avg_us": "70776",
+        "complete_max_us": "5001054",
+        "memory_paused": "0",
+        "memory_pauses": "0",
+        "tx_available": "16382",
+        "tx_peak": "1906",
+        "payload_available": "16382",
+        "payload_peak": "1907",
+        "tx_alloc_fail": "0",
+        "worker_turns": "242925215",
+        "rx_packets": "16628948",
+        "socket_scans": "11454133",
+        "tx_flush_calls": "11454133",
+        "dirty_tx_enqueues": "11454208",
+        "dirty_tx_dedup_hits": "12852783",
+        "dirty_tx_requeues": "0",
+        "dirty_tx_arp_waits": "116",
+        "dirty_tx_arp_wakeups": "116",
+        "dirty_tx_depth": "0",
+        "dirty_tx_high_water": "119",
+        "dirty_tx_budget_exhausted": "20",
+        "turn_avg_us": "0",
+        "rx_us": "15769159",
+        "maintenance_us": "1559807",
+        "reactor_us": "40553145",
+        "tx_flush_us": "5815304",
+        "reactor_turns": "242925215",
+        "reactor_events": "9137076",
+        "reactor_burst_high_water": "32",
+        "scheduler_starts": "4799999",
+        "tokens": "0",
+        "socket_releases": "3386775",
+        "ring_hwm_in": "2",
+        "ring_hwm_out": "73",
+        "rx_ring_drops": "0",
+        "tx_nic_drops": "0",
+        "udp_tx_queue_drops": "0",
+        "rx_owner_hits": "0",
+        "rx_software_hashes": "0",
+        "rx_parse_fallbacks": "0",
+        "stats_queue_drops": "0",
+        "connections_created": "3386775",
+        "connections_reused": "0",
+        "ofo_segments_current": "0",
+        "ofo_segments_peak": "1557",
+        "ofo_bytes_current": "0",
+        "ofo_bytes_peak": "0",
+        "ofo_accepted_segments": "213510",
+        "ofo_accepted_bytes": "0",
+        "ofo_released_segments": "213510",
+        "ofo_released_bytes": "0",
+        "ofo_reorder_distance_max": "138",
+        "ofo_drop_rcvbuf": "0",
+        "ofo_drop_seg_limit": "0",
+        "ofo_drop_byte_limit": "0",
+        "ofo_drop_owner_limit": "0",
+        "ofo_drop_alloc": "0",
+        "ofo_drop_pressure": "0",
+        "ofo_pressure_transitions": "0",
+        "ofo_pressure_active": "0",
+        "tcp_drain_residual": "0",
+        "tcp_forced_cleanup": "0",
+        "tcp_pool_objects_in_use": "0",
+        "tx_packets": "14380120",
+        "tx_bursts": "3290288",
+        "nic_tx_cycles": "0",
+        "nic_tx_sampled_packets": "0",
+        "nic_tx_sampled_bursts": "0",
+        "nic_rx_packets": "16628726",
+        "rx_burst_calls": "242925215",
+        "rx_empty_bursts": "240098679",
+        "rx_full_bursts": "185740",
+        "rx_handoffs": "222",
+        "rx_handoff_drops": "0",
+        "load_phase_index": "1",
+        "arrivals_planned": "4800000",
+        "arrivals_skipped": "1"
+      },
+      "native_rps": 112891.36666666667,
+      "mode": "short",
+      "profile": "ack",
+      "stage": "exploration",
+      "files_sha256": {
+        "client.jsonl": "babaa3b6b595883fecbb9aa43793e30dbe19759912f1fe26faba41ea2e0fd770",
+        "command.json": "bdec913ba18762e4cb506e4396cb0d0a9baa8f91e5c0b49d151b7732ae503c15",
+        "output.txt": "d399a0413cd161bfaf60ed0c86146da6e38a99d66e4ac5022c688157c0d4c259",
+        "run.json": "a2ab81809d8f0b15faa406d3222cd976cc14f3c244e0c1f0111ee0ef6139ae55",
+        "scenario.json": "a91131be1c1e4832f91fd5b084f4f63b2ee5f318f9084749462d471b134da4b2",
+        "workers.csv": "d57a0480bb2747f749c180d653bb8949150e09d9c6ad94e22a631b897081f538"
+      },
+      "command": [
+        "taskset",
+        "-c",
+        "8",
+        "stdbuf",
+        "-oL",
+        "-eL",
+        "/home/lca/work/snowtg-short-20260926/source/traffic-gen/build/traffic-gen",
+        "-l",
+        "8,0,2",
+        "--main-lcore",
+        "8",
+        "-a",
+        "0000:64:00.0",
+        "--file-prefix",
+        "snowtg-short",
+        "-m",
+        "2048",
+        "--",
+        "--workers",
+        "2",
+        "--socket-id-max",
+        "16384",
+        "--max-requests-per-connection",
+        "1",
+        "--rx-mode",
+        "worker",
+        "--tx-mode",
+        "worker",
+        "--local-ip",
+        "192.168.10.86",
+        "--stats-csv",
+        "/home/lca/work/snowtg-short-20260926/runs/snowtg-160000-cc8192-r0-p21128/workers.csv",
+        "/home/lca/work/snowtg-short-20260926/runs/snowtg-160000-cc8192-r0-p21128/scenario.json"
+      ],
+      "scenario": {
+        "name": "compare-short-2w",
+        "duration_sec": 30,
+        "max_concurrency": 8192,
+        "target_cps": 160000,
+        "report_interval_sec": 1,
+        "classes": [
+          {
+            "name": "http_0",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21128
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_1",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21129
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_2",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21130
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_3",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21131
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_4",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21132
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_5",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21133
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_6",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21134
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_7",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21135
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_8",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21136
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_9",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21137
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_10",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21138
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_11",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21139
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_12",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21140
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_13",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21141
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_14",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21142
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_15",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21143
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "start": 1790425498.578335,
+      "end": 1790425632.3523269,
+      "exit": 0,
+      "tool": "snowtg",
+      "rate": 240000,
+      "base_port": 20096,
+      "ports": 16,
+      "workers": 2,
+      "concurrency": 8192,
+      "duration": 30,
+      "name": "snowtg-240000-cc8192-r0-p20096",
+      "valid": false,
+      "excluded": "server conntrack table exhaustion diagnostic",
+      "server_rps": 1437.2155288627619,
+      "server_rx_pps": 13169.796170020298,
+      "server_tx_pps": 7467.376827117654,
+      "steady_start": 1790425516.6286626,
+      "steady_end": 1790425531.765571,
+      "steady_seconds": 15.136908531188965,
+      "link_speeds": [
+        "1000"
+      ],
+      "server_cpu": {
+        "cpu": 0.01794818652849741,
+        "cpu0": 0.02906208718626156,
+        "cpu1": 0.008614976805831677,
+        "cpu2": 0.027170311464546057,
+        "cpu3": 0.0066269052352551355,
+        "cpu4": 0.023255813953488372,
+        "cpu5": 0.00728959575878065,
+        "cpu6": 0.02781456953642384,
+        "cpu7": 0.00597609561752988,
+        "cpu8": 0.02781456953642384,
+        "cpu9": 0.009271523178807948,
+        "cpu10": 0.00796812749003984,
+        "cpu11": 0.005972130059721301,
+        "cpu12": 0.02982107355864811,
+        "cpu13": 0.0066269052352551355,
+        "cpu14": 0.027278775781769793,
+        "cpu15": 0.03406813627254509
+      },
+      "client_cpu": {
+        "cpu": 0.12579245912579246,
+        "cpu0": 1.0,
+        "cpu1": 0.0,
+        "cpu2": 1.0,
+        "cpu3": 0.0,
+        "cpu4": 0.001336898395721925,
+        "cpu5": 0.0,
+        "cpu6": 0.0006662225183211193,
+        "cpu7": 0.0006657789613848203,
+        "cpu8": 0.005471956224350205,
+        "cpu9": 0.0,
+        "cpu10": 0.0,
+        "cpu11": 0.0,
+        "cpu12": 0.0,
+        "cpu13": 0.0,
+        "cpu14": 0.0006653359946773121,
+        "cpu15": 0.0006657789613848203
+      },
+      "native": {
+        "scope": "aggregate",
+        "phase": "final",
+        "timestamp_us": "473619045766",
+        "sequence": "128",
+        "worker": "18446744073709551615",
+        "lcore": "18446744073709551615",
+        "started": "118684",
+        "done": "118684",
+        "success": "70382",
+        "fail": "48302",
+        "fail_connect": "47925",
+        "fail_io": "377",
+        "fail_proto": "0",
+        "fail_resource": "0",
+        "deferred_resource": "1083186",
+        "bytes_tx": "6226792",
+        "bytes_rx": "9712716",
+        "http_success_total": "70382",
+        "active": "0",
+        "live_sockets": "0",
+        "connect_samples": "70759",
+        "connect_sum_cycles": "18461706005291",
+        "connect_avg_us": "123536",
+        "connect_max_us": "4030893",
+        "first_rx_samples": "70382",
+        "first_rx_sum_cycles": "19878234869500",
+        "first_rx_avg_us": "133727",
+        "first_rx_max_us": "4196175",
+        "complete_samples": "118684",
+        "complete_sum_cycles": "529851485551324",
+        "complete_avg_us": "2113820",
+        "complete_max_us": "5001079",
+        "memory_paused": "0",
+        "memory_pauses": "0",
+        "tx_available": "16382",
+        "tx_peak": "1174",
+        "payload_available": "16382",
+        "payload_peak": "1175",
+        "tx_alloc_fail": "0",
+        "worker_turns": "1627956091",
+        "rx_packets": "366147",
+        "socket_scans": "456937",
+        "tx_flush_calls": "456937",
+        "dirty_tx_enqueues": "456938",
+        "dirty_tx_dedup_hits": "261011",
+        "dirty_tx_requeues": "0",
+        "dirty_tx_arp_waits": "136",
+        "dirty_tx_arp_wakeups": "136",
+        "dirty_tx_depth": "0",
+        "dirty_tx_high_water": "627",
+        "dirty_tx_budget_exhausted": "1832",
+        "turn_avg_us": "0",
+        "rx_us": "10027258",
+        "maintenance_us": "10090194",
+        "reactor_us": "163132863",
+        "tx_flush_us": "10052033",
+        "reactor_turns": "1627956091",
+        "reactor_events": "215034",
+        "reactor_burst_high_water": "32",
+        "scheduler_starts": "1201870",
+        "tokens": "0",
+        "socket_releases": "118684",
+        "ring_hwm_in": "2",
+        "ring_hwm_out": "80",
+        "rx_ring_drops": "0",
+        "tx_nic_drops": "0",
+        "udp_tx_queue_drops": "0",
+        "rx_owner_hits": "0",
+        "rx_software_hashes": "0",
+        "rx_parse_fallbacks": "0",
+        "stats_queue_drops": "0",
+        "connections_created": "118684",
+        "connections_reused": "0",
+        "ofo_segments_current": "0",
+        "ofo_segments_peak": "1",
+        "ofo_bytes_current": "0",
+        "ofo_bytes_peak": "0",
+        "ofo_accepted_segments": "1",
+        "ofo_accepted_bytes": "0",
+        "ofo_released_segments": "1",
+        "ofo_released_bytes": "0",
+        "ofo_reorder_distance_max": "138",
+        "ofo_drop_rcvbuf": "0",
+        "ofo_drop_seg_limit": "0",
+        "ofo_drop_byte_limit": "0",
+        "ofo_drop_owner_limit": "0",
+        "ofo_drop_alloc": "0",
+        "ofo_drop_pressure": "0",
+        "ofo_pressure_transitions": "0",
+        "ofo_pressure_active": "0",
+        "tcp_drain_residual": "0",
+        "tcp_forced_cleanup": "0",
+        "tcp_pool_objects_in_use": "0",
+        "tx_packets": "515625",
+        "tx_bursts": "112295",
+        "nic_tx_cycles": "0",
+        "nic_tx_sampled_packets": "0",
+        "nic_tx_sampled_bursts": "0",
+        "nic_rx_packets": "365370",
+        "rx_burst_calls": "1627956091",
+        "rx_empty_bursts": "1627859574",
+        "rx_full_bursts": "1721",
+        "rx_handoffs": "777",
+        "rx_handoff_drops": "0",
+        "load_phase_index": "1",
+        "arrivals_planned": "7200000",
+        "arrivals_skipped": "5998130"
+      },
+      "native_rps": 2346.0666666666666,
+      "mode": "short",
+      "profile": "ack",
+      "stage": "excluded",
+      "files_sha256": {
+        "client.jsonl": "49f56556302257a1e86db6010225d3c51d28a542c7f70fec1c636b694280ca59",
+        "command.json": "47b5dd894af92810fb882267dfcf09b941169f6eb9b4d03d2780f74534a774ee",
+        "output.txt": "7bea31aad08fb0c6d58452cbaa4fcd6b1c6d57c814a4faea5a9e2a3c61b625a1",
+        "run.json": "c9b5e3ec1afbc1bd67065a7f006a956f0d35f13e08dc4fe65bea7369278b8473",
+        "scenario.json": "309a07cc595c5d324baccec0912322e42d492c5b156cc1aa8b07e9d9acaccf78",
+        "workers.csv": "547c40832da0c8a1a45b2bfc0610e1300f932987bd23c1cd8471ac7101d5c1f1"
+      },
+      "command": [
+        "taskset",
+        "-c",
+        "8",
+        "stdbuf",
+        "-oL",
+        "-eL",
+        "/home/lca/work/snowtg-short-20260926/source/traffic-gen/build/traffic-gen",
+        "-l",
+        "8,0,2",
+        "--main-lcore",
+        "8",
+        "-a",
+        "0000:64:00.0",
+        "--file-prefix",
+        "snowtg-short",
+        "-m",
+        "2048",
+        "--",
+        "--workers",
+        "2",
+        "--socket-id-max",
+        "16384",
+        "--max-requests-per-connection",
+        "1",
+        "--rx-mode",
+        "worker",
+        "--tx-mode",
+        "worker",
+        "--local-ip",
+        "192.168.10.86",
+        "--stats-csv",
+        "/home/lca/work/snowtg-short-20260926/runs/snowtg-240000-cc8192-r0-p20096/workers.csv",
+        "/home/lca/work/snowtg-short-20260926/runs/snowtg-240000-cc8192-r0-p20096/scenario.json"
+      ],
+      "scenario": {
+        "name": "compare-short-2w",
+        "duration_sec": 30,
+        "max_concurrency": 8192,
+        "target_cps": 240000,
+        "report_interval_sec": 1,
+        "classes": [
+          {
+            "name": "http_0",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20096
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_1",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20097
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_2",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20098
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_3",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20099
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_4",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20100
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_5",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20101
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_6",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20102
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_7",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20103
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_8",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20104
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_9",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20105
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_10",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20106
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_11",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20107
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_12",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20108
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_13",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20109
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_14",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20110
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_15",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20111
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "start": 1790425659.1829808,
+      "end": 1790425696.0029137,
+      "exit": 0,
+      "tool": "snowtg",
+      "rate": 64000,
+      "base_port": 20128,
+      "ports": 16,
+      "workers": 2,
+      "concurrency": 8192,
+      "duration": 30,
+      "name": "snowtg-64000-cc8192-r0-p20128",
+      "valid": false,
+      "excluded": "server conntrack table exhaustion diagnostic",
+      "server_rps": 63996.15408253164,
+      "server_rx_pps": 304612.89192295197,
+      "server_tx_pps": 319997.3531605757,
+      "steady_start": 1790425677.035771,
+      "steady_end": 1790425692.0513763,
+      "steady_seconds": 15.015605449676514,
+      "link_speeds": [
+        "1000"
+      ],
+      "server_cpu": {
+        "cpu": 0.4053168864313058,
+        "cpu0": 0.5515603799185889,
+        "cpu1": 0.22298221614227087,
+        "cpu2": 0.5756358768406962,
+        "cpu3": 0.2219178082191781,
+        "cpu4": 0.5688259109311741,
+        "cpu5": 0.22077028885832187,
+        "cpu6": 0.6039268788083954,
+        "cpu7": 0.2202339986235375,
+        "cpu8": 0.5867208672086721,
+        "cpu9": 0.2190082644628099,
+        "cpu10": 0.18905817174515235,
+        "cpu11": 0.18482758620689654,
+        "cpu12": 0.5442866801893171,
+        "cpu13": 0.21670117322291235,
+        "cpu14": 0.608841259209645,
+        "cpu15": 0.7108753315649867
+      },
+      "client_cpu": {
+        "cpu": 0.12570403437773792,
+        "cpu0": 1.0,
+        "cpu1": 0.0,
+        "cpu2": 1.0,
+        "cpu3": 0.0,
+        "cpu4": 0.00266844563042028,
+        "cpu5": 0.0,
+        "cpu6": 0.0020026702269692926,
+        "cpu7": 0.0,
+        "cpu8": 0.00411240575736806,
+        "cpu9": 0.0,
+        "cpu10": 0.0,
+        "cpu11": 0.0,
+        "cpu12": 0.0,
+        "cpu13": 0.0,
+        "cpu14": 0.0,
+        "cpu15": 0.0
+      },
+      "native": {
+        "scope": "aggregate",
+        "phase": "final",
+        "timestamp_us": "473682682637",
+        "sequence": "31",
+        "worker": "18446744073709551615",
+        "lcore": "18446744073709551615",
+        "started": "1920000",
+        "done": "1920000",
+        "success": "1920000",
+        "fail": "0",
+        "fail_connect": "0",
+        "fail_io": "0",
+        "fail_proto": "0",
+        "fail_resource": "0",
+        "deferred_resource": "0",
+        "bytes_tx": "168960000",
+        "bytes_rx": "264960000",
+        "http_success_total": "1920000",
+        "active": "0",
+        "live_sockets": "0",
+        "connect_samples": "1920000",
+        "connect_sum_cycles": "2191485010318",
+        "connect_avg_us": "540",
+        "connect_max_us": "3380",
+        "first_rx_samples": "1920000",
+        "first_rx_sum_cycles": "5414379739833",
+        "first_rx_avg_us": "1335",
+        "first_rx_max_us": "9424",
+        "complete_samples": "1920000",
+        "complete_sum_cycles": "5415349975328",
+        "complete_avg_us": "1335",
+        "complete_max_us": "9425",
+        "memory_paused": "0",
+        "memory_pauses": "0",
+        "tx_available": "16382",
+        "tx_peak": "101",
+        "payload_available": "16382",
+        "payload_peak": "103",
+        "tx_alloc_fail": "0",
+        "worker_turns": "291381703",
+        "rx_packets": "9600361",
+        "socket_scans": "8672892",
+        "tx_flush_calls": "8672892",
+        "dirty_tx_enqueues": "8672892",
+        "dirty_tx_dedup_hits": "6223572",
+        "dirty_tx_requeues": "0",
+        "dirty_tx_arp_waits": "35",
+        "dirty_tx_arp_wakeups": "35",
+        "dirty_tx_depth": "0",
+        "dirty_tx_high_water": "20",
+        "dirty_tx_budget_exhausted": "0",
+        "turn_avg_us": "0",
+        "rx_us": "7339610",
+        "maintenance_us": "1825237",
+        "reactor_us": "34387125",
+        "tx_flush_us": "4368950",
+        "reactor_turns": "291381703",
+        "reactor_events": "7189873",
+        "reactor_burst_high_water": "19",
+        "scheduler_starts": "1920000",
+        "tokens": "0",
+        "socket_releases": "1920000",
+        "ring_hwm_in": "1",
+        "ring_hwm_out": "30",
+        "rx_ring_drops": "0",
+        "tx_nic_drops": "0",
+        "udp_tx_queue_drops": "0",
+        "rx_owner_hits": "0",
+        "rx_software_hashes": "0",
+        "rx_parse_fallbacks": "0",
+        "stats_queue_drops": "0",
+        "connections_created": "1920000",
+        "connections_reused": "0",
+        "ofo_segments_current": "0",
+        "ofo_segments_peak": "0",
+        "ofo_bytes_current": "0",
+        "ofo_bytes_peak": "0",
+        "ofo_accepted_segments": "0",
+        "ofo_accepted_bytes": "0",
+        "ofo_released_segments": "0",
+        "ofo_released_bytes": "0",
+        "ofo_reorder_distance_max": "0",
+        "ofo_drop_rcvbuf": "0",
+        "ofo_drop_seg_limit": "0",
+        "ofo_drop_byte_limit": "0",
+        "ofo_drop_owner_limit": "0",
+        "ofo_drop_alloc": "0",
+        "ofo_drop_pressure": "0",
+        "ofo_pressure_transitions": "0",
+        "ofo_pressure_active": "0",
+        "tcp_drain_residual": "0",
+        "tcp_forced_cleanup": "0",
+        "tcp_pool_objects_in_use": "0",
+        "tx_packets": "9136431",
+        "tx_bursts": "6342469",
+        "nic_tx_cycles": "0",
+        "nic_tx_sampled_packets": "0",
+        "nic_tx_sampled_bursts": "0",
+        "nic_rx_packets": "9600185",
+        "rx_burst_calls": "291381703",
+        "rx_empty_bursts": "284108149",
+        "rx_full_bursts": "1",
+        "rx_handoffs": "176",
+        "rx_handoff_drops": "0",
+        "load_phase_index": "1",
+        "arrivals_planned": "1920000",
+        "arrivals_skipped": "0"
+      },
+      "native_rps": 64000.0,
+      "mode": "short",
+      "profile": "ack",
+      "stage": "excluded",
+      "files_sha256": {
+        "client.jsonl": "061275cb7120e8602c94d4249d11b076fdcd97b7a19dda0f7b928794bbdd4eb7",
+        "command.json": "d0493e44ddffaa3bc775159fb0fedd5c5a5d7630cb887de75d825bda204bca37",
+        "output.txt": "1088635167dd30da06e9693d56385fe906ac528bff798961cba365cb4cc99919",
+        "run.json": "f4c1659cbfa428fd9be4d729404cb6b6a445d4d31be0789059449b6bfd898286",
+        "scenario.json": "66661c1314fc043912991055b74ef01d317854d1edaf84ce464f75377ce64a90",
+        "workers.csv": "04528fc48877395beff9a3719b349d7d2d1f77162188598de6f517ba687029da"
+      },
+      "command": [
+        "taskset",
+        "-c",
+        "8",
+        "stdbuf",
+        "-oL",
+        "-eL",
+        "/home/lca/work/snowtg-short-20260926/source/traffic-gen/build/traffic-gen",
+        "-l",
+        "8,0,2",
+        "--main-lcore",
+        "8",
+        "-a",
+        "0000:64:00.0",
+        "--file-prefix",
+        "snowtg-short",
+        "-m",
+        "2048",
+        "--",
+        "--workers",
+        "2",
+        "--socket-id-max",
+        "16384",
+        "--max-requests-per-connection",
+        "1",
+        "--rx-mode",
+        "worker",
+        "--tx-mode",
+        "worker",
+        "--local-ip",
+        "192.168.10.86",
+        "--stats-csv",
+        "/home/lca/work/snowtg-short-20260926/runs/snowtg-64000-cc8192-r0-p20128/workers.csv",
+        "/home/lca/work/snowtg-short-20260926/runs/snowtg-64000-cc8192-r0-p20128/scenario.json"
+      ],
+      "scenario": {
+        "name": "compare-short-2w",
+        "duration_sec": 30,
+        "max_concurrency": 8192,
+        "target_cps": 64000,
+        "report_interval_sec": 1,
+        "classes": [
+          {
+            "name": "http_0",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20128
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_1",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20129
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_2",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20130
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_3",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20131
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_4",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20132
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_5",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20133
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_6",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20134
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_7",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20135
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_8",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20136
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_9",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20137
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_10",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20138
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_11",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20139
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_12",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20140
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_13",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20141
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_14",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20142
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_15",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20143
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "snowtg-96000-cc8192-r0-p20224",
+      "exit": 137,
+      "tool": "snowtg",
+      "rate": 96000,
+      "base_port": 20224,
+      "concurrency": 8192,
+      "reason": "stopped after detecting server conntrack exhaustion",
+      "valid": false,
+      "excluded": "server conntrack table exhaustion diagnostic",
+      "mode": "short",
+      "profile": "ack",
+      "stage": "excluded",
+      "files_sha256": {
+        "client.jsonl": "996f776805c07959a330d1db0fd52fd064f361eebf2b136281ab1fd0ec6f9458",
+        "command.json": "b58cbea372657b69fa121098d676b2b85b661c7618ef1d4ff6d72f71aff12330",
+        "output.txt": "c83252911f56e6bc0725c5f7d7458eb0034eb2700093e7cbe962964eb057cbfd",
+        "run.json": "b740328346974d6543d768e2ddccbee013b7d87bc249c083ce7bde780b34d920",
+        "scenario.json": "c40dca177fb1442fcb92e8b5c3089a6983f482ec41c990c47e3392438ff38158",
+        "workers.csv": "ce4c34a431e1808b31fe921924b23ead22dc49c592e80444da602555074bcab6"
+      },
+      "command": [
+        "taskset",
+        "-c",
+        "8",
+        "stdbuf",
+        "-oL",
+        "-eL",
+        "/home/lca/work/snowtg-short-20260926/source/traffic-gen/build/traffic-gen",
+        "-l",
+        "8,0,2",
+        "--main-lcore",
+        "8",
+        "-a",
+        "0000:64:00.0",
+        "--file-prefix",
+        "snowtg-short",
+        "-m",
+        "2048",
+        "--",
+        "--workers",
+        "2",
+        "--socket-id-max",
+        "16384",
+        "--max-requests-per-connection",
+        "1",
+        "--rx-mode",
+        "worker",
+        "--tx-mode",
+        "worker",
+        "--local-ip",
+        "192.168.10.86",
+        "--stats-csv",
+        "/home/lca/work/snowtg-short-20260926/runs/snowtg-96000-cc8192-r0-p20224/workers.csv",
+        "/home/lca/work/snowtg-short-20260926/runs/snowtg-96000-cc8192-r0-p20224/scenario.json"
+      ],
+      "scenario": {
+        "name": "compare-short-2w",
+        "duration_sec": 30,
+        "max_concurrency": 8192,
+        "target_cps": 96000,
+        "report_interval_sec": 1,
+        "classes": [
+          {
+            "name": "http_0",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20224
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_1",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20225
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_2",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20226
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_3",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20227
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_4",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20228
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_5",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20229
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_6",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20230
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_7",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20231
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_8",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20232
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_9",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20233
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_10",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20234
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_11",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20235
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_12",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20236
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_13",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20237
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_14",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20238
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_15",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 20239
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          }
+        ]
+      }
+    },
+    {
+      "start": 1790425973.3205774,
+      "end": 1790426047.9858613,
+      "exit": 0,
+      "tool": "snowtg",
+      "rate": 96000,
+      "base_port": 21000,
+      "ports": 16,
+      "workers": 2,
+      "concurrency": 8192,
+      "duration": 30,
+      "name": "snowtg-96000-cc8192-r0-p21000",
+      "valid": true,
+      "server_rps": 21796.754243857056,
+      "server_rx_pps": 111395.487414576,
+      "server_tx_pps": 135671.02397016744,
+      "steady_start": 1790425996.718031,
+      "steady_end": 1790426011.7330647,
+      "steady_seconds": 15.015033721923828,
+      "link_speeds": [
+        "1000"
+      ],
+      "server_cpu": {
+        "cpu": 0.1945578231292517,
+        "cpu0": 0.2641008626410086,
+        "cpu1": 0.12102351313969571,
+        "cpu2": 0.26498002663115844,
+        "cpu3": 0.11972318339100346,
+        "cpu4": 0.2583668005354752,
+        "cpu5": 0.11498257839721254,
+        "cpu6": 0.2618254497001999,
+        "cpu7": 0.11674774148714386,
+        "cpu8": 0.2623169107856192,
+        "cpu9": 0.11955770559778853,
+        "cpu10": 0.11760612386917188,
+        "cpu11": 0.11118832522585129,
+        "cpu12": 0.25973154362416107,
+        "cpu13": 0.12058212058212059,
+        "cpu14": 0.2620320855614973,
+        "cpu15": 0.3152972611890448
+      },
+      "client_cpu": {
+        "cpu": 0.12578747548917352,
+        "cpu0": 1.0,
+        "cpu1": 0.0,
+        "cpu2": 1.0,
+        "cpu3": 0.0,
+        "cpu4": 0.002004008016032064,
+        "cpu5": 0.0,
+        "cpu6": 0.002664890073284477,
+        "cpu7": 0.0,
+        "cpu8": 0.00411522633744856,
+        "cpu9": 0.0,
+        "cpu10": 0.0,
+        "cpu11": 0.0,
+        "cpu12": 0.0,
+        "cpu13": 0.0,
+        "cpu14": 0.0,
+        "cpu15": 0.0
+      },
+      "native": {
+        "scope": "aggregate",
+        "phase": "final",
+        "timestamp_us": "474034677389",
+        "sequence": "63",
+        "worker": "18446744073709551615",
+        "lcore": "18446744073709551615",
+        "started": "658798",
+        "done": "658798",
+        "success": "648727",
+        "fail": "10071",
+        "fail_connect": "125",
+        "fail_io": "9946",
+        "fail_proto": "0",
+        "fail_resource": "0",
+        "deferred_resource": "2221202",
+        "bytes_tx": "57963224",
+        "bytes_rx": "89524326",
+        "http_success_total": "648727",
+        "active": "0",
+        "live_sockets": "0",
+        "connect_samples": "658673",
+        "connect_sum_cycles": "161158583888968",
+        "connect_avg_us": "115848",
+        "connect_max_us": "4018968",
+        "first_rx_samples": "648727",
+        "first_rx_sum_cycles": "410377352614389",
+        "first_rx_avg_us": "299521",
+        "first_rx_max_us": "4962432",
+        "complete_samples": "658798",
+        "complete_sum_cycles": "516738589902482",
+        "complete_avg_us": "371385",
+        "complete_max_us": "5001044",
+        "memory_paused": "0",
+        "memory_pauses": "0",
+        "tx_available": "16382",
+        "tx_peak": "1896",
+        "payload_available": "16382",
+        "payload_peak": "1897",
+        "tx_alloc_fail": "0",
+        "worker_turns": "730132367",
+        "rx_packets": "3164452",
+        "socket_scans": "4489624",
+        "tx_flush_calls": "4489624",
+        "dirty_tx_enqueues": "3109429",
+        "dirty_tx_dedup_hits": "1974178",
+        "dirty_tx_requeues": "1380234",
+        "dirty_tx_arp_waits": "72",
+        "dirty_tx_arp_wakeups": "72",
+        "dirty_tx_depth": "0",
+        "dirty_tx_high_water": "1600",
+        "dirty_tx_budget_exhausted": "21998",
+        "turn_avg_us": "0",
+        "rx_us": "7785315",
+        "maintenance_us": "4583519",
+        "reactor_us": "79643828",
+        "tx_flush_us": "5823697",
+        "reactor_turns": "730132367",
+        "reactor_events": "2499700",
+        "reactor_burst_high_water": "12",
+        "scheduler_starts": "2880000",
+        "tokens": "0",
+        "socket_releases": "658798",
+        "ring_hwm_in": "1",
+        "ring_hwm_out": "1023",
+        "rx_ring_drops": "0",
+        "tx_nic_drops": "0",
+        "udp_tx_queue_drops": "0",
+        "rx_owner_hits": "0",
+        "rx_software_hashes": "0",
+        "rx_parse_fallbacks": "0",
+        "stats_queue_drops": "0",
+        "connections_created": "658798",
+        "connections_reused": "0",
+        "ofo_segments_current": "0",
+        "ofo_segments_peak": "3495",
+        "ofo_bytes_current": "0",
+        "ofo_bytes_peak": "0",
+        "ofo_accepted_segments": "190649",
+        "ofo_accepted_bytes": "0",
+        "ofo_released_segments": "190649",
+        "ofo_released_bytes": "0",
+        "ofo_reorder_distance_max": "138",
+        "ofo_drop_rcvbuf": "0",
+        "ofo_drop_seg_limit": "0",
+        "ofo_drop_byte_limit": "0",
+        "ofo_drop_owner_limit": "0",
+        "ofo_drop_alloc": "0",
+        "ofo_drop_pressure": "0",
+        "ofo_pressure_transitions": "0",
+        "ofo_pressure_active": "0",
+        "tcp_drain_residual": "0",
+        "tcp_forced_cleanup": "0",
+        "tcp_pool_objects_in_use": "0",
+        "tx_packets": "3365136",
+        "tx_bursts": "4363248",
+        "nic_tx_cycles": "0",
+        "nic_tx_sampled_packets": "0",
+        "nic_tx_sampled_bursts": "0",
+        "nic_rx_packets": "3164083",
+        "rx_burst_calls": "730132367",
+        "rx_empty_bursts": "727132931",
+        "rx_full_bursts": "0",
+        "rx_handoffs": "369",
+        "rx_handoff_drops": "0",
+        "load_phase_index": "1",
+        "arrivals_planned": "2880000",
+        "arrivals_skipped": "0"
+      },
+      "native_rps": 21624.233333333334,
+      "mode": "short",
+      "profile": "ack",
+      "stage": "exploration",
+      "files_sha256": {
+        "client.jsonl": "c4c84801e61d66f00ce5e2b1a1b8cd315a6d40ec2a688401b8e7095170ece6c6",
+        "command.json": "0067084a4ec985817ce9e43d2835b5176d1adc347540f7e0588059ab99ad3d74",
+        "output.txt": "95bc4efb37056f8c48bcd49b57733f4b28f71a41dc5a5393d0d76205e5fbb66f",
+        "run.json": "b7f123cd5ec36ec410435d36d2cf84902e247c804f391f29da8d1660e0385fa4",
+        "scenario.json": "ff4eb27dd29845d253a03cc292e54e75664e30b78a1143ae3b63872b925330fc",
+        "workers.csv": "7528cf78eef26cdcfa127192e6e3b590e3d8c44576f3923daca9354efbbefbda"
+      },
+      "command": [
+        "taskset",
+        "-c",
+        "8",
+        "stdbuf",
+        "-oL",
+        "-eL",
+        "/home/lca/work/snowtg-short-20260926/source/traffic-gen/build/traffic-gen",
+        "-l",
+        "8,0,2",
+        "--main-lcore",
+        "8",
+        "-a",
+        "0000:64:00.0",
+        "--file-prefix",
+        "snowtg-short",
+        "-m",
+        "2048",
+        "--",
+        "--workers",
+        "2",
+        "--socket-id-max",
+        "16384",
+        "--max-requests-per-connection",
+        "1",
+        "--rx-mode",
+        "worker",
+        "--tx-mode",
+        "worker",
+        "--local-ip",
+        "192.168.10.86",
+        "--stats-csv",
+        "/home/lca/work/snowtg-short-20260926/runs/snowtg-96000-cc8192-r0-p21000/workers.csv",
+        "/home/lca/work/snowtg-short-20260926/runs/snowtg-96000-cc8192-r0-p21000/scenario.json"
+      ],
+      "scenario": {
+        "name": "compare-short-2w",
+        "duration_sec": 30,
+        "max_concurrency": 8192,
+        "target_cps": 96000,
+        "report_interval_sec": 1,
+        "classes": [
+          {
+            "name": "http_0",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21000
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_1",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21001
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_2",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21002
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_3",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21003
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_4",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21004
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_5",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21005
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_6",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21006
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_7",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21007
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_8",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21008
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_9",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21009
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_10",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21010
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_11",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21011
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_12",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21012
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_13",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21013
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_14",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21014
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          },
+          {
+            "name": "http_15",
+            "weight": 1,
+            "transport": "tcp",
+            "peer": {
+              "ip": "192.168.10.234",
+              "port": 21015
+            },
+            "http": {
+              "method": "GET",
+              "path": "/",
+              "host": "snowtg-wrk-dperf-benchmark.internal.example",
+              "keepalive": false
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

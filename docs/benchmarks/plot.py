@@ -25,6 +25,8 @@ else:
 
 HERE = Path(__file__).resolve().parent
 RUNS = json.loads((HERE / '2026-09-26.json').read_text())['runs']
+SHORT_RUNS = [r for r in json.loads((HERE / '2026-09-26-short.json').read_text())['runs']
+              if r['stage'] == 'comparison']
 COLORS = {'snowtg': '#167d9a', 'dperf': '#e18b36', 'wrk': '#7d8998'}
 plt.rcParams.update({'font.size': 11, 'svg.fonttype': 'path', 'axes.spines.top': False,
                      'axes.spines.right': False, 'axes.titleweight': 'bold', 'svg.hashsalt': 'snowtg-2026-09-26'})
@@ -81,30 +83,69 @@ ZH = {
         '三轮均值与范围。 ',
 }
 
-def plot_language(filename, title, groups, tools, notes, language):
+ZH.update({
+    'HTTP keep-alive throughput':
+        'HTTP 长连接吞吐对比',
+    'HTTP short-connection throughput':
+        'HTTP 短连接吞吐对比',
+    '2026-09-26 | NUC i5-1240P -> HP Ryzen 7 7730U | 1 Gbps Ethernet':
+        '2026-09-26｜NUC i5-1240P → HP Ryzen 7 7730U｜千兆以太网',
+    '512 connections | ~4.4 GHz | HTTP GET 93 B | response body 3 B':
+        '并发 512｜约 4.4 GHz｜HTTP GET 请求 93 字节｜响应体 3 字节',
+    'Overlapping ranges: similar throughput in this environment.':
+        '三轮范围重叠：本环境下吞吐相近。',
+    'wrk slowed during the run: 16.4k RPS in this window; 44.7k over the full run (different window).':
+        'wrk 前快后慢：图示窗口为 1.64 万 RPS，全程为 4.47 万（窗口不同）。',
+    '3-run mean; whiskers: min-max | configured 30 s; window: 12-27 s\nRPS: nginx requests; PPS: server NIC RX | conditions and limits: docs/BENCHMARK.md':
+        '三轮均值，误差线为最小～最大值｜配置时长 30 秒，统计第 12～27 秒\nRPS：nginx 请求；PPS：服务端网卡接收｜完整条件与边界：docs/BENCHMARK.md',
+})
+
+ZH.update({
+    '2 workers | ~4.4 GHz | HTTP GET 88 B | response body 3 B':
+        '2 个工作线程｜约 4.4 GHz｜HTTP GET 请求 88 字节｜响应体 3 字节',
+    'Target 120k CPS / 16 ports': '目标 12 万 CPS / 16 端口',
+    'Uncapped / 1 port': '饱和发流 / 单端口',
+    'Compare within each group. 16-port tests bypass conntrack; SnowTG concurrency cap: 512.':
+        '仅在组内比较；16 端口组绕过连接跟踪，SnowTG 并发上限为 512。',
+})
+
+
+def plot_language(filename, title, groups, tools, notes, language, mode="ka", compact=False):
     tr = (lambda text: ZH[text]) if language == "zh" else (lambda text: text)
     title = tr(title)
     groups = [(tr(tick), workers, profile) for tick, workers, profile in groups]
     notes = [tr(note) for note in notes]
-    fig, axes = plt.subplots(1, 2, figsize=(14, 7.3))
-    fig.subplots_adjust(top=.75, bottom=.34, left=.07, right=.98, wspace=.19)
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6 if compact else 7.3))
+    fig.subplots_adjust(top=.75, bottom=.31 if compact else .34, left=.07, right=.98, wspace=.19)
     fig.suptitle(title, x=.07, y=.96, ha='left', fontsize=20, weight='bold')
-    fig.text(.07, .90, tr('2026-09-26 | NUC i5-1240P / I225-V -> HP Ryzen 7 7730U / RTL8153 | 1 Gbps Ethernet'), fontsize=11)
-    fig.text(.07, .86, tr('HTTP/1.1 GET 93 B; response body 3 B; nginx 16 workers; keep-alive enabled'), fontsize=11)
-    fig.text(.07, .817, tr('SnowTG c2b9586 + ack3 fixes (quota: aligned3) | dperf 69998e5 | wrk a211dd5 | DPDK 26.07-rc3'), fontsize=10, color='#455468')
+    if compact:
+        fig.text(.07, .89, tr('2026-09-26 | NUC i5-1240P -> HP Ryzen 7 7730U | 1 Gbps Ethernet'), fontsize=11)
+        details = ('2 workers | ~4.4 GHz | HTTP GET 88 B | response body 3 B' if mode == 'short' else
+                   '512 connections | ~4.4 GHz | HTTP GET 93 B | response body 3 B')
+        fig.text(.07, .84, tr(details), fontsize=11)
+    else:
+        fig.text(.07, .90, tr('2026-09-26 | NUC i5-1240P / I225-V -> HP Ryzen 7 7730U / RTL8153 | 1 Gbps Ethernet'), fontsize=11)
+        fig.text(.07, .86, tr('HTTP/1.1 GET 93 B; response body 3 B; nginx 16 workers; keep-alive enabled'), fontsize=11)
+        fig.text(.07, .817, tr('SnowTG c2b9586 + ack3 fixes (quota: aligned3) | dperf 69998e5 | wrk a211dd5 | DPDK 26.07-rc3'), fontsize=10, color='#455468')
     width = .23 if len(tools) == 3 else .30
     for ax, metric, label in zip(axes, ('server_rps', 'server_rx_pps'),
                                  ('Server-received requests (kRPS)', 'Client -> server traffic (kPPS)')):
-        for j, tool in enumerate(tools):
-            for i, (tick, workers, profile) in enumerate(groups):
-                values = [r[metric] / 1000 for r in RUNS if r['tool'] == tool and
-                          r['mode'] == 'ka' and r['workers'] == workers and r['profile'] == profile]
+        seen = set()
+        for i, (tick, workers, profile) in enumerate(groups):
+            samples = SHORT_RUNS if profile == 'short-new' else RUNS
+            group_tools = (['snowtg', 'dperf'] if profile == 'short-new' else ['snowtg', 'wrk']) if mode == 'short' else tools
+            for j, tool in enumerate(group_tools):
+                values = [r[metric] / 1000 for r in samples if r['tool'] == tool and
+                          r['mode'] == mode and r['workers'] == workers and
+                          r['profile'] == ('ack' if profile == 'short-new' else profile)]
                 assert len(values) == 3, (tool, tick, len(values))
                 avg = mean(values)
-                x = i + (j - (len(tools)-1)/2)*width
-                ax.bar(x, avg, width*.9, color=COLORS[tool], label=tool if i == 0 else None,
+                x = i + (j - (len(group_tools)-1)/2)*width
+                ax.bar(x, avg, width*.9, color=COLORS[tool],
+                       label=('SnowTG' if tool == 'snowtg' else tool) if tool not in seen else None,
                        yerr=[[avg-min(values)], [max(values)-avg]], capsize=4,
                        error_kw={'elinewidth': 1, 'ecolor': '#344050'})
+                seen.add(tool)
                 ax.annotate(f'{avg:.1f}', (x, max(values)), xytext=(0, 6),
                             textcoords='offset points', ha='center', fontsize=10, weight='bold')
         ax.set_title(tr(label), loc='left', pad=16)
@@ -113,11 +154,17 @@ def plot_language(filename, title, groups, tools, notes, language):
         ax.grid(axis='y', alpha=.18)
         ax.set_axisbelow(True)
     axes[0].legend(loc='upper left', frameon=False, ncol=len(tools), bbox_to_anchor=(0, 1.02))
-    fig.text(.07, .255, '\n'.join(notes), va='top', fontsize=10, linespacing=1.65)
-    fig.text(.07, .025, tr('Mean of 3 runs; whiskers = observed min-max (not a confidence interval). Linear axes start at zero.\n'
-             'RPS: nginx common-window request counter. PPS: HP NIC RX, includes retransmissions/background traffic.\n'
-             'Source: docs/benchmarks/2026-09-26.json | methodology, versions and errors: docs/BENCHMARK.md'),
-             fontsize=9, color='#455468', linespacing=1.5)
+    if compact:
+        fig.text(.07, .21, '\n'.join(notes), va='top', fontsize=11, linespacing=1.6)
+        fig.text(.07, .025, tr('3-run mean; whiskers: min-max | configured 30 s; window: 12-27 s\n'
+                             'RPS: nginx requests; PPS: server NIC RX | conditions and limits: docs/BENCHMARK.md'),
+                 fontsize=10, color='#455468', linespacing=1.5)
+    else:
+        fig.text(.07, .255, '\n'.join(notes), va='top', fontsize=10, linespacing=1.65)
+        fig.text(.07, .025, tr('Mean of 3 runs; whiskers = observed min-max (not a confidence interval). Linear axes start at zero.\n'
+                 'RPS: nginx common-window request counter. PPS: HP NIC RX, includes retransmissions/background traffic.\n'
+                 'Source: docs/benchmarks/2026-09-26.json | methodology, versions and errors: docs/BENCHMARK.md'),
+                 fontsize=9, color='#455468', linespacing=1.5)
     out = HERE.parent / 'assets' / filename.replace('.svg', f'-{language}.svg')
     fig.savefig(out, metadata={'Date': '2026-09-26', 'Title': title,
                               'Description': tr('Three-run means and ranges. ') + ' '.join(notes)})
@@ -126,21 +173,22 @@ def plot_language(filename, title, groups, tools, notes, language):
     plt.close(fig)
 
 
-def plot(*args):
+def plot(*args, **kwargs):
     for language, font in (('zh', chinese_font), ('en', 'DejaVu Sans')):
         with plt.rc_context({'font.family': font}):
-            plot_language(*args, language=language)
+            plot_language(*args, language=language, **kwargs)
 
 
-plot('benchmark-capacity.svg', 'Saturation throughput in the measured environment',
+plot('benchmark-capacity.svg', 'HTTP keep-alive throughput',
      [('1 worker / thread', 1, 'ack'), ('2 workers / threads', 2, 'ack')],
+     ['snowtg', 'dperf', 'wrk'],
+     ['Overlapping ranges: similar throughput in this environment.'], compact=True)
+plot('benchmark-short.svg', 'HTTP short-connection throughput',
+     [('Target 120k CPS / 16 ports', 2, 'short-new'), ('Uncapped / 1 port', 2, 'ack')],
      ['snowtg', 'dperf', 'wrk'], [
-         '512 connections; 30 s configured duration; steady window: traffic onset +12 to +27 s.',
-         'Workers CPU 0 / 0,2 (~4.4 GHz); DPDK main CPU 8; 2 GiB per DPDK tool. dperf adds 10 s slow-start.',
-         'SnowTG default RX/TX descriptors: 1024; dperf: 4096. wrk kernel/IRQ work can use additional CPUs.',
-         'All displayed runs: native errors = 0; dperf RST/retransmissions = 0. Wide ranges overlap; no winner established.',
-         'Observed end-to-end saturation, NOT an isolated generator CPU limit. Tools ran in separate blocks.'
-     ])
+         'Compare within each group. 16-port tests bypass conntrack; SnowTG concurrency cap: 512.',
+         'wrk slowed during the run: 16.4k RPS in this window; 44.7k over the full run (different window).'
+     ], mode='short', compact=True)
 plot('benchmark-cpu-budget.svg', 'Throughput under a client-worker CPU time limit',
      [('10% CPU budget', 1, 'quota10-warm-aligned'), ('20% CPU budget', 1, 'quota20-warm-aligned'),
       ('40% CPU budget', 1, 'quota40-warm-aligned')], ['snowtg', 'dperf'], [
