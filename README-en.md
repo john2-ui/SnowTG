@@ -4,6 +4,12 @@ Latest measured results (2026-09-26): [benchmark methodology and limits (中文)
 
 ![Saturation throughput: RPS and client-to-server PPS, with test conditions](docs/assets/benchmark-capacity-en.svg)
 
+![HTTP short-connection throughput: separate SnowTG/dperf and SnowTG/wrk comparisons](docs/assets/benchmark-short-en.svg)
+
+The new 16-port test offers 120k CPS: three-run means are **117,916 RPS for SnowTG** and **119,997 for dperf**, a 1.7% gap. SnowTG reports zero failed admitted requests, but 214,461 planned arrivals were resource-deferred and not completed during the runs; dperf reports 16 socket errors. Both bypass server conntrack. SnowTG caps concurrency at 512; dperf short mode has no equivalent cap. This is a fixed-load comparison, not an equal-concurrency or lossless capacity result.
+
+The separate single-port group reuses earlier uncapped SnowTG/wrk measurements (**117,546 / 16,350 RPS**). wrk averaged 44,709 RPS over its full runs and slowed later. Compare tools within each group only; the different windows and conditions do not establish a general speedup. See [per-run short-test data](docs/benchmarks/2026-09-26-short.json) and [methodology](docs/BENCHMARK.md).
+
 ## Project Overview
 
 `SnowTG` is a DPDK-based userspace IPv4 network stack and mixed traffic generator. It uses a single-owner, per-core reactor architecture with lock-free hot paths, provides TCP/UDP socket capabilities, and drives HTTP/DNS load traffic through its own network stack.
