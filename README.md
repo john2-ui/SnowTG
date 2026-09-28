@@ -253,6 +253,59 @@ python3 traffic-gen/snowtg.py report debug/run2/result.json \
 运行时也可在剧本路径前加 `--baseline PATH`；仅导出配置用 `--emit-json PATH`（不带 `run`）。
 比较会检查负载及环境是否可比；最大可持续负载仍标为未测定。`debug/` 下的结果不进入 Git。
 
+### 资源趋势与归零验收
+
+`workers.csv` 的 `resources_version=1` 表示提供完整资源快照；每个
+`res_<资源>_{capacity,current,peak,exhausted,unavailable,busy,limit,before_force}`
+字段分别记录容量、当前占用、生命周期峰值、耗尽、不可用、后端忙、队列限制及强制回收前占用。
+失败为 64 位累计计数，采样不清零；不同资源层的原因可能描述同一次操作，不可相加为失败请求数。
+`unavailable` 对池表示未初始化，对 transaction 表示协议上下文初始化失败；
+UDP `limit` 是已有队列丢弃总数（可能与分配失败重叠），ready-event `limit` 表示 ready ring 满。
+OFO 的接收窗口、段数/字节数/owner 限额、分配及压力丢弃仍使用已有 `ofo_drop_*` 字段。
+
+| 资源 | 占用单位与范围 |
+| --- | --- |
+| `tcp_tx_chunk/rx_blob/ofo_seg/fragment/sack_range/payload` | 六类 TCP 池对象；payload 容量为块数，不是字节数 |
+| `udp_rx_node/socket_slot/ready_event/timer` | UDP 队列节点、已占 socket slot、已领取事件、已挂载 timer |
+| `flow/transaction/workflow` | 连接 flow、已初始化网络 transaction 上下文、已领取业务事务对象；三者独立统计 |
+| `time_wait` | TIME_WAIT socket，容量沿用 socket slot 上限 |
+| `tcp_sndbuf_bytes/tcp_unacked_bytes` | 保留的发送字节（未发送及未确认）/已发送未确认字节；重传不重复增加占用 |
+| `ofo_segments/ofo_bytes` | 已接纳的乱序段数与字节数；容量分别沿用 OFO 池与 owner 字节限额 |
+
+没有独立固定预算的队列 gauge 的 capacity 为 0；未启用的应用池容量也为 0。
+transaction 容量沿用 flow 池：只要上下文仍持有就计数；当前 keep-alive 完成时会 reset
+上下文，因此空闲连接通常表现为 flow 非零、transaction 为零。业务 workflow 与网络步骤不混计。
+
+快照仅由 owner 获取，周期沿用 `report_interval_sec`（默认 1 秒）。
+同一 worker 的新资源字段取最新累计值，跨 worker 容量/当前值/失败求和，
+峰值为**最大单 worker 的生命周期高水位**，不是同时刻总峰值。
+`result.json.resources` 保存每个 worker 的资源最终状态、失败原因和时间序列；
+HTML 展示资源表及当前占用曲线，旧结果缺少这些指标时显示“未记录”，不会补零。
+
+完整资源验收要求每个 worker 的最终快照完整、趋势无统计丢样，且所有上述资源在
+**池和 timer engine 销毁之前**正常归零。容量、历史峰值与累计失败无需归零。
+结果区分 `passed`（正常排空）、`forced_zero`（强制回收后归零）、
+`residual`（仍有残留）、`incomplete`（证据不完整）；后三者的新运行均返回 `1`。
+强制回收前的占用保存在 `before_force`，不会用销毁池后的零值替代验收证据。
+共享 mbuf、NIC 描述符、IPv4 重组及进程全部堆内存不在这项归零结论内。
+
+在已准备好的双机环境运行数小时混合长测（替换 CPU、PCI 和 IP，输出目录必须不存在）：
+
+```bash
+SNOWTG_PEER=192.168.10.234 SNOWTG_DURATION=21600 \
+SNOWTG_SERVICE_VERSION=my-service-version \
+python3 traffic-gen/snowtg.py run --output debug/mixed-soak-6h \
+  traffic-gen/scenarios/test/mixed-soak.py -- \
+  -l 4,0,2 --main-lcore 4 -a 0000:64:00.0 -m 512 -- \
+  --workers 2 --local-ip 192.168.10.86
+```
+
+该剧本按 5 秒采样。以上是待执行命令，不代表已完成六小时验收。
+本地故障闭环可运行 `make -C test test-resource-cli`；
+时间轮版本使用 `make -C test test-resource-cli BUILD_DIR=build/resource-wheel OWNER_TIMER_BACKEND=wheel`。
+该测试专用二进制通过链接包装模拟 TCP 关闭停滞及池对象残留，并缩短 drain guard；
+生产二进制没有这些故障开关。keep-alive、部分 ACK、重传和 OFO 使用现有 C 回归验证。
+
 ### 添加应用层协议插件
 
 当前插件机制是源码接入和编译期静态注册，不会在运行时加载 `.so`。一个应用层插件由

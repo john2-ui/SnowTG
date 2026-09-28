@@ -135,3 +135,71 @@ assert r.measure(detailed, {'metric':'error_reset'}) == 3
 assert not r.compare(result, detailed)['comparable']
 
 print('PASS: SLO semantics, histogram merging, comparison guards, failure artifacts and HTML escaping')
+
+# Resource evidence must be complete, owner-local and lifetime cumulative.
+def resource_rows():
+    rows = []
+    for worker in range(2):
+        for seq, phase in ((1, 'periodic'), (2, 'final')):
+            row = dict(scope='worker', phase=phase, worker=worker, sequence=seq,
+                       timestamp_us=seq*1000000, resources_version=1,
+                       resources_complete=1, resource_forced=0, stats_queue_drops=0)
+            for name in r.RESOURCE_NAMES:
+                for field in r.RESOURCE_FIELDS:
+                    row['res_'+name+'_'+field] = dict(capacity=10, current=3 if seq == 1 else 0,
+                        peak=5+worker, exhausted=2**32, unavailable=0, busy=0, limit=0, before_force=0)[field]
+            rows.append(row)
+    final = dict(rows[-1], scope='aggregate', worker=2**64-1, resources_complete=2)
+    for name in r.RESOURCE_NAMES:
+        for field in r.RESOURCE_FIELDS:
+            key = 'res_'+name+'_'+field
+            values = [v[key] for v in rows if v['phase']=='final']
+            final[key] = max(values) if field=='peak' else sum(values)
+    return rows+[final]
+
+
+def resources_result(rows):
+    result = dict(environment={'dataplane':{'workers':'2'}}, summary={'drain_ms':1}, invalid_reasons=[], resource_peaks={})
+    r.collect_resources(rows, result, 0)
+    return result
+
+rows = resource_rows()
+measured = resources_result(rows)
+assert measured['resources']['status']=='passed', measured
+assert measured['resources']['workers'][0]['metrics']['flow']['final']['exhausted']==2**32
+assert measured['resource_peaks']['res_flow_peak']['value']==6
+assert len(measured['resources']['workers'][0]['metrics']['flow']['timeline'])==2
+for mutate in (
+    lambda x: x.pop(0),  # missing periodic record must not look like a complete trend
+    lambda x: x.pop(1),  # missing first worker final
+    lambda x: x.append(x[1]),  # duplicate final
+    lambda x: x[1].pop('res_flow_current'),
+    lambda x: x[1].update(res_flow_exhausted=1),
+    lambda x: x[1].update(res_flow_peak=1),
+    lambda x: x[1].update(stats_queue_drops=1),
+    lambda x: x[-1].update(res_flow_current=9),
+    lambda x: x[0].update(resources_version=2),
+):
+    bad = deepcopy(rows)
+    mutate(bad)
+    got = resources_result(bad)
+    assert got['resources']['status']=='incomplete' and got['invalid_reasons'], got
+forced = deepcopy(rows)
+forced[1]['resource_forced']=forced[-1]['resource_forced']=1
+forced[1]['res_socket_slot_before_force']=forced[-1]['res_socket_slot_before_force']=2
+assert resources_result(forced)['resources']['status']=='forced_zero'
+residual = deepcopy(rows)
+residual[1]['res_timer_current']=residual[-1]['res_timer_current']=1
+assert resources_result(residual)['resources']['status']=='residual'
+legacy = resources_result([dict(scope='worker', phase='final')])
+assert legacy['resources']['status']=='incomplete' and legacy['resources']['version'] is None
+html_result = deepcopy(result)
+html_result['resources']=measured['resources']
+assert '正常排空通过' in r.report(html_result)
+assert 'tcp_payload 当前占用' in r.report(html_result)
+assert '未记录；不能判定完整资源验收通过' in r.report(result)
+print('PASS: complete owner resources, 64-bit counters, missing/duplicate finals, forced cleanup and HTML trends')
+
+no_drain = dict(environment={'dataplane':{'workers':'2'}}, summary={'drain_ms':None}, invalid_reasons=[], resource_peaks={})
+r.collect_resources(resource_rows(), no_drain, 0)
+assert no_drain['resources']['status']=='incomplete'

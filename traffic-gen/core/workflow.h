@@ -62,6 +62,7 @@ struct tg_workflow_engine {
         /* Per-class step offsets within each phase; capacity is shard-local. */
         unsigned offsets[TG_PLAN_MAX_CLASSES], step_count, capacity;
         uint64_t memory_bytes;
+        struct resource_metric resources;
 };
 
 /**

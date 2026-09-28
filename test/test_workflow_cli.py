@@ -39,6 +39,7 @@ with tempfile.TemporaryDirectory() as tmp:
     assert steps['yes']['branch_skipped']==steps['no']['branch_skipped']==20
     assert r['summary']['request_success_rps']==0 and r['summary']['transaction_success_tps']==20
     assert all(g['not_reached']==0 for g in r['steps'])
+    assert r['resources']['status']=='passed'
     assert r['summary']['drained_live_sockets']==0
     print('PASS: 40 business transactions; deterministic 20/20 branches, timers and two-owner statistics')
     # All fail before opening a socket. A network timeout must not mask a
@@ -78,5 +79,11 @@ with tempfile.TemporaryDirectory() as tmp:
         assert r['summary']['failed']==4 and r['summary']['start_failed']==0
         assert r['error_reasons']['error_response_timeout']==4
         assert sum(r['error_reasons'].values())==4
+        assert r['resources']['status']=='passed'
+        for worker in r['resources']['workers']:
+            assert all(m['final']['current']==0 for m in worker['metrics'].values())
+            assert worker['metrics']['workflow']['final']['peak']>0
+            assert worker['metrics']['flow']['final']['peak']>0
+            assert worker['metrics']['transaction']['final']['peak']>0
         assert r['summary']['drained_live_sockets']==0
         print('PASS:',name,'four DNS waits expire within 100 ms and drain cleanly')

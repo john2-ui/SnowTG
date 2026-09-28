@@ -16,6 +16,7 @@ extern int tcp_listen(struct nsock *sk, int backlog);
 
 static struct rte_mempool *mp;
 static struct rte_ring *out;
+static uint32_t ack_backoff;
 
 static void receive_flags(struct nsock *sk, uint32_t seq, uint8_t flags,
                           const char *data) {
@@ -40,7 +41,7 @@ static void receive_flags(struct nsock *sk, uint32_t seq, uint8_t flags,
         tcp->sent_seq = rte_cpu_to_be_32(seq);
         tcp->recv_ack = rte_cpu_to_be_32(sk->u.tcp.sent_seq +
             (((flags & RTE_TCP_SYN_FLAG) != 0) ||
-             sk->u.tcp.status == TCP_STATUS_SYN_RECV));
+             sk->u.tcp.status == TCP_STATUS_SYN_RECV) - ack_backoff);
         tcp->data_off = 5 << 4;
         tcp->tcp_flags = flags;
         tcp->rx_win = rte_cpu_to_be_16(65535);
@@ -144,6 +145,35 @@ int main(int argc, char **argv) {
                 check_packet(1006, mode == 1 || mode == 4 ? 7 : 0, mode == 5);
                 cleanup(sk, handle);
         }
+        /* Partial ACK releases bytes once; retransmitting retained data must
+         * neither allocate a second payload nor grow unacked occupancy. */
+        struct nsock_handle partial_handle;
+        struct nsock *partial = new_stream(&partial_handle, 39);
+        receive(partial, 1000, 0, "");
+        assert(owner_io_send(partial_handle, "abcdefgh", 8) == 8);
+        assert(tcp_tx_flush(partial, mp) == SOCK_TX_FLUSH_IDLE);
+        check_packet(1000, 8, false);
+        ack_backoff = 4;
+        receive(partial, 1000, 0, "");
+        ack_backoff = 0;
+        struct owner_resource_snapshot before, after;
+        assert(owner_io_resource_snapshot(&before) == 0);
+        assert(before.values[OWNER_RESOURCE_tcp_sndbuf_bytes].current == 4);
+        assert(before.values[OWNER_RESOURCE_tcp_unacked_bytes].current == 4);
+        assert(owner_timer_arm_at(&partial->u.tcp.timer, owner_timer_now()) == 0);
+        assert(owner_timer_poll(&timers) == 0);
+        assert(tcp_tx_flush(partial, mp) == SOCK_TX_FLUSH_IDLE);
+        check_packet(1000, 4, false);
+        assert(owner_io_resource_snapshot(&after) == 0);
+        assert(after.values[OWNER_RESOURCE_tcp_unacked_bytes].current == 4);
+        assert(after.values[OWNER_RESOURCE_tcp_payload].current == before.values[OWNER_RESOURCE_tcp_payload].current);
+        assert(after.values[OWNER_RESOURCE_tcp_unacked_bytes].peak == before.values[OWNER_RESOURCE_tcp_unacked_bytes].peak);
+        receive(partial, 1000, 0, "");
+        cleanup(partial, partial_handle);
+        assert(owner_io_resource_snapshot(&after) == 0);
+        assert(after.values[OWNER_RESOURCE_tcp_sndbuf_bytes].current == 0);
+        assert(after.values[OWNER_RESOURCE_tcp_unacked_bytes].current == 0);
+
         /* Nagle holds a second short write until ACK; NODELAY reopening
          * releases it immediately. The first write never waits for an ACK. */
         struct nsock_handle nagle_handle;
@@ -185,7 +215,15 @@ int main(int argc, char **argv) {
                         total_payload += len;
                         rte_pktmbuf_free(packet);
                 }
+                struct owner_resource_snapshot resources;
+                assert(owner_io_resource_snapshot(&resources) == 0);
+                assert(resources.values[OWNER_RESOURCE_tcp_sndbuf_bytes].current == nagle->u.tcp.sndbuf.len);
+                assert(resources.values[OWNER_RESOURCE_tcp_unacked_bytes].current == nagle->u.tcp.sndbuf.unacked);
                 receive(nagle, 1000, 0, "");
+                assert(owner_io_resource_snapshot(&resources) == 0);
+                assert(resources.values[OWNER_RESOURCE_tcp_unacked_bytes].current == 0);
+                assert(resources.values[OWNER_RESOURCE_tcp_sndbuf_bytes].current == sizeof(across_chunks) - total_payload);
+                assert(resources.values[OWNER_RESOURCE_tcp_sndbuf_bytes].peak == sizeof(across_chunks));
         }
         assert(total_payload == sizeof(across_chunks));
         cleanup(nagle, nagle_handle);
@@ -196,7 +234,11 @@ int main(int argc, char **argv) {
         struct nsock *old = new_stream(&old_handle, 41);
         old->reuseaddr = true;
         assert(nsock_bind_local(old, old->local_ip, old->local_port) == 0);
-        old->u.tcp.status = TCP_STATUS_TIME_WAIT;
+        tcp_stream_set_status(old, TCP_STATUS_TIME_WAIT);
+        struct owner_resource_snapshot timewait;
+        assert(owner_io_resource_snapshot(&timewait) == 0);
+        assert(timewait.values[OWNER_RESOURCE_time_wait].current == 1);
+        assert(timewait.values[OWNER_RESOURCE_time_wait].peak == 1);
         assert(owner_io_socket_create_local(IPPROTO_TCP, &replacement) == 0);
         struct nsock *fresh = socket_owner_resolve_local(replacement);
         fresh->reuseaddr = true;
@@ -206,6 +248,9 @@ int main(int argc, char **argv) {
         assert(nsock_tcp_conn_register(fresh) == -EADDRINUSE);
         assert(owner_io_close(replacement) == 0);
         cleanup(old, old_handle);
+        assert(owner_io_resource_snapshot(&timewait) == 0);
+        assert(timewait.values[OWNER_RESOURCE_time_wait].current == 0);
+        assert(timewait.values[OWNER_RESOURCE_time_wait].peak == 1);
 
         /* A wildcard listener's passive child owns the SYN destination,
          * otherwise the final ACK misses its four-tuple and accept stalls. */

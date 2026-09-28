@@ -58,8 +58,11 @@ static void *tcp_memory_get(struct tcp_owner_memory *memory,
 
         if (memory == NULL || memory->pools[kind] == NULL ||
             rte_mempool_get(memory->pools[kind], &object) != 0) {
-                if (memory != NULL)
+                if (memory != NULL) {
                         memory->alloc_fail[kind]++;
+                        if (memory->pools[kind] == NULL)
+                                memory->unavailable[kind]++;
+                }
                 errno = ENOBUFS;
                 return NULL;
         }

@@ -6,6 +6,7 @@
 #define NETARCH_OWNER_TIMER_H
 
 #include <rte_timer.h>
+#include "resource.h"
 #include <stdbool.h>
 #include <stdint.h>
 
@@ -43,6 +44,7 @@ struct owner_timer_engine {
         unsigned int lcore_id;
         uint32_t capacity;
         uint32_t active;
+        struct resource_metric resources;
         struct owner_timer *active_head;
         struct owner_timer_wheel *wheel;
         bool initialized;

@@ -24,6 +24,7 @@
 /** Mutable OFO policy and interval metrics owned by one packet worker. */
 struct tcp_ofo_owner_state {
         struct tcp_ofo_metrics metrics;
+        uint64_t lifetime_segments_peak, lifetime_bytes_peak;
         bool pressure;
 #ifdef TCP_TESTING
         bool force_pressure_set;
@@ -137,6 +138,20 @@ void tcp_ofo_metrics_reset_owner(unsigned int lcore_id) {
                        sizeof(g_tcp_ofo_state[lcore_id]));
 }
 
+void tcp_ofo_resource_snapshot(struct resource_metric *segments,
+                               struct resource_metric *bytes) {
+        struct tcp_ofo_owner_state *state = tcp_ofo_state_current();
+        *segments = (struct resource_metric){0};
+        *bytes = (struct resource_metric){0};
+        if (state == NULL)
+                return;
+        segments->current = state->metrics.segments_current;
+        segments->peak = state->lifetime_segments_peak;
+        bytes->capacity = tcp_ofo_owner_limit(state);
+        bytes->current = state->metrics.bytes_current;
+        bytes->peak = state->lifetime_bytes_peak;
+}
+
 void tcp_ofo_metrics_take(struct tcp_ofo_metrics *out) {
         struct tcp_ofo_owner_state *state;
         uint64_t segments_current;
@@ -230,6 +245,10 @@ static void tcp_ofo_metrics_accept(struct tcp_ofo_owner_state *state,
                 return;
         state->metrics.segments_current++;
         state->metrics.bytes_current += bytes;
+        if (state->metrics.segments_current > state->lifetime_segments_peak)
+                state->lifetime_segments_peak = state->metrics.segments_current;
+        if (state->metrics.bytes_current > state->lifetime_bytes_peak)
+                state->lifetime_bytes_peak = state->metrics.bytes_current;
         state->metrics.accepted_segments++;
         state->metrics.accepted_bytes += bytes;
         if (state->metrics.segments_current > state->metrics.segments_peak)

@@ -46,6 +46,7 @@ static void owner_timer_active_link(struct owner_timer *timer) {
                 engine->active_head->active_prev = timer;
         engine->active_head = timer;
         engine->active++;
+        resource_acquire(&engine->resources, 1);
         timer->armed = true;
 }
 
@@ -63,8 +64,10 @@ static void owner_timer_active_unlink(struct owner_timer *timer) {
         timer->active_prev = NULL;
         timer->active_next = NULL;
         timer->armed = false;
-        if (engine->active != 0)
+        if (engine->active != 0) {
                 engine->active--;
+                resource_release(&engine->resources, 1);
+        }
 }
 
 #if OWNER_TIMER_WHEEL
@@ -290,6 +293,7 @@ int owner_timer_engine_init(struct owner_timer_engine *engine,
         memset(engine, 0, sizeof(*engine));
         engine->lcore_id = lcore_id;
         engine->capacity = capacity;
+        engine->resources.capacity = capacity;
 #if OWNER_TIMER_WHEEL
         engine->wheel = calloc(1, sizeof(*engine->wheel));
         if (engine->wheel == NULL) {
@@ -414,6 +418,7 @@ int owner_timer_arm_at(struct owner_timer *timer, uint64_t deadline_cycles) {
         }
         newly_armed = !timer->armed;
         if (newly_armed && engine->active >= engine->capacity) {
+                engine->resources.exhausted++;
                 errno = ENOSPC;
                 return -1;
         }
@@ -426,6 +431,7 @@ int owner_timer_arm_at(struct owner_timer *timer, uint64_t deadline_cycles) {
         delay = deadline_cycles > now ? deadline_cycles - now : 1U;
         if (rte_timer_reset(&timer->backend.rte, delay, SINGLE,
                             engine->lcore_id, owner_timer_rte_cb, timer) != 0) {
+                engine->resources.busy++;
                 errno = EBUSY;
                 return -1;
         }

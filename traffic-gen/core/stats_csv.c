@@ -78,12 +78,27 @@ int tg_stats_csv_open(struct tg_stats_csv *csv, const char *path,
 #define TG_ERROR_HEADER(symbol, name) ",error_" #name
                 TG_ERROR_REASONS(TG_ERROR_HEADER)
 #undef TG_ERROR_HEADER
-                "\n") < 0) {
-                (void)fclose(csv->file);
-                memset(csv, 0, sizeof(*csv));
-                return -1;
+                ",resources_version,resources_complete,resource_forced") < 0)
+                goto fail;
+        static const char *const names[] = {
+#define TG_RESOURCE_NAME(name) #name,
+                TG_RESOURCE_NAMES(TG_RESOURCE_NAME)
+#undef TG_RESOURCE_NAME
+        };
+        for (unsigned i = 0; i < TG_RESOURCE_COUNT; i++) {
+#define TG_RESOURCE_COLUMN(field) \
+                if (fprintf(csv->file, ",res_%s_" #field, names[i]) < 0) goto fail;
+                RESOURCE_FIELDS(TG_RESOURCE_COLUMN)
+                TG_RESOURCE_COLUMN(before_force)
+#undef TG_RESOURCE_COLUMN
         }
+        if (fputc('\n', csv->file) < 0)
+                goto fail;
         return 0;
+fail:
+        (void)fclose(csv->file);
+        memset(csv, 0, sizeof(*csv));
+        return -1;
 }
 
 int tg_stats_csv_write(struct tg_stats_csv *csv,
@@ -128,7 +143,7 @@ int tg_stats_csv_write(struct tg_stats_csv *csv,
 #define TG_ERROR_FORMAT(symbol, name) ",%" PRIu64
             TG_ERROR_REASONS(TG_ERROR_FORMAT)
 #undef TG_ERROR_FORMAT
-            "\n",
+            ,
             scope, tg_csv_phase(snapshot->phase),
             tg_csv_cycles_to_us(snapshot->timestamp_cycles, hz),
             snapshot->sequence, snapshot->worker_index, snapshot->lcore_id,
@@ -197,6 +212,20 @@ int tg_stats_csv_write(struct tg_stats_csv *csv,
             TG_ERROR_REASONS(TG_ERROR_VALUE)
 #undef TG_ERROR_VALUE
             );
+        if (result >= 0)
+                result = fprintf(csv->file, ",%" PRIu64 ",%" PRIu64 ",%" PRIu64,
+                    snapshot->resources.version, snapshot->resources.complete,
+                    snapshot->resources.forced);
+        for (unsigned i = 0; i < TG_RESOURCE_COUNT && result >= 0; i++) {
+                const struct resource_metric *r = &snapshot->resources.values[i];
+                result = fprintf(csv->file, ",%" PRIu64 ",%" PRIu64 ",%" PRIu64
+                    ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64,
+                    r->capacity, r->current, r->peak, r->exhausted,
+                    r->unavailable, r->busy, r->limit,
+                    snapshot->resources.before_force[i]);
+        }
+        if (result >= 0)
+                result = fputc('\n', csv->file);
         if (result < 0)
                 csv->failed = true;
         return result < 0 ? -1 : 0;

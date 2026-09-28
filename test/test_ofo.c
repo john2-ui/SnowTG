@@ -1,3 +1,4 @@
+#include "../pro-stack/tcp_ofo.h"
 #ifndef TCP_TESTING
 #define TCP_TESTING
 #endif
@@ -165,6 +166,12 @@ static void test_ofo_metrics_lifecycle(void) {
         CHECK(metrics.bytes_current == 0);
         CHECK(metrics.released_segments == 1);
         CHECK(metrics.released_bytes == 10);
+        struct resource_metric segments, bytes;
+        tcp_ofo_resource_snapshot(&segments, &bytes);
+        CHECK(segments.current == 0 && segments.peak == 1);
+        CHECK(bytes.current == 0 && bytes.peak == 10);
+        tcp_ofo_resource_snapshot(&segments, &bytes);
+        CHECK(segments.peak == 1 && bytes.peak == 10);
         free_test_rx_queue(&sk);
 
         init_socket(&sk, 0, TCP_RCVBUF_SIZE);

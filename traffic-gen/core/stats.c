@@ -252,6 +252,7 @@ void tg_stats_snapshot_add_runtime(struct tg_stats_snapshot *total,
         if (total == NULL || sample == NULL)
                 return;
 
+        total->resources = sample->resources;
 #define TG_ADD_FIELD(field) total->field += sample->field;
         TG_RUNTIME_SUM_FIELDS(TG_ADD_FIELD)
 #undef TG_ADD_FIELD
@@ -271,6 +272,7 @@ void tg_stats_snapshot_copy_runtime(struct tg_stats_snapshot *snapshot,
         if (snapshot == NULL || total == NULL)
                 return;
 
+        snapshot->resources = total->resources;
 #define TG_COPY_FIELD(field) snapshot->field = total->field;
         TG_RUNTIME_SUM_FIELDS(TG_COPY_FIELD)
         TG_RUNTIME_MAX_FIELDS(TG_COPY_FIELD)
@@ -287,6 +289,21 @@ void tg_stats_snapshot_add(struct tg_stats_snapshot *aggregate,
                 aggregate->timestamp_cycles = sample->timestamp_cycles;
         if (sample->sequence > aggregate->sequence)
                 aggregate->sequence = sample->sequence;
+        aggregate->resources.version = sample->resources.version;
+        aggregate->resources.complete += sample->resources.complete;
+        aggregate->resources.forced += sample->resources.forced;
+        for (unsigned i = 0; i < TG_RESOURCE_COUNT; i++) {
+                struct resource_metric *a = &aggregate->resources.values[i];
+                const struct resource_metric *r = &sample->resources.values[i];
+                a->capacity += r->capacity;
+                a->current += r->current;
+                if (r->peak > a->peak) a->peak = r->peak;
+                a->exhausted += r->exhausted;
+                a->unavailable += r->unavailable;
+                a->busy += r->busy;
+                a->limit += r->limit;
+                aggregate->resources.before_force[i] += sample->resources.before_force[i];
+        }
         aggregate->txns_started += sample->txns_started;
         /* Furthest observed phase; an inactive shard's zero must not reset it.
          * Asynchronous snapshots do not describe a simultaneous phase barrier. */

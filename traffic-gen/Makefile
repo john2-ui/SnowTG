@@ -85,3 +85,9 @@ clean:
 force-stack-backend:
 
 $(STACK_LIB): force-stack-backend
+
+# Deterministic net_null resource acceptance; fault wrappers never enter APP.
+$(BUILD_DIR)/traffic-gen-resource-test: $(SRCS) ../test/resource_faults.c $(wildcard *.h core/*.h proto/*.h proto/*/*.h) Makefile $(STACK_LIB) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(SRCS) ../test/resource_faults.c $(STACK_LIB) -o $@ $(LDFLAGS) \
+		-Wl,--wrap=owner_io_close -Wl,--wrap=owner_timer_arm_after_ms
+	python3 build_metadata.py $@ --owner-timer-backend=$(OWNER_TIMER_BACKEND) --cc="$(CC)" --cflags="$(CFLAGS)" --ldflags="$(LDFLAGS)"

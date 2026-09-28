@@ -42,6 +42,11 @@ struct owner_io_memory_snapshot {
         bool above_high_water; /**< Paused admission may resume while true. */
 };
 
+/** Lifetime resources, sampled on the owning worker before teardown.
+ * Returns -1/EPERM without an initialized owner/timer engine, or ENODEV
+ * when any required pool is unavailable. */
+int owner_io_resource_snapshot(struct owner_resource_snapshot *snapshot);
+
 #define OWNER_IO_TCP_STATE_MAX 11U
 /** Owner-local TCP state census used by shutdown diagnostics. */
 struct owner_io_tcp_lifecycle_snapshot {

@@ -17,6 +17,18 @@
 #include <stdint.h>
 
 #define TG_STATS_CHANNEL_CAP 16
+#define TG_RESOURCE_NAMES(X) OWNER_RESOURCE_NAMES(X) X(flow) X(transaction) X(workflow)
+enum tg_resource_kind {
+#define TG_RESOURCE_KIND(name) TG_RESOURCE_##name,
+        TG_RESOURCE_NAMES(TG_RESOURCE_KIND)
+#undef TG_RESOURCE_KIND
+        TG_RESOURCE_COUNT
+};
+struct tg_resource_snapshot {
+        uint64_t version, complete, forced;
+        struct resource_metric values[TG_RESOURCE_COUNT];
+        uint64_t before_force[TG_RESOURCE_COUNT];
+};
 
 enum tg_stats_snapshot_phase {
         TG_STATS_PHASE_PERIODIC = 0,
@@ -31,6 +43,7 @@ enum tg_stats_snapshot_phase {
  * a final snapshot where they cover the complete run.
  */
 struct tg_stats_snapshot {
+        struct tg_resource_snapshot resources;
         /** Monotonic timer timestamp converted to microseconds in CSV. */
         uint64_t timestamp_cycles;
         /** Per-worker snapshot sequence; aggregate keeps the maximum. */

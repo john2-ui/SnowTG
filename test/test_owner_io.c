@@ -3,6 +3,8 @@
 #include "../pro-stack/socket_owner_internal.h"
 
 #include <assert.h>
+#include <stdlib.h>
+#include <string.h>
 #include <errno.h>
 #include <netinet/in.h>
 #include <rte_byteorder.h>
@@ -53,6 +55,85 @@ static int remote_owner_entry(void *arg) {
         return result->status;
 }
 
+static void *pool_get(struct tcp_owner_memory *m, unsigned kind) {
+        uint8_t *data;
+        void *storage = NULL;
+        switch (kind) {
+        case TCP_MEMORY_TX_CHUNK: return tcp_memory_tx_chunk_alloc(m);
+        case TCP_MEMORY_RX_BLOB: return tcp_memory_rx_blob_alloc(m);
+        case TCP_MEMORY_OFO_SEG: return tcp_memory_ofo_seg_alloc(m);
+        case TCP_MEMORY_FRAGMENT: return tcp_memory_fragment_alloc(m);
+        case TCP_MEMORY_SACK_RANGE: return tcp_memory_sack_range_alloc(m);
+        default: (void)tcp_memory_payload_alloc(m, &data, &storage); return storage;
+        }
+}
+static void pool_put(struct tcp_owner_memory *m, unsigned kind, void *obj) {
+        switch (kind) {
+        case TCP_MEMORY_TX_CHUNK: tcp_memory_tx_chunk_free(m, obj); break;
+        case TCP_MEMORY_RX_BLOB: tcp_memory_rx_blob_free(m, obj); break;
+        case TCP_MEMORY_OFO_SEG: tcp_memory_ofo_seg_free(m, obj); break;
+        case TCP_MEMORY_FRAGMENT: tcp_memory_fragment_free(m, obj); break;
+        case TCP_MEMORY_SACK_RANGE: tcp_memory_sack_range_free(m, obj); break;
+        default: tcp_memory_payload_free(m, obj); break;
+        }
+}
+static void check_pool_resources(void) {
+        struct tcp_owner_memory *m = socket_owner_tcp_memory();
+        struct owner_resource_snapshot a, b;
+        assert(owner_io_resource_snapshot(&a) == 0);
+        for (unsigned k = 0; k < TCP_MEMORY_KIND_MAX; k++) {
+                void **objects = calloc(m->capacity[k], sizeof(*objects));
+                assert(objects != NULL);
+                for (unsigned i = 0; i < m->capacity[k]; i++) {
+                        objects[i] = pool_get(m, k);
+                        assert(objects[i] != NULL);
+                }
+                m->alloc_fail[k] = UINT32_MAX;
+                assert(pool_get(m, k) == NULL);
+                assert(owner_io_resource_snapshot(&a) == 0);
+                assert(a.values[k].current == m->capacity[k]);
+                assert(a.values[k].peak == m->capacity[k]);
+                assert(a.values[k].exhausted == UINT64_C(4294967296));
+                assert(owner_io_resource_snapshot(&b) == 0);
+                assert(memcmp(&a, &b, sizeof(a)) == 0);
+                if (k == TCP_MEMORY_PAYLOAD) {
+                        struct nsock_handle h;
+                        assert(owner_io_socket_create_local(IPPROTO_TCP, &h) == 0);
+                        struct nsock *sk = socket_owner_resolve_local(h);
+                        tcp_stream_set_status(sk, TCP_STATUS_ESTABLISHED);
+                        sk->u.tcp.snd_wnd = 65535;
+                        assert(owner_io_send(h, "rollback", 8) == -1 && errno == ENOBUFS);
+                        assert(owner_io_resource_snapshot(&b) == 0);
+                        assert(b.values[OWNER_RESOURCE_tcp_tx_chunk].current == 0);
+                        assert(b.values[OWNER_RESOURCE_tcp_sndbuf_bytes].current == 0);
+                        tcp_force_abort(sk, 0, "allocation-rollback");
+                        assert(owner_io_close(h) == 0);
+                }
+                for (unsigned i = 0; i < m->capacity[k]; i++) pool_put(m, k, objects[i]);
+                free(objects);
+                assert(owner_io_resource_snapshot(&b) == 0);
+                assert(b.values[k].current == 0 && b.values[k].peak == a.values[k].peak);
+        }
+        struct tcp_owner_memory absent = {0};
+        assert(tcp_memory_tx_chunk_alloc(&absent) == NULL);
+        assert(absent.unavailable[0] == 1 && absent.alloc_fail[0] == 1);
+        struct udp_owner_memory *udp = socket_owner_udp_memory();
+        struct udp_rx_node **nodes = calloc(udp->capacity, sizeof(*nodes));
+        assert(nodes != NULL);
+        for (unsigned i = 0; i < udp->capacity; i++) {
+                nodes[i] = udp_memory_rx_node_alloc(udp);
+                assert(nodes[i] != NULL);
+        }
+        assert(udp_memory_rx_node_alloc(udp) == NULL);
+        assert(owner_io_resource_snapshot(&a) == 0);
+        assert(a.values[OWNER_RESOURCE_udp_rx_node].current == udp->capacity);
+        assert(a.values[OWNER_RESOURCE_udp_rx_node].exhausted == 1);
+        for (unsigned i = 0; i < udp->capacity; i++) udp_memory_rx_node_free(udp, nodes[i]);
+        free(nodes);
+        assert(owner_io_resource_snapshot(&a) == 0);
+        assert(a.values[OWNER_RESOURCE_udp_rx_node].current == 0);
+}
+
 int main(int argc, char **argv) {
         assert(rte_eal_init(argc, argv) >= 0);
         struct owner_timer_engine timer_engine;
@@ -61,6 +142,7 @@ int main(int argc, char **argv) {
                                        NSOCK_ID_DEFAULT_CAPACITY) == 0);
         assert(socket_registry_init() == 0);
         assert(socket_owner_init(rte_lcore_id()) == 0);
+        check_pool_resources();
 
         struct nsock_handle reset_handle;
         assert(owner_io_socket_create_local(IPPROTO_TCP, &reset_handle) == 0);
@@ -381,12 +463,21 @@ int main(int argc, char **argv) {
          * Capacity-aware owner initialization must reject the third live
          * socket, then reuse a retired slot with a new generation.
          */
+        struct owner_io_event final_events[32];
+        while (owner_io_ready_burst(final_events, 32) != 0) {}
+        struct owner_resource_snapshot final_resources;
+        assert(owner_io_resource_snapshot(&final_resources) == 0);
+        for (unsigned k = 0; k < OWNER_RESOURCE_COUNT; k++)
+                assert(final_resources.values[k].current == 0);
+        assert(final_resources.values[OWNER_RESOURCE_ready_event].peak > 0);
         owner_timer_engine_fini(&timer_engine);
+        assert(owner_io_resource_snapshot(&final_resources) == -1 && errno == EPERM);
         socket_owner_fini();
         socket_registry_fini();
         assert(socket_registry_init_owner_with_capacity(rte_lcore_id(), 2) ==
                0);
         assert(socket_owner_init_with_capacity(rte_lcore_id(), 2) == 0);
+        assert(owner_timer_engine_init(&timer_engine, rte_lcore_id(), 4) == 0);
         struct nsock_handle capacity_handles[2];
         struct nsock_handle replacement;
         assert(owner_io_socket_create_local(IPPROTO_UDP,
@@ -396,6 +487,10 @@ int main(int argc, char **argv) {
         errno = 0;
         assert(owner_io_socket_create_local(IPPROTO_UDP, &replacement) == -1);
         assert(errno == ENFILE);
+        assert(owner_io_resource_snapshot(&final_resources) == 0);
+        assert(final_resources.values[OWNER_RESOURCE_socket_slot].current == 2);
+        assert(final_resources.values[OWNER_RESOURCE_socket_slot].peak == 2);
+        assert(final_resources.values[OWNER_RESOURCE_socket_slot].exhausted == 1);
         assert(owner_io_close(capacity_handles[0]) == 0);
         assert(owner_io_socket_create_local(IPPROTO_UDP, &replacement) == 0);
         assert(replacement.id == capacity_handles[0].id);
@@ -405,7 +500,10 @@ int main(int argc, char **argv) {
         assert(errno == EBADF);
         assert(owner_io_close(capacity_handles[1]) == 0);
         assert(owner_io_close(replacement) == 0);
-
+        assert(owner_io_resource_snapshot(&final_resources) == 0);
+        assert(final_resources.values[OWNER_RESOURCE_socket_slot].current == 0);
+        assert(final_resources.values[OWNER_RESOURCE_socket_slot].peak == 2);
+        owner_timer_engine_fini(&timer_engine);
         socket_owner_fini();
         socket_registry_fini();
         return 0;

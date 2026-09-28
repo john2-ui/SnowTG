@@ -106,6 +106,7 @@ struct tcp_sndbuf {
         struct tcp_tx_chunk *tail;
         uint32_t len;      /**< Bytes currently buffered (unacked+unsent). */
         uint32_t head_seq; /**< Sequence of the first buffered byte. */
+        uint32_t unacked; /**< Sent payload bytes still retained for ACK. */
 };
 
 /** Owner-local OFO counters and gauges sampled by the stack runtime. */

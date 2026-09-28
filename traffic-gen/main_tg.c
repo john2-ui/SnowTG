@@ -100,6 +100,7 @@ struct tg_shard {
         bool drain_started;
         bool drain_deadline_expired;
         bool drain_forced;
+        uint64_t resources_before_force[TG_RESOURCE_COUNT];
         uint64_t tcp_drain_residual;
         uint64_t tcp_forced_cleanup;
 };
@@ -162,6 +163,35 @@ static const char *tg_tcp_state_name(TCP_STATUS status) {
  * access, including stack-runtime and dirty-TX metrics, are sampled here
  * before the record is published to the main lcore.
  */
+static void tg_capture_resources(struct tg_shard *shard,
+                                  struct tg_resource_snapshot *out) {
+        struct owner_resource_snapshot owner;
+        memset(out, 0, sizeof(*out));
+        out->version = 1;
+        out->forced = shard->drain_forced;
+        memcpy(out->before_force, shard->resources_before_force, sizeof(out->before_force));
+        if (owner_io_resource_snapshot(&owner) != 0)
+                return;
+        out->complete = 1;
+        memcpy(out->values, owner.values, sizeof(owner.values));
+        out->values[TG_RESOURCE_flow] = shard->flow_pool.resources;
+        out->values[TG_RESOURCE_transaction] = tg_txn_resource_snapshot();
+        out->values[TG_RESOURCE_transaction].capacity = shard->flow_pool.capacity;
+        out->values[TG_RESOURCE_workflow] = shard->workflow.resources;
+}
+
+static bool tg_resources_zero(const struct tg_resource_snapshot *r,
+                               bool ignore_drain_timer) {
+        if (!r->complete)
+                return false;
+        for (unsigned i = 0; i < TG_RESOURCE_COUNT; i++) {
+                uint64_t allowance = i == TG_RESOURCE_timer && ignore_drain_timer ? 1 : 0;
+                if (r->values[i].current > allowance)
+                        return false;
+        }
+        return true;
+}
+
 static void tg_capture_stats_snapshot(struct tg_shard *shard,
                                       enum tg_stats_snapshot_phase phase,
                                       uint64_t now_cycles) {
@@ -176,6 +206,8 @@ static void tg_capture_stats_snapshot(struct tg_shard *shard,
         tg_stats_snapshot_from_stats(
             &snapshot, &shard->stats, now_cycles, ++shard->stats_sequence,
             shard->worker_index, shard->lcore_id, phase);
+        tg_capture_resources(shard, &snapshot.resources);
+        (void)owner_io_memory_snapshot(&shard->memory);
         snapshot.live_sockets = shard->scheduler.live_sockets;
         snapshot.load_phase_index = shard->scheduler.phase_index;
         snapshot.arrivals_planned = shard->scheduler.planned_total;
@@ -636,9 +668,18 @@ static void tg_shard_tick(void *ctx, unsigned int budget) {
                                 shard->plan.report_interval_sec))
                 tg_capture_stats_snapshot(shard, TG_STATS_PHASE_PERIODIC,
                                           now_cycles);
-        if (tg_scheduler_is_stopped(&shard->scheduler) &&
-            shard->scheduler.active == 0 &&
-            shard->scheduler.live_sockets != 0 && !shard->drain_started) {
+        if (shard->drained || !tg_scheduler_is_stopped(&shard->scheduler) ||
+            shard->scheduler.active != 0)
+                return;
+        /* No live socket can consume these stale generation-filtered events. */
+        if (shard->scheduler.live_sockets == 0) {
+                struct owner_io_event events[BURST_SIZE];
+                while (owner_io_ready_burst(events, BURST_SIZE) != 0) {}
+        }
+        struct tg_resource_snapshot resources;
+        tg_capture_resources(shard, &resources);
+        bool zero = tg_resources_zero(&resources, owner_timer_is_armed(&shard->drain_timer));
+        if (!zero && !shard->drain_started) {
                 shard->drain_started = true;
                 if (owner_timer_arm_after_ms(
                         &shard->drain_timer,
@@ -652,6 +693,9 @@ static void tg_shard_tick(void *ctx, unsigned int budget) {
         if (shard->drain_deadline_expired && !shard->drain_forced) {
                 struct owner_io_tcp_lifecycle_snapshot lifecycle = {0};
 
+                tg_capture_resources(shard, &resources);
+                for (unsigned i = 0; i < TG_RESOURCE_COUNT; i++)
+                        shard->resources_before_force[i] = resources.values[i].current;
                 shard->drain_forced = true;
                 if (owner_io_tcp_lifecycle_snapshot(&lifecycle) == 0) {
                         shard->tcp_drain_residual += lifecycle.total;
@@ -676,16 +720,20 @@ static void tg_shard_tick(void *ctx, unsigned int budget) {
         }
         if (tg_scheduler_is_stopped(&shard->scheduler) &&
             shard->scheduler.active == 0 &&
-            (shard->scheduler.live_sockets == 0 || shard->drain_forced) &&
+            (zero || shard->drain_forced) &&
             !shard->drained) {
                 (void)owner_timer_cancel(&shard->drain_timer);
+                if (shard->scheduler.live_sockets == 0) {
+                        struct owner_io_event events[BURST_SIZE];
+                        while (owner_io_ready_burst(events, BURST_SIZE) != 0) {}
+                }
+                tg_capture_resources(shard, &resources);
                 (void)owner_io_memory_snapshot(&shard->memory);
                 /* Drain measures returned live resources, not reserved pool
                  * capacity. Forced cleanup must never produce a clean sample. */
                 tg_latency_on_drained(&shard->latency, shard->scheduler.stop_cycles,
                     rte_get_timer_cycles(), !shard->drain_forced && shard->scheduler.live_sockets == 0 &&
-                    tg_tcp_pool_objects_in_use(&shard->memory) == 0 &&
-                    shard->flow_pool.free_count == shard->flow_pool.capacity);
+                    tg_resources_zero(&resources, false));
                 shard->drained = true;
                 if (shard->runtime != NULL &&
                     atomic_fetch_sub(&shard->runtime->remaining_shards, 1) == 1)

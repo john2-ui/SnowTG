@@ -20,10 +20,10 @@ static unsigned int split_csv(char *line, char **columns,
 
 int main(void) {
         char path[] = "/tmp/tg-stats-csv-XXXXXX";
-        char header[4096];
-        char record[4096];
-        char *header_columns[160];
-        char *record_columns[160];
+        char header[16384];
+        char record[16384];
+        char *header_columns[512];
+        char *record_columns[512];
         struct tg_stats_csv csv;
         struct tg_stats_snapshot snapshot = {0};
         int fd = mkstemp(path);
@@ -31,6 +31,21 @@ int main(void) {
         assert(fd >= 0);
         assert(close(fd) == 0);
         assert(tg_stats_csv_open(&csv, path, 1000000) == 0);
+        snapshot.resources.version = snapshot.resources.complete = 1;
+        snapshot.resources.values[TG_RESOURCE_tcp_payload] = (struct resource_metric){
+            .capacity = 10, .current = 2, .peak = 7, .exhausted = UINT64_C(4294967296)};
+        struct tg_stats_snapshot total = {0}, aggregate = {0}, copy = {0};
+        tg_stats_snapshot_add_runtime(&total, &snapshot);
+        tg_stats_snapshot_add_runtime(&total, &snapshot);
+        tg_stats_snapshot_copy_runtime(&copy, &total);
+        assert(memcmp(&copy.resources, &snapshot.resources, sizeof(copy.resources)) == 0);
+        tg_stats_snapshot_add(&aggregate, &snapshot);
+        tg_stats_snapshot_add(&aggregate, &snapshot);
+        assert(aggregate.resources.complete == 2);
+        assert(aggregate.resources.values[TG_RESOURCE_tcp_payload].current == 4);
+        assert(aggregate.resources.values[TG_RESOURCE_tcp_payload].capacity == 20);
+        assert(aggregate.resources.values[TG_RESOURCE_tcp_payload].peak == 7);
+        assert(aggregate.resources.values[TG_RESOURCE_tcp_payload].exhausted == UINT64_C(8589934592));
         snapshot.worker_index = 0;
         snapshot.error_reasons[TG_ERROR_RESET] = 17;
         snapshot.phase = TG_STATS_PHASE_PERIODIC;
@@ -57,6 +72,7 @@ int main(void) {
             split_csv(record, record_columns,
                       sizeof(record_columns) / sizeof(record_columns[0]));
         assert(header_count == record_count);
+        bool found_resource = false;
         bool found_error = false;
         bool found_udp = false;
         bool found_ofo_drop = false;
@@ -65,6 +81,10 @@ int main(void) {
         bool found_forced_cleanup = false;
         bool found_pool_in_use = false;
         for (unsigned int i = 0; i < header_count; i++) {
+                if (strcmp(header_columns[i], "res_tcp_payload_exhausted") == 0) {
+                        assert(strcmp(record_columns[i], "4294967296") == 0);
+                        found_resource = true;
+                }
                 if (strcmp(header_columns[i], "error_reset") == 0) {
                         assert(strcmp(record_columns[i], "17") == 0);
                         found_error = true;
@@ -95,6 +115,7 @@ int main(void) {
                         found_pool_in_use = true;
                 }
         }
+        assert(found_resource);
         assert(found_error);
         assert(found_udp);
         assert(found_ofo_drop);

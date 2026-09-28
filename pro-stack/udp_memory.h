@@ -11,6 +11,7 @@
  */
 
 #include <stdint.h>
+#include "resource.h"
 
 struct rte_mempool;
 struct rte_mbuf;
@@ -31,7 +32,8 @@ struct udp_rx_node {
 struct udp_owner_memory {
         struct rte_mempool *rx_nodes;
         uint32_t capacity;
-        uint32_t alloc_fail;
+        uint64_t alloc_fail;
+        uint64_t unavailable;
         uint32_t peak_in_use;
         uint64_t queue_drops;
         uint16_t lcore_id;
@@ -41,7 +43,8 @@ struct udp_owner_memory {
 struct udp_memory_snapshot {
         uint32_t capacity;
         uint32_t available;
-        uint32_t alloc_fail;
+        uint64_t alloc_fail;
+        uint64_t unavailable;
         uint32_t peak_in_use;
         uint64_t queue_drops;
 };

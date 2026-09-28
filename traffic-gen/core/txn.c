@@ -12,6 +12,10 @@
 #include <errno.h>
 #include <string.h>
 
+static _Thread_local struct resource_metric txn_resources;
+
+struct resource_metric tg_txn_resource_snapshot(void) { return txn_resources; }
+
 /** @copydoc tg_txn_init */
 int tg_txn_init(struct tg_txn *txn, const struct tg_proto_ops *proto,
                 const void *class_config) {
@@ -25,10 +29,13 @@ int tg_txn_init(struct tg_txn *txn, const struct tg_proto_ops *proto,
         txn->class_config = class_config;
 
         if (proto->init != NULL && proto->init(txn) != 0) {
+                txn_resources.unavailable++;
                 tg_txn_reset(txn);
                 return -1;
         }
 
+        txn->resource_counted = true;
+        resource_acquire(&txn_resources, 1);
         return 0;
 }
 
@@ -69,6 +76,8 @@ void tg_txn_reset(struct tg_txn *txn) {
         if (txn == NULL)
                 return;
 
+        if (txn->resource_counted)
+                resource_release(&txn_resources, 1);
         if (txn->proto != NULL && txn->proto->reset != NULL)
                 txn->proto->reset(txn);
         memset(txn, 0, sizeof(*txn));

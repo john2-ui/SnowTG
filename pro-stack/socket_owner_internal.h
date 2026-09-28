@@ -37,5 +37,6 @@ int socket_owner_tcp_memory_snapshot(struct tcp_memory_snapshot *snapshot);
 int socket_owner_tcp_memory_below_low_water(void);
 /** Non-zero when this owner has cleared every resource high-water mark. */
 int socket_owner_tcp_memory_above_high_water(void);
+int socket_owner_resource_snapshot(struct owner_resource_snapshot *snapshot);
 
 #endif /* NETARCH_SOCKET_OWNER_INTERNAL_H */

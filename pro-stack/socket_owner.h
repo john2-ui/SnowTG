@@ -208,6 +208,7 @@ struct socket_owner {
         uint32_t slot_capacity;
         uint32_t free_count;
         uint32_t ready_capacity;
+        struct resource_metric slot_resources, ready_resources;
 };
 
 /** Initialize the context for one packet-worker lcore. */

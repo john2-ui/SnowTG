@@ -7,5 +7,6 @@
 - [运行示例协议栈](../README.md#运行示例协议栈)
 - [运行 traffic-gen](../README.md#运行-traffic-gen)
 - [脚本剧本、SLO 验收与报告](../README.md#脚本剧本slo-验收与报告)
+- [资源趋势与归零验收](../README.md#资源趋势与归零验收)
 - [添加应用层协议插件](../README.md#添加应用层协议插件)
 - [日志排查](../README.md#日志排查)

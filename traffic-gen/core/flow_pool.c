@@ -69,6 +69,7 @@ int tg_flow_pool_init(struct tg_flow_pool *pool, uint32_t capacity) {
         }
 
         pool->capacity = capacity;
+        pool->resources.capacity = capacity;
         pool->free_count = capacity;
         return 0;
 }
@@ -89,10 +90,13 @@ struct tg_flow *tg_flow_pool_get(struct tg_flow_pool *pool) {
         uint32_t id;
 
         if (pool == NULL || pool->flows == NULL || pool->free_ids == NULL) {
+                if (pool != NULL)
+                        pool->resources.unavailable++;
                 errno = EINVAL;
                 return NULL;
         }
         if (pool->free_count == 0) {
+                pool->resources.exhausted++;
                 errno = ENOBUFS;
                 return NULL;
         }
@@ -101,6 +105,7 @@ struct tg_flow *tg_flow_pool_get(struct tg_flow_pool *pool) {
         flow = &pool->flows[id];
         tg_flow_reset(flow);
         flow->in_use = true;
+        resource_acquire(&pool->resources, 1);
         return flow;
 }
 
@@ -128,5 +133,6 @@ int tg_flow_pool_put(struct tg_flow_pool *pool, struct tg_flow *flow) {
 
         tg_flow_reset(flow);
         pool->free_ids[pool->free_count++] = id;
+        resource_release(&pool->resources, 1);
         return 0;
 }

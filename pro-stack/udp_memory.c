@@ -15,8 +15,11 @@ static struct udp_rx_node *udp_memory_get(struct udp_owner_memory *memory) {
 
         if (memory == NULL || memory->rx_nodes == NULL ||
             rte_mempool_get(memory->rx_nodes, (void **)&node) != 0) {
-                if (memory != NULL)
+                if (memory != NULL) {
                         memory->alloc_fail++;
+                        if (memory->rx_nodes == NULL)
+                                memory->unavailable++;
+                }
                 errno = ENOBUFS;
                 return NULL;
         }
@@ -76,6 +79,7 @@ void udp_owner_memory_snapshot(const struct udp_owner_memory *memory,
                                   ? 0
                                   : rte_mempool_avail_count(memory->rx_nodes);
         snapshot->alloc_fail = memory->alloc_fail;
+        snapshot->unavailable = memory->unavailable;
         snapshot->peak_in_use = memory->peak_in_use;
         snapshot->queue_drops = memory->queue_drops;
 }

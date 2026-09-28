@@ -46,6 +46,11 @@ int main(int argc, char **argv) {
         errno = 0;
         assert(owner_timer_arm_at(&second, UINT64_MAX) == -1);
         assert(errno == ENOSPC);
+        assert(engine.resources.capacity == 1 && engine.resources.current == 1);
+        assert(engine.resources.peak == 1 && engine.resources.exhausted == 1);
+        engine.resources.exhausted = UINT32_MAX;
+        assert(owner_timer_arm_at(&second, UINT64_MAX) == -1);
+        assert(engine.resources.exhausted == UINT64_C(4294967296));
         assert(owner_timer_poll(&engine) == 0);
         assert(state.calls == 1);
         assert(owner_timer_is_armed(&first));
@@ -54,6 +59,7 @@ int main(int argc, char **argv) {
         assert(state.calls == 2);
         assert(!owner_timer_is_armed(&first));
         assert(engine.active == 0);
+        assert(engine.resources.current == 0 && engine.resources.peak == 1);
 
         assert(owner_timer_cancel(&first) == 0);
         assert(owner_timer_cancel(&first) == 0);
@@ -88,6 +94,14 @@ int main(int argc, char **argv) {
         assert(owner_timer_poll(&engine) == 0);
         assert(engine.active == 0);
 
+        if (engine.wheel == NULL) {
+                /* DPDK rejects resetting a node being configured elsewhere. */
+                second.backend.rte.status.state = RTE_TIMER_CONFIG;
+                assert(owner_timer_arm_at(&second, UINT64_MAX) == -1);
+                assert(errno == EBUSY && engine.resources.busy == 1);
+                assert(engine.resources.current == 0);
+                rte_timer_init(&second.backend.rte);
+        }
         owner_timer_engine_fini(&engine);
         return 0;
 }

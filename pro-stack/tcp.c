@@ -500,6 +500,7 @@ int tcp_sndbuf_init(struct tcp_sndbuf *sb, uint32_t isn) {
         sb->tail = NULL;
         sb->len = 0;
         sb->head_seq = isn;
+        sb->unacked = 0;
         return 0;
 }
 
@@ -512,6 +513,11 @@ void tcp_sndbuf_free(struct tcp_sndbuf *sb) {
         if (sb == NULL)
                 return;
         memory = tcp_memory_current();
+        if (memory != NULL) {
+                resource_release(&memory->sndbuf_bytes, sb->len);
+                resource_release(&memory->unacked_bytes, sb->unacked);
+        }
+        sb->unacked = 0;
         while (sb->head != NULL) {
                 struct tcp_tx_chunk *chunk = sb->head;
 
@@ -597,6 +603,8 @@ static ssize_t tcp_sndbuf_append(struct tcp_sndbuf *sb, const uint8_t *data,
                 rte_memcpy(chunk->data + chunk->len, data + copied, take);
                 chunk->len += (uint16_t)take;
                 sb->len += (uint32_t)take;
+                if (memory != NULL)
+                        resource_acquire(&memory->sndbuf_bytes, take);
                 copied += take;
         }
         return copied == 0 ? -1 : (ssize_t)copied;
@@ -652,6 +660,12 @@ static void tcp_sndbuf_remove(struct tcp_sndbuf *sb, uint32_t len) {
                 return;
         if (len > sb->len)
                 len = sb->len;
+        uint32_t acked = len < sb->unacked ? len : sb->unacked;
+        sb->unacked -= acked;
+        if (memory != NULL) {
+                resource_release(&memory->sndbuf_bytes, len);
+                resource_release(&memory->unacked_bytes, acked);
+        }
         while (len != 0 && sb->head != NULL) {
                 struct tcp_tx_chunk *chunk = sb->head;
                 uint32_t available = chunk->len - chunk->off;
@@ -948,6 +962,13 @@ struct nsock *tcp_stream_create(uint32_t remote_ip, uint32_t local_ip,
  */
 void tcp_stream_set_status(struct nsock *sk, TCP_STATUS new_status) {
         TCP_STATUS old = sk->u.tcp.status;
+        struct tcp_owner_memory *memory = tcp_memory_current();
+        if (memory != NULL && old != new_status) {
+                if (old == TCP_STATUS_TIME_WAIT)
+                        resource_release(&memory->time_wait, 1);
+                if (new_status == TCP_STATUS_TIME_WAIT)
+                        resource_acquire(&memory->time_wait, 1);
+        }
         if (old != TCP_STATUS_CLOSED && new_status == TCP_STATUS_CLOSED) {
                 nsock_tcp_conn_unregister(sk);
         }
@@ -3132,6 +3153,10 @@ tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
                                   sk->u.tcp.ts_last_val);
         }
         sk->u.tcp.sent_seq += seglen;
+        sk->u.tcp.sndbuf.unacked += seglen;
+        struct tcp_owner_memory *memory = tcp_memory_current();
+        if (memory != NULL)
+                resource_acquire(&memory->unacked_bytes, seglen);
         if (sk->u.tcp.sack.pending.kind == TCP_RECOVERY_TX_NEW_DATA)
                 tcp_sack_commit_candidate(&sk->u.tcp, sk->u.tcp.sent_seq);
         else

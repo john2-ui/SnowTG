@@ -26,6 +26,7 @@ struct tg_flow_pool {
         uint32_t *free_ids;
         uint32_t capacity;
         uint32_t free_count;
+        struct resource_metric resources;
 };
 
 /**

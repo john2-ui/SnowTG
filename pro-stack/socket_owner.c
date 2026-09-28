@@ -11,6 +11,7 @@
  * Timers borrow the owner reference and are cancelled before final reclamation.
  */
 #include "socket_owner.h"
+#include "tcp_ofo.h"
 
 #include "config.h"
 #include "log.h"
@@ -298,6 +299,8 @@ int socket_owner_init_with_capacity(unsigned int lcore_id, uint32_t capacity) {
         owner->lcore_id = lcore_id;
         owner->slot_capacity = capacity;
         owner->ready_capacity = ready_capacity;
+        owner->slot_resources.capacity = capacity;
+        owner->ready_resources.capacity = ready_capacity;
         owner->slots = calloc(capacity, sizeof(*owner->slots));
         owner->generations = calloc(capacity, sizeof(*owner->generations));
         owner->free_ids = calloc(capacity, sizeof(*owner->free_ids));
@@ -444,8 +447,13 @@ int socket_owner_adopt(struct nsock *sk) {
         if (owner == NULL || sk == NULL)
                 return -EINVAL;
 
-        if (owner->free_count == 0 || owner->free_ids == NULL)
+        if (owner->free_count == 0 || owner->free_ids == NULL) {
+                if (owner->free_ids == NULL)
+                        owner->slot_resources.unavailable++;
+                else
+                        owner->slot_resources.exhausted++;
                 return -ENFILE;
+        }
 
         uint32_t id = owner->free_ids[--owner->free_count];
         /*
@@ -464,6 +472,7 @@ int socket_owner_adopt(struct nsock *sk) {
         sk->generation = generation;
         sk->owner_lcore = (uint16_t)owner->lcore_id;
         owner->slots[id] = sk;
+        resource_acquire(&owner->slot_resources, 1);
         LOG_OWNER_DEBUG(OWNER_SK_FMT " event=adopt owner_lcore=%u",
                         OWNER_SK_ARG(sk), sk->owner_lcore);
         return 0;
@@ -493,6 +502,7 @@ void socket_owner_retire(struct nsock *sk) {
         if (owner->slots[sk->id] == sk) {
                 LOG_OWNER_DEBUG(OWNER_SK_FMT " event=retire", OWNER_SK_ARG(sk));
                 owner->slots[sk->id] = NULL;
+                resource_release(&owner->slot_resources, 1);
                 uint32_t next = owner->generations[sk->id] + 1;
                 /* Generation zero remains reserved after uint32_t wrap. */
                 owner->generations[sk->id] = next == 0 ? 1 : next;
@@ -534,6 +544,7 @@ void socket_owner_ready_post(struct nsock *sk, uint32_t events) {
                 return;
 
         if (rte_mempool_get(owner->ready_event_pool, (void **)&event) != 0) {
+                owner->ready_resources.exhausted++;
                 owner->ready_overflow = true;
                 LOG_OWNER_DEBUG(OWNER_SK_FMT
                                 " event=ready-deferred reason=event-pool-empty",
@@ -541,9 +552,12 @@ void socket_owner_ready_post(struct nsock *sk, uint32_t events) {
                 return;
         }
 
+        resource_acquire(&owner->ready_resources, 1);
         event->handle = socket_owner_handle(sk);
         if (rte_ring_sp_enqueue(owner->ready_ring, event) != 0) {
+                owner->ready_resources.limit++;
                 rte_mempool_put(owner->ready_event_pool, event);
+                resource_release(&owner->ready_resources, 1);
                 owner->ready_overflow = true;
                 LOG_OWNER_DEBUG(OWNER_SK_FMT
                                 " event=ready-deferred reason=ring-full",
@@ -580,6 +594,7 @@ unsigned int socket_owner_ready_burst(struct owner_io_event *events,
                         }
                 }
                 rte_mempool_put(owner->ready_event_pool, event);
+                resource_release(&owner->ready_resources, 1);
         }
 
         if (owner->ready_overflow) {
@@ -1586,4 +1601,55 @@ void socket_owner_shutdown_local(void) {
                 else
                         sk->ops->close(sk);
         }
+}
+
+int socket_owner_resource_snapshot(struct owner_resource_snapshot *snapshot) {
+        struct socket_owner *owner = socket_owner_current();
+        struct owner_timer_engine *timer = owner_timer_engine_current();
+        struct tcp_memory_snapshot tcp;
+        struct udp_memory_snapshot udp;
+        _Static_assert((int)TCP_MEMORY_KIND_MAX == (int)OWNER_RESOURCE_udp_rx_node,
+                       "TCP resource kinds must match the owner catalog");
+        if (snapshot == NULL || owner == NULL || timer == NULL || !timer->initialized) {
+                errno = EPERM;
+                return -1;
+        }
+        memset(snapshot, 0, sizeof(*snapshot));
+        for (unsigned k = 0; k < TCP_MEMORY_KIND_MAX; k++) {
+                if (owner->tcp_memory.pools[k] == NULL) {
+                        errno = ENODEV;
+                        return -1;
+                }
+        }
+        if (owner->udp_memory.rx_nodes == NULL || owner->ready_event_pool == NULL ||
+            owner->free_ids == NULL) {
+                errno = ENODEV;
+                return -1;
+        }
+        tcp_owner_memory_snapshot(&owner->tcp_memory, &tcp);
+        udp_owner_memory_snapshot(&owner->udp_memory, &udp);
+        for (unsigned k = 0; k < TCP_MEMORY_KIND_MAX; k++) {
+                struct resource_metric *r = &snapshot->values[k];
+                r->capacity = tcp.capacity[k];
+                r->current = tcp.capacity[k] - tcp.available[k];
+                r->peak = tcp.peak_in_use[k];
+                r->unavailable = owner->tcp_memory.unavailable[k];
+                r->exhausted = tcp.alloc_fail[k] - r->unavailable;
+        }
+        snapshot->values[OWNER_RESOURCE_udp_rx_node] = (struct resource_metric){
+            .capacity = udp.capacity, .current = udp.capacity - udp.available,
+            .peak = udp.peak_in_use, .exhausted = udp.alloc_fail - udp.unavailable,
+            .unavailable = udp.unavailable, .limit = udp.queue_drops};
+        snapshot->values[OWNER_RESOURCE_socket_slot] = owner->slot_resources;
+        snapshot->values[OWNER_RESOURCE_ready_event] = owner->ready_resources;
+        snapshot->values[OWNER_RESOURCE_timer] = timer->resources;
+        snapshot->values[OWNER_RESOURCE_time_wait] = owner->tcp_memory.time_wait;
+        snapshot->values[OWNER_RESOURCE_time_wait].capacity = owner->slot_capacity;
+        snapshot->values[OWNER_RESOURCE_tcp_sndbuf_bytes] = owner->tcp_memory.sndbuf_bytes;
+        snapshot->values[OWNER_RESOURCE_tcp_unacked_bytes] = owner->tcp_memory.unacked_bytes;
+        tcp_ofo_resource_snapshot(&snapshot->values[OWNER_RESOURCE_ofo_segments],
+                                  &snapshot->values[OWNER_RESOURCE_ofo_bytes]);
+        snapshot->values[OWNER_RESOURCE_ofo_segments].capacity =
+            owner->tcp_memory.capacity[TCP_MEMORY_OFO_SEG];
+        return 0;
 }

@@ -224,6 +224,172 @@ def read_csv(path):
     return rows
 
 
+RESOURCE_NAMES = ("tcp_tx_chunk", "tcp_rx_blob", "tcp_ofo_seg", "tcp_fragment",
+    "tcp_sack_range", "tcp_payload", "udp_rx_node", "socket_slot", "ready_event",
+    "timer", "time_wait", "tcp_sndbuf_bytes", "tcp_unacked_bytes", "ofo_segments",
+    "ofo_bytes", "flow", "transaction", "workflow")
+RESOURCE_FIELDS = ("capacity", "current", "peak", "exhausted", "unavailable", "busy", "limit", "before_force")
+RESOURCE_FAILURES = ("exhausted", "unavailable", "busy", "limit")
+RESOURCE_STATUS = {"passed": "正常排空通过", "forced_zero": "强制回收后归零",
+                   "residual": "仍有残留", "incomplete": "证据不完整"}
+
+
+def collect_resources(stats, result, epoch):
+    """Validate owner lifetime counters; never turn missing evidence into zero.
+
+    Peak is maximum individual-owner high water, not a simultaneous total.
+    The final snapshot precedes pool destruction and is required for every owner.
+    """
+    evidence = dict(version=None, status="incomplete", complete=False,
+                    trend_complete=False, workers=[], reasons=[],
+                    peak_scope="maximum per-worker lifetime high-water; not simultaneous total",
+                    boundary="owner pools, timers, flows, transaction contexts and TCP queues; excludes shared mbuf/NIC/IPv4 reassembly/process heap")
+    result["resources"] = evidence
+    if not stats or "resources_version" not in stats[0]:
+        evidence["reasons"].append("resource metrics not recorded")
+        return
+    evidence["version"] = 1
+    problems = evidence["reasons"]
+    meta = result.get("environment", {}).get("dataplane", {})
+    expected = int(meta.get("workers", 0))
+    if expected <= 0:
+        problems.append("missing worker count metadata")
+    histories, finals = {}, {}
+    required = {"resources_version", "resources_complete", "resource_forced", "sequence",
+                "worker", "timestamp_us", "stats_queue_drops"}
+    required.update("res_" + n + "_" + f for n in RESOURCE_NAMES for f in RESOURCE_FIELDS)
+    dropped = False
+    for row in stats:
+        if row["scope"] != "worker":
+            continue
+        if not required <= row.keys():
+            problems.append("missing resource columns")
+            continue
+        try:
+            v = {k: int(row[k]) for k in required}
+        except (ValueError, TypeError):
+            problems.append("malformed resource counters")
+            continue
+        worker = v["worker"]
+        if any(n < 0 for n in v.values()) or v["resources_version"] != 1 or v["resources_complete"] != 1 or v["resource_forced"] not in (0, 1):
+            problems.append(f"worker {worker}: incomplete/unsupported resource snapshot")
+            continue
+        history = histories.setdefault(worker, [])
+        expected_sequence = history[-1]["sequence"] + 1 if history else 1
+        if v["sequence"] != expected_sequence:
+            problems.append(f"worker {worker}: missing/unordered resource samples")
+        if worker in finals:
+            problems.append(f"worker {worker}: record after final")
+        if history:
+            old = history[-1]
+            if v["sequence"] <= old["sequence"] or v["timestamp_us"] < old["timestamp_us"]:
+                problems.append(f"worker {worker}: unordered resource snapshots")
+            for name in RESOURCE_NAMES:
+                prefix = "res_" + name + "_"
+                if v[prefix + "capacity"] != old[prefix + "capacity"] or any(
+                    v[prefix + f] < old[prefix + f] for f in ("peak",) + RESOURCE_FAILURES):
+                    problems.append(f"worker {worker}/{name}: non-monotonic resource counters")
+            if v["resource_forced"] < old["resource_forced"]:
+                problems.append(f"worker {worker}: non-monotonic forced cleanup")
+        for name in RESOURCE_NAMES:
+            prefix = "res_" + name + "_"
+            current, peak, capacity = (v[prefix + f] for f in ("current", "peak", "capacity"))
+            if current > peak or ((capacity or name not in ("tcp_sndbuf_bytes", "tcp_unacked_bytes", "ofo_segments", "ofo_bytes")) and peak > capacity):
+                problems.append(f"worker {worker}/{name}: invalid occupancy")
+        history.append(v)
+        dropped |= bool(v["stats_queue_drops"])
+        if row["phase"] == "final":
+            if worker in finals:
+                problems.append(f"worker {worker}: duplicate final resource snapshot")
+            finals[worker] = v
+    if expected <= 0 or set(finals) != set(range(expected)) or set(histories) != set(range(expected)):
+        problems.append("missing/unexpected final worker resources")
+    for worker, history in sorted(histories.items()):
+        final = finals.get(worker)
+        metrics = {}
+        for name in RESOURCE_NAMES:
+            prefix = "res_" + name + "_"
+            metrics[name] = dict(unit="bytes" if name.endswith("bytes") else "objects",
+                final={f: final[prefix + f] for f in RESOURCE_FIELDS} if final else None,
+                timeline=[dict(time_sec=(v["timestamp_us"] - epoch) / 1e6,
+                    **{f: v[prefix + f] for f in RESOURCE_FIELDS if f != "before_force"}) for v in history])
+        evidence["workers"].append(dict(worker=worker, forced=bool(final["resource_forced"]) if final else None,
+                                        metrics=metrics))
+    if dropped:
+        problems.append("statistics records dropped; resource trends incomplete")
+    evidence["complete"] = evidence["trend_complete"] = not problems
+    if not problems:
+        residual = any(v["res_" + n + "_current"] for v in finals.values() for n in RESOURCE_NAMES)
+        forced = any(v["resource_forced"] for v in finals.values())
+        evidence["status"] = "residual" if residual else "forced_zero" if forced else "passed"
+        if evidence["status"] == "passed" and result.get("summary", {}).get("drain_ms") is None:
+            problems.append("normal drain not observed")
+            evidence.update(status="incomplete", complete=False)
+    if evidence["status"] != "passed":
+        result["invalid_reasons"].append("resource acceptance: " + evidence["status"])
+    for name in RESOURCE_NAMES:
+        measured = [v["res_" + name + "_peak"] for v in finals.values()]
+        if len(measured) == expected and expected:
+            result["resource_peaks"]["res_" + name + "_peak"] = dict(value=max(measured), scope=evidence["peak_scope"])
+    # Aggregate is redundant evidence, but must agree with all worker finals.
+    aggregates = [r for r in stats if r["scope"] == "aggregate" and r["phase"] == "final"]
+    if len(aggregates) != 1:
+        problems.append("missing/duplicate aggregate resource snapshot")
+        evidence.update(status="incomplete", complete=False, trend_complete=False)
+        result["invalid_reasons"].append("resource acceptance: missing/duplicate aggregate")
+    if len(aggregates) == 1 and len(finals) == expected and expected:
+        try:
+            a = aggregates[0]
+            for name in RESOURCE_NAMES:
+                for field in RESOURCE_FIELDS:
+                    key = "res_" + name + "_" + field
+                    values = [v[key] for v in finals.values()]
+                    if int(a[key]) != (max(values) if field == "peak" else sum(values)):
+                        raise ValueError("aggregate resource mismatch")
+            if int(a["resources_version"]) != 1 or int(a["resources_complete"]) != expected or int(a["resource_forced"]) != sum(v["resource_forced"] for v in finals.values()):
+                raise ValueError("aggregate resource metadata mismatch")
+        except (KeyError, ValueError, TypeError):
+            problems.append("aggregate resource mismatch")
+            evidence.update(status="incomplete", complete=False, trend_complete=False)
+            result["invalid_reasons"].append("resource acceptance: aggregate mismatch")
+
+
+def resource_report(result, esc, table, pre):
+    evidence = result.get("resources")
+    if not evidence:
+        return "<h2>资源归零验收</h2><p>未记录；不能判定完整资源验收通过。</p>"
+    parts = ["<h2>资源归零验收</h2><p>" + esc(RESOURCE_STATUS.get(evidence["status"], "证据不完整")) + "</p>",
+             "<p>峰值是各 owner 生命周期高水位；当前占用曲线按 worker 分列。共享 mbuf、NIC、IPv4 重组及全部堆内存不在本次验收范围。</p>",
+             pre(evidence.get("reasons", []))]
+    rows = []
+    for worker in evidence["workers"]:
+        for name, metric in worker["metrics"].items():
+            final = metric["final"]
+            if final is None:
+                rows.append((worker["worker"], name, metric["unit"], "未记录", "未记录", "未记录", "未记录", "未记录"))
+            else:
+                rows.append((worker["worker"], name, metric["unit"], final["capacity"] or "无独立预算/未启用",
+                    final["current"], final["peak"], canonical({f: final[f] for f in RESOURCE_FAILURES}), final["before_force"]))
+    parts.append(table(["Worker", "资源", "单位", "容量", "最终占用", "峰值", "失败原因（不同层不可相加）", "强制回收前占用"], rows))
+    ofo_drops = {k: v for k, v in result.get("final_counters", {}).items() if k.startswith("ofo_drop_")}
+    if ofo_drops:
+        parts.extend(["<h3>OFO 丢弃原因（各 worker 累计之和）</h3>", pre(ofo_drops)])
+    for name in RESOURCE_NAMES:
+        series = [(w["worker"], w["metrics"][name]["timeline"]) for w in evidence["workers"]]
+        points = [p for _, history in series for p in history]
+        if not points:
+            continue
+        xmax = max(1, max(p["time_sec"] for p in points))
+        ymax = max(1, max(p["current"] for p in points))
+        parts.append(f"<details><summary>{name} 当前占用（0～{ymax}；0～{xmax:.2f} 秒）</summary><svg viewBox='0 0 1000 210' role='img' aria-label='{name}'>")
+        for worker, history in series:
+            coords = " ".join(f"{20+960*p['time_sec']/xmax:.2f},{190-170*p['current']/ymax:.2f}" for p in history)
+            color = ("#1768ac", "#b43e53", "#18855c", "#9854ac")[worker % 4]
+            parts.append(f"<polyline fill='none' stroke='{color}' stroke-width='2' points='{coords}'><title>worker {worker}</title></polyline>")
+        parts.append("</svg></details>")
+    return "\n".join(parts)
+
+
 def collect(result, output):
     """Populate a result from final native CSVs, recording measurement defects.
 
@@ -374,6 +540,7 @@ def collect(result, output):
     result["timeline"] = timeline
     peaks = ("tx_peak", "payload_peak", "ofo_segments_peak", "ofo_bytes_peak", "dirty_tx_high_water", "ring_hwm_in", "ring_hwm_out")
     result["resource_peaks"] = {k: dict(value=final[k], scope="maximum per-worker high-water mark; not simultaneous total") for k in peaks}
+    collect_resources(stats, result, epoch)
     result["resource_peaks"]["active_sampled"] = dict(value=max((r["active"] for r in timeline), default=0), scope="max sampled single worker")
     error_fields = ("fail_connect", "fail_io", "fail_proto", "fail_resource", "tx_alloc_fail", "rx_ring_drops",
                     "tx_nic_drops", "udp_tx_queue_drops", "rx_handoff_drops", "tcp_forced_cleanup")
@@ -658,6 +825,7 @@ def report(result):
             color = ("#1768ac", "#b43e53", "#18855c", "#9854ac")[worker % 4]
             parts.append(f"<polyline fill='none' stroke='{color}' stroke-width='2' points='{coords}'><title>worker {worker}</title></polyline>")
         parts.append("</svg>")
+    parts.append(resource_report(result, esc, table, pre))
     parts.extend(["<h2>有效性与限制</h2>", pre(result.get("invalid_reasons", [])), pre(result.get("limitations", LIMITS)),
                   "<h2>结论</h2><p>" + esc(result.get("comparison", {}).get("recommendation", result.get("status", "invalid"))) +
                   "；结论只覆盖本次负载、持续时间与环境。</p></html>"])

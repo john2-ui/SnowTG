@@ -280,10 +280,10 @@ $(IPV4_REASSEMBLY_TEST): test_ipv4_reassembly.c \
 		test_ipv4_reassembly.c $(STACK_LIB) \
 		-o $@ $(DPDK_LIBS) $(SANITIZER_LDFLAGS)
 
-$(STATS_CSV_TEST): test_stats_csv.c ../traffic-gen/core/stats_csv.c \
+$(STATS_CSV_TEST): test_stats_csv.c ../traffic-gen/core/stats.c ../traffic-gen/core/stats_csv.c \
 		../traffic-gen/core/stats_csv.h ../traffic-gen/core/stats.h | $(BUILD_DIR)
 	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) -I../traffic-gen/core \
-		test_stats_csv.c ../traffic-gen/core/stats_csv.c -o $@ $(DPDK_LIBS)
+		test_stats_csv.c ../traffic-gen/core/stats.c ../traffic-gen/core/stats_csv.c -o $@ $(DPDK_LIBS)
 
 $(CONN_POOL_TEST): test_conn_pool.c ../traffic-gen/core/conn_pool.c \
 		../traffic-gen/core/conn_pool.h ../traffic-gen/core/flow.h Makefile | \
@@ -518,3 +518,9 @@ test-workflow-cli:
 		STACK_BUILD_DIR=$(STACK_BUILD_DIR) SANITIZERS=$(SANITIZERS)
 	SNOWTG_TEST_BINARY=$(abspath ../traffic-gen/$(BUILD_DIR)/traffic-gen) \
 		python3 test_workflow_cli.py
+
+.PHONY: test-resource-cli
+test-resource-cli:
+	$(MAKE) -C ../traffic-gen $(BUILD_DIR)/traffic-gen-resource-test \
+		BUILD_DIR=$(BUILD_DIR) STACK_BUILD_DIR=$(STACK_BUILD_DIR) OWNER_TIMER_BACKEND=$(OWNER_TIMER_BACKEND)
+	python3 test_resource_cli.py ../traffic-gen/$(BUILD_DIR)/traffic-gen-resource-test

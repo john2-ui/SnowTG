@@ -7,6 +7,10 @@
  */
 
 #include <stdbool.h>
+#include "resource.h"
+
+void tcp_ofo_resource_snapshot(struct resource_metric *segments,
+                               struct resource_metric *bytes);
 #include <stdint.h>
 
 struct nsock;

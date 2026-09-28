@@ -158,6 +158,7 @@ static void finish(struct tg_business *b, bool ok) {
         tg_scheduler_on_flow_finished(e->scheduler);
         b->next = e->free;
         e->free = b;
+        resource_release(&e->resources, 1);
 }
 
 /**
@@ -686,6 +687,7 @@ int tg_workflow_engine_init(struct tg_workflow_engine *e) {
                 return 0;
         /* Reserve per-shard business slots; response capture is allocated separately. */
         e->capacity = e->plan->max_concurrency;
+        e->resources.capacity = e->capacity;
         size_t n = (size_t)e->step_count * e->plan->phase_count;
         e->storage = calloc(e->capacity, sizeof(*e->storage));
         e->steps = calloc(n, sizeof(*e->steps));
@@ -723,8 +725,14 @@ void tg_workflow_engine_fini(struct tg_workflow_engine *e) {
 int tg_workflow_start(struct tg_workflow_engine *e,
                       const struct tg_class_plan *c) {
         struct tg_business *b = e->free;
-        if (!b)
+        if (!b) {
+                if (e->storage == NULL)
+                        e->resources.unavailable++;
+                else
+                        e->resources.exhausted++;
                 return -1;
+        }
+        resource_acquire(&e->resources, 1);
         e->free = b->next;
         memset(b, 0, sizeof(*b));
         b->engine = e;
@@ -741,6 +749,7 @@ int tg_workflow_start(struct tg_workflow_engine *e,
         if (owner_timer_arm_after_ms(&b->timeout, b->plan->timeout_ms)) {
                 b->next = e->free;
                 e->free = b;
+                resource_release(&e->resources, 1);
                 return -1;
         }
         b->active = true;

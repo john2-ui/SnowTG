@@ -101,6 +101,8 @@ static void fini(struct fixture *f) {
                 tg_flow_close_connection(&f->map, &f->pool, f->flow, false,
                                            TG_FLOW_RESULT_SUCCESS);
         assert(f->pool.free_count == 1 && f->connections.connections == 0);
+        assert(f->pool.resources.current == 0 && f->pool.resources.peak == 1);
+        assert(tg_txn_resource_snapshot().current == 0);
         assert(f->timers.active == 0);
         owner_timer_engine_fini(&f->timers);
         tg_conn_pool_fini(&f->connections);

@@ -12,6 +12,7 @@
  */
 
 #include <stdint.h>
+#include "resource.h"
 
 struct rte_mempool;
 struct tcp_fragment;
@@ -35,9 +36,11 @@ enum tcp_memory_kind {
 struct tcp_owner_memory {
         struct rte_mempool *pools[TCP_MEMORY_KIND_MAX]; /**< Pool by kind. */
         uint32_t capacity[TCP_MEMORY_KIND_MAX];   /**< Fixed pool capacities. */
-        uint32_t alloc_fail[TCP_MEMORY_KIND_MAX]; /**< Failed get counts. */
+        uint64_t alloc_fail[TCP_MEMORY_KIND_MAX]; /**< Failed get counts. */
         uint32_t
             peak_in_use[TCP_MEMORY_KIND_MAX]; /**< Peak checked-out count. */
+        uint64_t unavailable[TCP_MEMORY_KIND_MAX];
+        struct resource_metric sndbuf_bytes, unacked_bytes, time_wait;
         uint16_t lcore_id; /**< Sole lcore allowed to use these pools. */
 };
 
@@ -46,7 +49,7 @@ struct tcp_memory_snapshot {
         uint32_t
             capacity[TCP_MEMORY_KIND_MAX]; /**< Configured object budget. */
         uint32_t available[TCP_MEMORY_KIND_MAX]; /**< Currently free objects. */
-        uint32_t
+        uint64_t
             alloc_fail[TCP_MEMORY_KIND_MAX]; /**< Cumulative get failures. */
         uint32_t peak_in_use[TCP_MEMORY_KIND_MAX]; /**< High-water usage. */
 };

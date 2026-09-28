@@ -933,6 +933,8 @@ void nsock_free(struct nsock *sk) {
 
         /* Drop any pending retransmission/TIME_WAIT callback before free. */
         if (sk->protocol == IPPROTO_TCP) {
+                if (sk->u.tcp.status == TCP_STATUS_TIME_WAIT)
+                        tcp_stream_set_status(sk, TCP_STATUS_CLOSED);
                 tcp_listener_child_detach(sk);
                 (void)owner_timer_cancel(&sk->u.tcp.timer);
                 tcp_sack_state_reset(&sk->u.tcp, sk->u.tcp.snd_una);

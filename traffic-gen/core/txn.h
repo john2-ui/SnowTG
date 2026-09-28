@@ -12,6 +12,9 @@
  */
 
 #include "../proto/proto.h"
+#include "../../pro-stack/resource.h"
+
+struct resource_metric tg_txn_resource_snapshot(void);
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -46,6 +49,7 @@ enum tg_error_reason {
 };
 
 struct tg_txn {
+        bool resource_counted; /**< Successfully initialized owner-local context. */
         enum tg_error_reason error_reason; /**< One terminal cause; reset on reuse. */
         const struct tg_proto_ops *proto;
         const void *class_config;

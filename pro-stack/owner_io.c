@@ -289,3 +289,7 @@ uint32_t owner_io_tcp_force_cleanup(void) {
         }
         return cleaned;
 }
+
+int owner_io_resource_snapshot(struct owner_resource_snapshot *snapshot) {
+        return socket_owner_resource_snapshot(snapshot);
+}
