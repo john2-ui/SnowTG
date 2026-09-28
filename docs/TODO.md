@@ -36,7 +36,7 @@ P0 单机闭环已有实现，不再重复列为待开发。下列条目跟踪�
 以上五项的接口、默认值与支持边界见 [公开 socket API](SOCKET_API.md)，设计见 [ARC-010](DEVLOG.md#arc-010公开-socket-命令生命周期与水平触发通知)。本地完整回归、跨 owner/取消/队列饱和测试、ASan/UBSan 及真实双机公开 API 验收通过（TCP 100/100、UDP 100/100、入站连接 20/20）；双机采用 AF_PACKET，结果证明功能正确性，不代表原生 PMD 性能基线。详细记录仅存本地。
 
 - [ ] 评估并实现协议栈 payload 零拷贝：覆盖 TCP TX retained buffer、TCP RX/OFO slice 和 UDP RX 持有策略，同时提供复制回退、资源上限、释放语义和指标。
-- [ ] 为 `owner_timer` 实现时间轮后端：先以 profile 验证收益，保持 TCP 和 traffic-gen 公共接口不变，并移除 flow 超时的全表扫描路径；当前后端仍为 `rte_timer`。
+- [x] `owner_timer` 可选 1 ms 分层时间轮，flow 超时改为定时器到期队列，移除全表扫描；公共函数和 CLI 保持不变。构建开关 `OWNER_TIMER_BACKEND=rte|wheel`，默认保留 `rte`，双机 profile、测试与切换门槛见 [验证报告](benchmarks/owner-timer/README.md)。
 - [x] 补齐协议栈资源可观测性：TCP 六类池、UDP RX、socket slot、ready-event、timer、flow/transaction/workflow 及 TIME_WAIT、发送保留/未确认字节、OFO 均提供 owner-local 当前值与生命周期峰值；固定池另有容量和 64 位失败原因。接入 CSV / JSON / HTML 趋势，在销毁前区分正常归零、强制回收后归零、残留与证据不完整。`rte` / `wheel` 回归及双 worker `net_null` 故障闭环通过；指标定义与边界见 [使用指南](../README.md#资源趋势与归零验收)，真实小时级长测仍待执行。
 - [ ] 实现 Gratuitous ARP 与地址冲突检测，支持启动或地址变更时主动通告并检测重复地址。
 - [ ] 补全 ICMP echo payload，并处理 destination unreachable、time exceeded 等非 echo 报文，将异步错误上报给 TCP/UDP/socket 层。

@@ -1,0 +1,74 @@
+[
+  {
+    "backend": "rte",
+    "timers": [
+      [
+        "0",
+        "0"
+      ],
+      [
+        "2",
+        "0"
+      ]
+    ],
+    "flow_pools": [
+      [
+        "64",
+        "64"
+      ],
+      [
+        "64",
+        "64"
+      ]
+    ],
+    "final": {
+      "started": 40,
+      "done": 40,
+      "success": 20,
+      "fail": 20,
+      "error_response_timeout": 10,
+      "error_reset": 10,
+      "active": 0,
+      "live_sockets": 0,
+      "tcp_drain_residual": 0,
+      "tcp_forced_cleanup": 0,
+      "tcp_pool_objects_in_use": 0
+    }
+  },
+  {
+    "backend": "wheel",
+    "timers": [
+      [
+        "0",
+        "0"
+      ],
+      [
+        "2",
+        "0"
+      ]
+    ],
+    "flow_pools": [
+      [
+        "64",
+        "64"
+      ],
+      [
+        "64",
+        "64"
+      ]
+    ],
+    "final": {
+      "started": 40,
+      "done": 40,
+      "success": 20,
+      "fail": 20,
+      "error_response_timeout": 10,
+      "error_reset": 10,
+      "active": 0,
+      "live_sockets": 0,
+      "tcp_drain_residual": 0,
+      "tcp_forced_cleanup": 0,
+      "tcp_pool_objects_in_use": 0
+    }
+  }
+]

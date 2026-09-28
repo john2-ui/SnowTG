@@ -1,0 +1,1234 @@
+[
+  {
+    "name": "rte-dns-timeout",
+    "status": "passed",
+    "summary": {
+      "planned": 210,
+      "attempted": 210,
+      "skipped": 0,
+      "admitted": 210,
+      "success": 154,
+      "failed": 56,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 0.001,
+      "duration_sec": 21,
+      "maximum_sustainable_cps": null,
+      "success_rate": 0.7333333333333333,
+      "admitted_success_rate": 0.7333333333333333,
+      "error_rate": 0.26666666666666666,
+      "skipped_rate": 0.0,
+      "success_rps": 7.333333333333333,
+      "p95_ms": 1.279,
+      "p99_ms": 1.471,
+      "transaction_success_tps": 7.333333333333333,
+      "request_success_rps": 7.333333333333333
+    },
+    "errors": {
+      "error_response_timeout": 56
+    },
+    "assertions": [
+      {
+        "metric": "success_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "phase": "normal",
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      },
+      {
+        "metric": "success_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "phase": "recovered",
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      },
+      {
+        "metric": "error_response_timeout",
+        "op": ">",
+        "value": 0,
+        "critical": true,
+        "actual": 56,
+        "passed": true,
+        "reason": null
+      },
+      {
+        "metric": "drained_live_sockets",
+        "op": "==",
+        "value": 0,
+        "critical": true,
+        "actual": 0,
+        "passed": true,
+        "reason": null
+      },
+      {
+        "metric": "tcp_forced_cleanup",
+        "op": "==",
+        "value": 0,
+        "critical": true,
+        "actual": 0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "rte-http-timeout",
+    "status": "passed",
+    "summary": {
+      "planned": 210,
+      "attempted": 210,
+      "skipped": 0,
+      "admitted": 210,
+      "success": 150,
+      "failed": 60,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 2001.988,
+      "duration_sec": 21,
+      "maximum_sustainable_cps": null,
+      "success_rate": 0.7142857142857143,
+      "admitted_success_rate": 0.7142857142857143,
+      "error_rate": 0.2857142857142857,
+      "skipped_rate": 0.0,
+      "success_rps": 7.142857142857143,
+      "p95_ms": 1.407,
+      "p99_ms": 2.175,
+      "transaction_success_tps": 7.142857142857143,
+      "request_success_rps": 7.142857142857143
+    },
+    "errors": {
+      "error_response_timeout": 60
+    },
+    "assertions": [
+      {
+        "metric": "success_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "phase": "normal",
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      },
+      {
+        "metric": "success_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "phase": "recovered",
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      },
+      {
+        "metric": "error_response_timeout",
+        "op": ">",
+        "value": 0,
+        "critical": true,
+        "actual": 60,
+        "passed": true,
+        "reason": null
+      },
+      {
+        "metric": "drained_live_sockets",
+        "op": "==",
+        "value": 0,
+        "critical": true,
+        "actual": 0,
+        "passed": true,
+        "reason": null
+      },
+      {
+        "metric": "tcp_forced_cleanup",
+        "op": "==",
+        "value": 0,
+        "critical": true,
+        "actual": 0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "rte-workflow/capture-limit",
+    "status": "passed",
+    "summary": {
+      "planned": 4,
+      "attempted": 4,
+      "skipped": 0,
+      "admitted": 4,
+      "success": 0,
+      "failed": 4,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 1756.368,
+      "duration_sec": 1,
+      "maximum_sustainable_cps": null,
+      "success_rate": 0.0,
+      "admitted_success_rate": 0.0,
+      "error_rate": 1.0,
+      "skipped_rate": 0.0,
+      "success_rps": 0.0,
+      "p95_ms": null,
+      "p99_ms": null,
+      "transaction_success_tps": 0.0,
+      "request_success_rps": 4.0
+    },
+    "errors": {
+      "error_parse": 4
+    },
+    "assertions": [
+      {
+        "metric": "error_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "rte-workflow/cross-phase",
+    "status": "passed",
+    "summary": {
+      "planned": 4,
+      "attempted": 4,
+      "skipped": 0,
+      "admitted": 4,
+      "success": 4,
+      "failed": 0,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 2002.425,
+      "duration_sec": 2,
+      "maximum_sustainable_cps": null,
+      "success_rate": 1.0,
+      "admitted_success_rate": 1.0,
+      "error_rate": 0.0,
+      "skipped_rate": 0.0,
+      "success_rps": 2.0,
+      "p95_ms": 1210.162,
+      "p99_ms": 1210.162,
+      "transaction_success_tps": 2.0,
+      "request_success_rps": 8.0
+    },
+    "errors": {},
+    "assertions": [
+      {
+        "metric": "success_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "rte-workflow/default-non-2xx",
+    "status": "passed",
+    "summary": {
+      "planned": 4,
+      "attempted": 4,
+      "skipped": 0,
+      "admitted": 4,
+      "success": 0,
+      "failed": 4,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 2001.446,
+      "duration_sec": 1,
+      "maximum_sustainable_cps": null,
+      "success_rate": 0.0,
+      "admitted_success_rate": 0.0,
+      "error_rate": 1.0,
+      "skipped_rate": 0.0,
+      "success_rps": 0.0,
+      "p95_ms": null,
+      "p99_ms": null,
+      "transaction_success_tps": 0.0,
+      "request_success_rps": 4.0
+    },
+    "errors": {
+      "error_http_status": 4
+    },
+    "assertions": [
+      {
+        "metric": "error_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "rte-workflow/full",
+    "status": "passed",
+    "summary": {
+      "planned": 4,
+      "attempted": 4,
+      "skipped": 0,
+      "admitted": 4,
+      "success": 4,
+      "failed": 0,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 2002.334,
+      "duration_sec": 1,
+      "maximum_sustainable_cps": null,
+      "success_rate": 1.0,
+      "admitted_success_rate": 1.0,
+      "error_rate": 0.0,
+      "skipped_rate": 0.0,
+      "success_rps": 4.0,
+      "p95_ms": 14.865,
+      "p99_ms": 14.865,
+      "transaction_success_tps": 4.0,
+      "request_success_rps": 16.0
+    },
+    "errors": {},
+    "assertions": [
+      {
+        "metric": "success_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "rte-workflow/invalid-json",
+    "status": "passed",
+    "summary": {
+      "planned": 4,
+      "attempted": 4,
+      "skipped": 0,
+      "admitted": 4,
+      "success": 0,
+      "failed": 4,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 2002.338,
+      "duration_sec": 1,
+      "maximum_sustainable_cps": null,
+      "success_rate": 0.0,
+      "admitted_success_rate": 0.0,
+      "error_rate": 1.0,
+      "skipped_rate": 0.0,
+      "success_rps": 0.0,
+      "p95_ms": null,
+      "p99_ms": null,
+      "transaction_success_tps": 0.0,
+      "request_success_rps": 4.0
+    },
+    "errors": {
+      "error_workflow": 4
+    },
+    "assertions": [
+      {
+        "metric": "error_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "rte-workflow/missing-field",
+    "status": "passed",
+    "summary": {
+      "planned": 4,
+      "attempted": 4,
+      "skipped": 0,
+      "admitted": 4,
+      "success": 0,
+      "failed": 4,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 2001.442,
+      "duration_sec": 1,
+      "maximum_sustainable_cps": null,
+      "success_rate": 0.0,
+      "admitted_success_rate": 0.0,
+      "error_rate": 1.0,
+      "skipped_rate": 0.0,
+      "success_rps": 0.0,
+      "p95_ms": null,
+      "p99_ms": null,
+      "transaction_success_tps": 0.0,
+      "request_success_rps": 4.0
+    },
+    "errors": {
+      "error_workflow": 4
+    },
+    "assertions": [
+      {
+        "metric": "error_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "rte-workflow/non-2xx",
+    "status": "passed",
+    "summary": {
+      "planned": 4,
+      "attempted": 4,
+      "skipped": 0,
+      "admitted": 4,
+      "success": 4,
+      "failed": 0,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 2002.439,
+      "duration_sec": 1,
+      "maximum_sustainable_cps": null,
+      "success_rate": 1.0,
+      "admitted_success_rate": 1.0,
+      "error_rate": 0.0,
+      "skipped_rate": 0.0,
+      "success_rps": 4.0,
+      "p95_ms": 15.342,
+      "p99_ms": 15.342,
+      "transaction_success_tps": 4.0,
+      "request_success_rps": 16.0
+    },
+    "errors": {},
+    "assertions": [
+      {
+        "metric": "success_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "rte-workflow/overall-timeout",
+    "status": "passed",
+    "summary": {
+      "planned": 4,
+      "attempted": 4,
+      "skipped": 0,
+      "admitted": 4,
+      "success": 0,
+      "failed": 4,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 1953.519,
+      "duration_sec": 1,
+      "maximum_sustainable_cps": null,
+      "success_rate": 0.0,
+      "admitted_success_rate": 0.0,
+      "error_rate": 1.0,
+      "skipped_rate": 0.0,
+      "success_rps": 0.0,
+      "p95_ms": null,
+      "p99_ms": null,
+      "transaction_success_tps": 0.0,
+      "request_success_rps": 4.0
+    },
+    "errors": {
+      "error_response_timeout": 4
+    },
+    "assertions": [
+      {
+        "metric": "error_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "rte-workflow/step-timeout",
+    "status": "passed",
+    "summary": {
+      "planned": 4,
+      "attempted": 4,
+      "skipped": 0,
+      "admitted": 4,
+      "success": 0,
+      "failed": 4,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 1955.445,
+      "duration_sec": 1,
+      "maximum_sustainable_cps": null,
+      "success_rate": 0.0,
+      "admitted_success_rate": 0.0,
+      "error_rate": 1.0,
+      "skipped_rate": 0.0,
+      "success_rps": 0.0,
+      "p95_ms": null,
+      "p99_ms": null,
+      "transaction_success_tps": 0.0,
+      "request_success_rps": 4.0
+    },
+    "errors": {
+      "error_response_timeout": 4
+    },
+    "assertions": [
+      {
+        "metric": "error_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "rte-workflow/typed-branch",
+    "status": "passed",
+    "summary": {
+      "planned": 4,
+      "attempted": 4,
+      "skipped": 0,
+      "admitted": 4,
+      "success": 0,
+      "failed": 4,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 2001.529,
+      "duration_sec": 1,
+      "maximum_sustainable_cps": null,
+      "success_rate": 0.0,
+      "admitted_success_rate": 0.0,
+      "error_rate": 1.0,
+      "skipped_rate": 0.0,
+      "success_rps": 0.0,
+      "p95_ms": null,
+      "p99_ms": null,
+      "transaction_success_tps": 0.0,
+      "request_success_rps": 8.0
+    },
+    "errors": {
+      "error_workflow": 4
+    },
+    "assertions": [
+      {
+        "metric": "error_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "rte-workflow/unrelated-dns",
+    "status": "passed",
+    "summary": {
+      "planned": 4,
+      "attempted": 4,
+      "skipped": 0,
+      "admitted": 4,
+      "success": 0,
+      "failed": 4,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 0.001,
+      "duration_sec": 1,
+      "maximum_sustainable_cps": null,
+      "success_rate": 0.0,
+      "admitted_success_rate": 0.0,
+      "error_rate": 1.0,
+      "skipped_rate": 0.0,
+      "success_rps": 0.0,
+      "p95_ms": null,
+      "p99_ms": null,
+      "transaction_success_tps": 0.0,
+      "request_success_rps": 0.0
+    },
+    "errors": {
+      "error_parse": 4
+    },
+    "assertions": [
+      {
+        "metric": "error_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "wheel-dns-timeout",
+    "status": "passed",
+    "summary": {
+      "planned": 210,
+      "attempted": 210,
+      "skipped": 0,
+      "admitted": 210,
+      "success": 154,
+      "failed": 56,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 0.001,
+      "duration_sec": 21,
+      "maximum_sustainable_cps": null,
+      "success_rate": 0.7333333333333333,
+      "admitted_success_rate": 0.7333333333333333,
+      "error_rate": 0.26666666666666666,
+      "skipped_rate": 0.0,
+      "success_rps": 7.333333333333333,
+      "p95_ms": 1.343,
+      "p99_ms": 1.599,
+      "transaction_success_tps": 7.333333333333333,
+      "request_success_rps": 7.333333333333333
+    },
+    "errors": {
+      "error_response_timeout": 56
+    },
+    "assertions": [
+      {
+        "metric": "success_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "phase": "normal",
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      },
+      {
+        "metric": "success_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "phase": "recovered",
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      },
+      {
+        "metric": "error_response_timeout",
+        "op": ">",
+        "value": 0,
+        "critical": true,
+        "actual": 56,
+        "passed": true,
+        "reason": null
+      },
+      {
+        "metric": "drained_live_sockets",
+        "op": "==",
+        "value": 0,
+        "critical": true,
+        "actual": 0,
+        "passed": true,
+        "reason": null
+      },
+      {
+        "metric": "tcp_forced_cleanup",
+        "op": "==",
+        "value": 0,
+        "critical": true,
+        "actual": 0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "wheel-http-timeout",
+    "status": "passed",
+    "summary": {
+      "planned": 210,
+      "attempted": 210,
+      "skipped": 0,
+      "admitted": 210,
+      "success": 154,
+      "failed": 56,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 2002.807,
+      "duration_sec": 21,
+      "maximum_sustainable_cps": null,
+      "success_rate": 0.7333333333333333,
+      "admitted_success_rate": 0.7333333333333333,
+      "error_rate": 0.26666666666666666,
+      "skipped_rate": 0.0,
+      "success_rps": 7.333333333333333,
+      "p95_ms": 1.407,
+      "p99_ms": 2.175,
+      "transaction_success_tps": 7.333333333333333,
+      "request_success_rps": 7.333333333333333
+    },
+    "errors": {
+      "error_response_timeout": 56
+    },
+    "assertions": [
+      {
+        "metric": "success_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "phase": "normal",
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      },
+      {
+        "metric": "success_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "phase": "recovered",
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      },
+      {
+        "metric": "error_response_timeout",
+        "op": ">",
+        "value": 0,
+        "critical": true,
+        "actual": 56,
+        "passed": true,
+        "reason": null
+      },
+      {
+        "metric": "drained_live_sockets",
+        "op": "==",
+        "value": 0,
+        "critical": true,
+        "actual": 0,
+        "passed": true,
+        "reason": null
+      },
+      {
+        "metric": "tcp_forced_cleanup",
+        "op": "==",
+        "value": 0,
+        "critical": true,
+        "actual": 0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "wheel-workflow/capture-limit",
+    "status": "passed",
+    "summary": {
+      "planned": 4,
+      "attempted": 4,
+      "skipped": 0,
+      "admitted": 4,
+      "success": 0,
+      "failed": 4,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 1756.417,
+      "duration_sec": 1,
+      "maximum_sustainable_cps": null,
+      "success_rate": 0.0,
+      "admitted_success_rate": 0.0,
+      "error_rate": 1.0,
+      "skipped_rate": 0.0,
+      "success_rps": 0.0,
+      "p95_ms": null,
+      "p99_ms": null,
+      "transaction_success_tps": 0.0,
+      "request_success_rps": 4.0
+    },
+    "errors": {
+      "error_parse": 4
+    },
+    "assertions": [
+      {
+        "metric": "error_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "wheel-workflow/cross-phase",
+    "status": "passed",
+    "summary": {
+      "planned": 4,
+      "attempted": 4,
+      "skipped": 0,
+      "admitted": 4,
+      "success": 4,
+      "failed": 0,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 2002.58,
+      "duration_sec": 2,
+      "maximum_sustainable_cps": null,
+      "success_rate": 1.0,
+      "admitted_success_rate": 1.0,
+      "error_rate": 0.0,
+      "skipped_rate": 0.0,
+      "success_rps": 2.0,
+      "p95_ms": 1210.451,
+      "p99_ms": 1210.451,
+      "transaction_success_tps": 2.0,
+      "request_success_rps": 8.0
+    },
+    "errors": {},
+    "assertions": [
+      {
+        "metric": "success_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "wheel-workflow/default-non-2xx",
+    "status": "passed",
+    "summary": {
+      "planned": 4,
+      "attempted": 4,
+      "skipped": 0,
+      "admitted": 4,
+      "success": 0,
+      "failed": 4,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 2002.336,
+      "duration_sec": 1,
+      "maximum_sustainable_cps": null,
+      "success_rate": 0.0,
+      "admitted_success_rate": 0.0,
+      "error_rate": 1.0,
+      "skipped_rate": 0.0,
+      "success_rps": 0.0,
+      "p95_ms": null,
+      "p99_ms": null,
+      "transaction_success_tps": 0.0,
+      "request_success_rps": 4.0
+    },
+    "errors": {
+      "error_http_status": 4
+    },
+    "assertions": [
+      {
+        "metric": "error_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "wheel-workflow/full",
+    "status": "passed",
+    "summary": {
+      "planned": 4,
+      "attempted": 4,
+      "skipped": 0,
+      "admitted": 4,
+      "success": 4,
+      "failed": 0,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 2003.377,
+      "duration_sec": 1,
+      "maximum_sustainable_cps": null,
+      "success_rate": 1.0,
+      "admitted_success_rate": 1.0,
+      "error_rate": 0.0,
+      "skipped_rate": 0.0,
+      "success_rps": 4.0,
+      "p95_ms": 15.841,
+      "p99_ms": 15.841,
+      "transaction_success_tps": 4.0,
+      "request_success_rps": 16.0
+    },
+    "errors": {},
+    "assertions": [
+      {
+        "metric": "success_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "wheel-workflow/invalid-json",
+    "status": "passed",
+    "summary": {
+      "planned": 4,
+      "attempted": 4,
+      "skipped": 0,
+      "admitted": 4,
+      "success": 0,
+      "failed": 4,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 2001.476,
+      "duration_sec": 1,
+      "maximum_sustainable_cps": null,
+      "success_rate": 0.0,
+      "admitted_success_rate": 0.0,
+      "error_rate": 1.0,
+      "skipped_rate": 0.0,
+      "success_rps": 0.0,
+      "p95_ms": null,
+      "p99_ms": null,
+      "transaction_success_tps": 0.0,
+      "request_success_rps": 4.0
+    },
+    "errors": {
+      "error_workflow": 4
+    },
+    "assertions": [
+      {
+        "metric": "error_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "wheel-workflow/missing-field",
+    "status": "passed",
+    "summary": {
+      "planned": 4,
+      "attempted": 4,
+      "skipped": 0,
+      "admitted": 4,
+      "success": 0,
+      "failed": 4,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 2002.339,
+      "duration_sec": 1,
+      "maximum_sustainable_cps": null,
+      "success_rate": 0.0,
+      "admitted_success_rate": 0.0,
+      "error_rate": 1.0,
+      "skipped_rate": 0.0,
+      "success_rps": 0.0,
+      "p95_ms": null,
+      "p99_ms": null,
+      "transaction_success_tps": 0.0,
+      "request_success_rps": 4.0
+    },
+    "errors": {
+      "error_workflow": 4
+    },
+    "assertions": [
+      {
+        "metric": "error_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "wheel-workflow/non-2xx",
+    "status": "passed",
+    "summary": {
+      "planned": 4,
+      "attempted": 4,
+      "skipped": 0,
+      "admitted": 4,
+      "success": 4,
+      "failed": 0,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 2002.449,
+      "duration_sec": 1,
+      "maximum_sustainable_cps": null,
+      "success_rate": 1.0,
+      "admitted_success_rate": 1.0,
+      "error_rate": 0.0,
+      "skipped_rate": 0.0,
+      "success_rps": 4.0,
+      "p95_ms": 16.308,
+      "p99_ms": 16.308,
+      "transaction_success_tps": 4.0,
+      "request_success_rps": 16.0
+    },
+    "errors": {},
+    "assertions": [
+      {
+        "metric": "success_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "wheel-workflow/overall-timeout",
+    "status": "passed",
+    "summary": {
+      "planned": 4,
+      "attempted": 4,
+      "skipped": 0,
+      "admitted": 4,
+      "success": 0,
+      "failed": 4,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 1955.512,
+      "duration_sec": 1,
+      "maximum_sustainable_cps": null,
+      "success_rate": 0.0,
+      "admitted_success_rate": 0.0,
+      "error_rate": 1.0,
+      "skipped_rate": 0.0,
+      "success_rps": 0.0,
+      "p95_ms": null,
+      "p99_ms": null,
+      "transaction_success_tps": 0.0,
+      "request_success_rps": 4.0
+    },
+    "errors": {
+      "error_response_timeout": 4
+    },
+    "assertions": [
+      {
+        "metric": "error_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "wheel-workflow/step-timeout",
+    "status": "passed",
+    "summary": {
+      "planned": 4,
+      "attempted": 4,
+      "skipped": 0,
+      "admitted": 4,
+      "success": 0,
+      "failed": 4,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 1955.369,
+      "duration_sec": 1,
+      "maximum_sustainable_cps": null,
+      "success_rate": 0.0,
+      "admitted_success_rate": 0.0,
+      "error_rate": 1.0,
+      "skipped_rate": 0.0,
+      "success_rps": 0.0,
+      "p95_ms": null,
+      "p99_ms": null,
+      "transaction_success_tps": 0.0,
+      "request_success_rps": 4.0
+    },
+    "errors": {
+      "error_response_timeout": 4
+    },
+    "assertions": [
+      {
+        "metric": "error_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "wheel-workflow/typed-branch",
+    "status": "passed",
+    "summary": {
+      "planned": 4,
+      "attempted": 4,
+      "skipped": 0,
+      "admitted": 4,
+      "success": 0,
+      "failed": 4,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 2002.511,
+      "duration_sec": 1,
+      "maximum_sustainable_cps": null,
+      "success_rate": 0.0,
+      "admitted_success_rate": 0.0,
+      "error_rate": 1.0,
+      "skipped_rate": 0.0,
+      "success_rps": 0.0,
+      "p95_ms": null,
+      "p99_ms": null,
+      "transaction_success_tps": 0.0,
+      "request_success_rps": 8.0
+    },
+    "errors": {
+      "error_workflow": 4
+    },
+    "assertions": [
+      {
+        "metric": "error_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  },
+  {
+    "name": "wheel-workflow/unrelated-dns",
+    "status": "passed",
+    "summary": {
+      "planned": 4,
+      "attempted": 4,
+      "skipped": 0,
+      "admitted": 4,
+      "success": 0,
+      "failed": 4,
+      "start_failed": 0,
+      "tx_alloc_fail": 0,
+      "drained_live_sockets": 0,
+      "tcp_forced_cleanup": 0,
+      "drain_ms": 0.001,
+      "duration_sec": 1,
+      "maximum_sustainable_cps": null,
+      "success_rate": 0.0,
+      "admitted_success_rate": 0.0,
+      "error_rate": 1.0,
+      "skipped_rate": 0.0,
+      "success_rps": 0.0,
+      "p95_ms": null,
+      "p99_ms": null,
+      "transaction_success_tps": 0.0,
+      "request_success_rps": 0.0
+    },
+    "errors": {
+      "error_parse": 4
+    },
+    "assertions": [
+      {
+        "metric": "error_rate",
+        "op": "==",
+        "value": 1,
+        "critical": true,
+        "actual": 1.0,
+        "passed": true,
+        "reason": null
+      }
+    ]
+  }
+]
