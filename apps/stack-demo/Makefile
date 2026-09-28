@@ -1,3 +1,5 @@
+.DEFAULT_GOAL := all
+include ../../owner_timer.mk
 APP := stack-demo
 BUILD_DIR ?= build
 STACK_BUILD_DIR ?= $(BUILD_DIR)
@@ -31,3 +33,8 @@ $(BUILD_DIR):
 clean:
 	rm -f $(BUILD_DIR)/$(APP)
 	rmdir $(BUILD_DIR) 2>/dev/null || true
+
+.PHONY: force-stack-backend
+force-stack-backend:
+
+$(STACK_LIB): force-stack-backend

@@ -1,3 +1,5 @@
+.DEFAULT_GOAL := all
+include ../owner_timer.mk
 # @file Makefile
 # @brief Builds the DPDK traffic-generator executable and dependencies.
 #
@@ -70,7 +72,7 @@ $(STACK_LIB):
 
 $(BUILD_DIR)/$(APP): $(SRCS) $(wildcard *.h core/*.h proto/*.h proto/*/*.h) Makefile build_metadata.py $(STACK_LIB) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(SRCS) $(STACK_LIB) -o $@ $(LDFLAGS)
-	python3 build_metadata.py $@ --cc="$(CC)" --cflags="$(CFLAGS)" --ldflags="$(LDFLAGS)"
+	python3 build_metadata.py $@ --owner-timer-backend=$(OWNER_TIMER_BACKEND) --cc="$(CC)" --cflags="$(CFLAGS)" --ldflags="$(LDFLAGS)"
 
 $(BUILD_DIR):
 	mkdir -p $@
@@ -78,3 +80,8 @@ $(BUILD_DIR):
 clean:
 	rm -f $(BUILD_DIR)/$(APP)
 	rmdir $(BUILD_DIR) 2>/dev/null || true
+
+.PHONY: force-stack-backend
+force-stack-backend:
+
+$(STACK_LIB): force-stack-backend

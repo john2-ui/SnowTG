@@ -11,6 +11,7 @@
 
 struct owner_timer;
 struct owner_timer_engine;
+struct owner_timer_wheel;
 
 /** The callback may rearm the timer or free its enclosing object. */
 typedef void (*owner_timer_cb)(struct owner_timer *timer, void *arg,
@@ -28,6 +29,12 @@ struct owner_timer {
         bool armed;
         union {
                 struct rte_timer rte;
+                struct {
+                        struct owner_timer *prev, *next;
+                        struct owner_timer **head;
+                        uint64_t tick;
+                        uint16_t bucket;
+                } wheel;
         } backend;
 };
 
@@ -37,6 +44,7 @@ struct owner_timer_engine {
         uint32_t capacity;
         uint32_t active;
         struct owner_timer *active_head;
+        struct owner_timer_wheel *wheel;
         bool initialized;
 };
 
@@ -53,7 +61,10 @@ struct owner_timer_engine *owner_timer_engine_current(void);
 /** Initialize an unarmed timer node. */
 void owner_timer_init(struct owner_timer *timer, owner_timer_cb callback,
                       void *callback_arg);
-/** Arm or rearm at an absolute timer-cycle deadline. */
+/** Arm or rearm at an absolute timer-cycle deadline. The wheel backend rounds
+ * future deadlines up to a millisecond boundary; callbacks never run early.
+ * Already due deadlines are eligible on the next poll, including callback rearms.
+ */
 int owner_timer_arm_at(struct owner_timer *timer, uint64_t deadline_cycles);
 /** Arm or rearm after @p delay_ms, saturating cycle conversion on overflow. */
 int owner_timer_arm_after_ms(struct owner_timer *timer, uint64_t delay_ms);

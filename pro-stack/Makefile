@@ -2,6 +2,7 @@
 # Copyright(c) 2010-2014 Intel Corporation
 
 .DEFAULT_GOAL := all
+include ../owner_timer.mk
 
 BUILD_DIR ?= build
 SANITIZERS ?=
@@ -52,12 +53,21 @@ CFLAGS += -fsanitize=$(SANITIZERS)
 endif
 LDFLAGS_STATIC = $(shell $(PKGCONF) --static --libs libdpdk)
 
+.PHONY: force-timer-backend
+force-timer-backend:
+
+$(BUILD_DIR)/owner-timer-backend: force-timer-backend | $(BUILD_DIR)
+	@echo '$(OWNER_TIMER_BACKEND)' > $@.tmp
+	@cmp -s $@.tmp $@ && rm $@.tmp || mv $@.tmp $@
+
+$(BUILD_DIR)/lib/owner_timer.o: $(BUILD_DIR)/owner-timer-backend
+
 $(STACK_LIB): $(STACK_OBJS) | $(BUILD_DIR)
 	ar rcs $@ $(STACK_OBJS)
 
 $(BUILD_DIR)/lib/%.o: %.c Makefile $(PC_FILE) | $(BUILD_DIR)/lib
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+	$(CC) $(CFLAGS) $(OWNER_TIMER_CFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD_DIR):
 	@mkdir -p $@
@@ -67,7 +77,7 @@ $(BUILD_DIR)/lib:
 
 .PHONY: clean
 clean:
-	rm -f $(STACK_LIB)
+	rm -f $(STACK_LIB) $(BUILD_DIR)/owner-timer-backend
 	rm -rf $(BUILD_DIR)/lib
 	test -d $(BUILD_DIR) && rmdir -p $(BUILD_DIR) || true
 
@@ -101,5 +111,6 @@ LDFLAGS += -fsanitize=$(SANITIZERS)
 endif
 CFLAGS += $(WERROR_FLAGS)
 
+override CFLAGS += $(OWNER_TIMER_CFLAGS)
 include $(RTE_SDK)/mk/rte.extapp.mk
 endif

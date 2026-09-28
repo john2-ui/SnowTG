@@ -1,3 +1,5 @@
+.DEFAULT_GOAL := test
+include ../owner_timer.mk
 CC ?= cc
 
 CFLAGS ?= -O2 -g
@@ -473,6 +475,23 @@ $(BUILD_DIR)/test_socket_public: test_socket_public.c $(STACK_LIB) | $(BUILD_DIR
 # Opt-in hardware acceptance; no NIC preparation or remote changes in `test`.
 $(BUILD_DIR)/test_socket_live: test_socket_live.c $(STACK_LIB) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DPDK_CFLAGS) -I../pro-stack $< $(STACK_LIB) -o $@ $(DPDK_LIBS) -pthread $(SANITIZER_LDFLAGS)
+
+.PHONY: force-stack-backend
+force-stack-backend:
+
+$(STACK_LIB): force-stack-backend
+
+.PHONY: test-owner-timer-wheel
+test: test-owner-timer-wheel
+test-owner-timer-wheel: $(BUILD_DIR)/test_owner_timer_wheel
+	$< --no-huge --no-pci --file-prefix owner-wheel-test
+
+$(BUILD_DIR)/test_owner_timer_wheel: test_owner_timer_wheel.c ../pro-stack/owner_timer.c ../pro-stack/owner_timer.h | $(BUILD_DIR)
+	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) $< -o $@ $(DPDK_LIBS) $(SANITIZER_LDFLAGS)
+
+# Opt-in microbenchmark; wall-clock performance is not a unit-test assertion.
+$(BUILD_DIR)/bench_owner_timer: bench_owner_timer.c $(STACK_LIB) | $(BUILD_DIR)
+	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) $< $(STACK_LIB) -o $@ $(DPDK_LIBS) $(SANITIZER_LDFLAGS)
 
 # Run the real TCP example with deterministic public-API responses, no NIC/EAL.
 TCP_ECHO_WRAPS := nsocket nbind nlisten naccept4 nrecv nsend nclose \

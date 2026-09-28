@@ -67,6 +67,9 @@ int main(int argc, char **argv) {
         unsigned int owner_lcore = engine.lcore_id;
         engine.lcore_id = owner_lcore == 0 ? 1U : 0U;
         errno = 0;
+        assert(owner_timer_arm_at(&first, owner_timer_now()) == -1);
+        assert(errno == EPERM);
+        errno = 0;
         assert(owner_timer_cancel(&first) == -1);
         assert(errno == EPERM);
         errno = 0;

@@ -1,5 +1,6 @@
 build/
 build-sanitizers/
+build-timer-*/
 __pycache__/
 /temp/
 /docker-results/

@@ -25,6 +25,7 @@ if __name__ == "__main__":
     parser.add_argument("binary", type=Path)
     for flag in ("cc", "cflags", "ldflags"):
         parser.add_argument("--" + flag, required=True)
+    parser.add_argument("--owner-timer-backend", choices=("rte", "wheel"), default="rte")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     sources = {}
@@ -33,7 +34,7 @@ if __name__ == "__main__":
             if path.is_file() and path.suffix in (".c", ".h") and not any(
                     part.startswith("build") for part in path.relative_to(root).parts):
                 sources[str(path.relative_to(root))] = hashlib.sha256(path.read_bytes()).hexdigest()
-    data = dict(binary_sha256=hashlib.sha256(args.binary.read_bytes()).hexdigest(),
+    data = dict(owner_timer_backend=args.owner_timer_backend, binary_sha256=hashlib.sha256(args.binary.read_bytes()).hexdigest(),
                 git_commit=command("git", "rev-parse", "HEAD") or os.environ.get("SNOWTG_SOURCE_COMMIT"),
                 git_status=command("git", "status", "--porcelain"),
                 compiler=args.cc, compiler_version=command(args.cc, "--version"),
