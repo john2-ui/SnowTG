@@ -1,13 +1,14 @@
-APP := stack-demo
+APP := socket-demo
 BUILD_DIR ?= build
 STACK_BUILD_DIR ?= $(BUILD_DIR)
 SANITIZERS ?=
 STACK_LIB := ../../pro-stack/$(STACK_BUILD_DIR)/libpro-stack.a
-SRCS := main.c ../tcp-echo/tcp_echo.c ../udp-echo/udp_echo.c
+SRCS := main.c
 
 PKGCONF := pkg-config
 CFLAGS += -O3 -I../../pro-stack $(shell $(PKGCONF) --cflags libdpdk)
 CFLAGS += -DALLOW_EXPERIMENTAL_API
+CFLAGS += -Wall -Wextra -pthread
 LDFLAGS := $(shell $(PKGCONF) --static --libs libdpdk) -pthread
 ifneq ($(strip $(SANITIZERS)),)
 CFLAGS += -O1 -g3 -fno-omit-frame-pointer -fno-optimize-sibling-calls

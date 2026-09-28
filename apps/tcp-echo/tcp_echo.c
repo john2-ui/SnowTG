@@ -1,9 +1,13 @@
+/**
+ * @file tcp_echo.c
+ * @brief Sequential blocking TCP examples; see socket-demo for nepoll usage.
+ */
 #include "tcp_echo.h"
 
 #include "../../pro-stack/config.h"
 #include "../../pro-stack/log.h"
 #include "../../pro-stack/net_context.h"
-#include "../../pro-stack/socket_api.h"
+#include "../../pro-stack/socket.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -14,6 +18,19 @@
 #define TCP_APP_RECV_BUFFER_SIZE 1280
 #define TCP_CLIENT_RETRY_SEC 2
 #define TCP_CLIENT_MSG "hello from tcp client\n"
+
+/** Blocking send still permits short writes; advance by the returned count. */
+static int send_all(int fd, const void *data, size_t length) {
+        const char *bytes = data;
+        size_t offset = 0;
+        while (offset < length) {
+                ssize_t n = nsend(fd, bytes + offset, length - offset, 0);
+                if (n <= 0)
+                        return -1;
+                offset += (size_t)n;
+        }
+        return 0;
+}
 
 int tcp_echo_server_entry(__attribute__((unused)) void *arg) {
         int ret = 0;
@@ -61,7 +78,7 @@ int tcp_echo_server_entry(__attribute__((unused)) void *arg) {
                             nrecv(conn_fd, buffer, sizeof(buffer), 0);
                         if (received <= 0)
                                 break;
-                        if (nsend(conn_fd, buffer, (size_t)received, 0) < 0)
+                        if (send_all(conn_fd, buffer, (size_t)received) < 0)
                                 break;
                 }
                 nclose(conn_fd);
@@ -88,8 +105,15 @@ int tcp_echo_client_entry(__attribute__((unused)) void *arg) {
                         nclose(fd);
                         goto retry;
                 }
-                if (nsend(fd, TCP_CLIENT_MSG, strlen(TCP_CLIENT_MSG), 0) >= 0)
-                        (void)nrecv(fd, buffer, sizeof(buffer), 0);
+                if (send_all(fd, TCP_CLIENT_MSG, strlen(TCP_CLIENT_MSG)) == 0) {
+                        size_t remaining = strlen(TCP_CLIENT_MSG);
+                        while (remaining) {
+                                ssize_t n = nrecv(fd, buffer, remaining, 0);
+                                if (n <= 0)
+                                        break;
+                                remaining -= (size_t)n;
+                        }
+                }
                 nclose(fd);
         retry:
                 sleep(TCP_CLIENT_RETRY_SEC);

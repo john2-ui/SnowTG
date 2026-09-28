@@ -1,15 +1,21 @@
+/**
+ * @file udp_echo.c
+ * @brief Blocking UDP echo with one receive buffer per complete datagram.
+ */
 #include "udp_echo.h"
 
 #include "../../pro-stack/log.h"
 #include "../../pro-stack/net_context.h"
-#include "../../pro-stack/socket_api.h"
+#include "../../pro-stack/socket.h"
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <string.h>
 
 #define UDP_APP_PORT 8889
-#define UDP_APP_RECV_BUFFER_SIZE 128
+/* The stack retains unread UDP suffixes: a small buffer would turn one
+ * incoming datagram into multiple echo replies. TX still enforces the MTU. */
+#define UDP_APP_RECV_BUFFER_SIZE 65507
 
 int udp_echo_entry(__attribute__((unused)) void *arg) {
         int socket_fd = nsocket(AF_INET, SOCK_DGRAM, 0);
