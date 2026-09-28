@@ -28,17 +28,19 @@ P0 单机闭环已有实现，不再重复列为待开发。下列条目跟踪�
 
 ### 协议层 TODO
 
-- [ ] 完善 command 生命周期与取消：将当前依赖调用者等待 completion 的 command 改为可独立管理的对象，并定义超时、取消、引用计数和 late completion 语义。
-- [ ] 改进 command ring 背压：替换 ring 满时的持续忙等，为生命周期控制命令保留可靠容量，并评估 per-app ring、eventfd/futex 或高低水位方案。
-- [ ] 提供公开的 epoll-like 就绪接口：向普通应用暴露 `READ`、`WRITE`、`CONNECTED`、`ACCEPT`、`ERROR`、`HUP`，按代际句柄合并事件并定义 ready ring 满时的恢复策略；已有 `owner_io_*` 仅供 owner 同核使用。
-- [ ] 完成公开非阻塞 API：补充 socket 级 nonblocking 状态、`naccept4(..., SOCK_NONBLOCK)`、`ngetsockopt(SO_ERROR)`，统一短读、短写和异步 connect 错误语义。
-- [ ] 补充常用 socket 选项：至少支持 `SO_REUSEADDR`、`TCP_NODELAY` 以及非阻塞状态的查询与设置。
+- [x] 完善 command 生命周期与取消：请求深拷贝、引用计数、内部取消与单调时钟截止时间已实现；完成结果只提交一次，取消通知可独立推进，未领取结果与停机请求由 owner 回收。
+- [x] 改进 command ring 背压：数据 ring 满时采用 futex 序号等待，非阻塞返回 `EAGAIN`；CLOSE 使用独立容量，取消与回收采用持有引用的合并通知，各类命令有界处理。保留每 owner MPSC，不增加 per-app ring/eventfd/第二套水位机制。
+- [x] 提供公开的 epoll-like 就绪接口：`nepoll_*` 支持六类水平触发事件、多 owner/多 poller 和代际过滤；公开接口用持久化状态快照与轮转扫描避免通知队列溢出，原 owner-local ready ring 已补齐满队列恢复。
+- [x] 完成公开非阻塞 API：支持 socket 级 `SOCK_NONBLOCK`、`naccept4`、`nfcntl`、`SO_ERROR` 读取清除及收发超时；区分短读短写、EOF、RST 和异步 connect 状态，TCP 单请求上限 64 KiB。
+- [x] 补充常用 socket 选项：支持 `SO_REUSEADDR`、`TCP_NODELAY`、`SO_RCVTIMEO`、`SO_SNDTIMEO`，保留 `SO_LINGER`。NODELAY 默认开启；关闭后按 Nagle 控制小包，UDP 复用按精确地址优先、最后绑定者优先并支持关闭回退。
+以上五项的接口、默认值与支持边界见 [公开 socket API](SOCKET_API.md)，设计见 [ARC-010](DEVLOG.md#arc-010公开-socket-命令生命周期与水平触发通知)。本地完整回归、跨 owner/取消/队列饱和测试、ASan/UBSan 及真实双机公开 API 验收通过（TCP 100/100、UDP 100/100、入站连接 20/20）；双机采用 AF_PACKET，结果证明功能正确性，不代表原生 PMD 性能基线。详细记录仅存本地。
+
 - [ ] 评估并实现协议栈 payload 零拷贝：覆盖 TCP TX retained buffer、TCP RX/OFO slice 和 UDP RX 持有策略，同时提供复制回退、资源上限、释放语义和指标。
 - [ ] 为 `owner_timer` 实现时间轮后端：先以 profile 验证收益，保持 TCP 和 traffic-gen 公共接口不变，并移除 flow 超时的全表扫描路径；当前后端仍为 `rte_timer`。
 - [ ] 补齐协议栈资源可观测性：在已有 TCP 池、TX/payload/OFO 峰值和分配失败指标上，覆盖各 owner pool 的容量、当前值、峰值、失败原因及长期趋势，支持应用层长测和资源归零验收。
 - [ ] 实现 Gratuitous ARP 与地址冲突检测，支持启动或地址变更时主动通告并检测重复地址。
 - [ ] 补全 ICMP echo payload，并处理 destination unreachable、time exceeded 等非 echo 报文，将异步错误上报给 TCP/UDP/socket 层。
-- [ ] 实现 UDP TX IPv4 分片，明确超 MTU 数据报的错误、分片和发送语义；当前把大 buffer 拆成独立 UDP 数据报，不是 IPv4 分片。
+- [ ] 实现 UDP TX IPv4 分片，明确超 MTU 数据报的错误、分片和发送语义；公开 `nsendto` 超 MTU 返回 `EMSGSIZE`；既有 owner-local 大 buffer 拆包不是 IPv4 分片。
 - [ ] 增加 IPv6，包括邻居发现、IPv6 输入输出和 TCP/UDP pseudo-header。
 - [ ] 增加路由与多接口支持，引入路由选择、下一跳和按接口维护的本地身份；当前单端口多 RX/TX 队列不等于多接口路由。
 

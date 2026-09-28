@@ -14,6 +14,8 @@
 - [ARC-008：TCP SACK、丢包恢复与可插拔拥塞控制](#arc-008tcp-sack丢包恢复与可插拔拥塞控制) — 已实施；D-SACK undo、NewReno 与跨 ACK 重传历史待后续扩展
 - [ARC-009：多 RX/TX 队列与 worker 直接收发](#arc-009多-rxtx-队列与-worker-直接收发) — 已实施；当前 VM 推荐 Main RX + worker TX
 
+- [ARC-010：公开 socket 命令生命周期与水平触发通知](#arc-010公开-socket-命令生命周期与水平触发通知) — 已实施；取代 ARC-002 的栈上 command 与忙等背压
+
 ## 条目格式
 
 每个架构记录应包含：
@@ -1291,3 +1293,25 @@ SACK reneging、FIN 与 payload flight 边界、Timestamp option 挤压 SACK 容
 - **参数扫描**：补测 70 轮，候选各 3×30 秒；8 workers 下短连接并发 256 为 **11139 RPS**、keep-alive 并发 1000 为 **27221 RPS**，两组全程零请求失败。短连接并发 4000 吞吐未增、平均完成时间从 22.5 ms 升至 364.2 ms；[本地矩阵与原始数据位置](../debug/README.md)。
 
 - **NUC 补测（09-17）**：I225-V 实际 RSS 分流；独立 P 核 Main + 2 workers、同二进制反向 A/B，直接收发短连接 **52,481 RPS（+4.21%，两轮零失败）**，Keep-Alive **370,085 RPS（基本持平，已到千兆 TX 线速，失败228）**；Main CPU 约100%→**2.1%**。HP USB 网卡原单核软中断饱和，对端软件 RPS 使同参数 Keep-Alive 约14.2万→37万，这部分不计入代码收益。配置与原始数据索引见 [性能记录](PERFORMANCE.md#38-2026-09-17--nuc-发流hp-裸机接收)。
+
+
+## ARC-010：公开 socket 命令生命周期与水平触发通知
+
+- **状态**：已实施（2026-09-28）；本地完整回归、ASan/UBSan 和双机公开 API 功能验收通过。
+- **范围**：公开 `n*` API、command/waiter、跨 owner 绑定、`nepoll_*`；保留 traffic-gen 的 `owner_io_*` 同核接口。
+- **问题与证据**：ARC-002 中 command、收发 buffer 和选项输出依赖调用线程等待 completion；ring 满时持续 `rte_pause()`，CLOSE 与数据争抢容量。仅增加超时会留下 owner 对已失效调用者内存的访问。
+- **架构原则**：请求深拷贝并引用计数管理，owner 独占执行、取消、等待队列与最终回收；就绪通知只传播代际身份和状态，不传播 TCB 指针。
+
+### 实施要点
+
+command 在成功入队后有调用者与 owner 两个引用。调用者返回或退出时，用请求自身的控制链结移交引用；独立取消通知持有额外引用，调用者继续等待时也能推进；CREATE/ACCEPT 要等 fd 发布完成后确认领取。owner 取消定时器和 waiter，再清理未领取结果。已发生的收发效果不回滚，完成与取消只提交一个终态。
+
+数据仍使用每 owner 的 MPSC ring，生产者改用带序号的 futex 等待。CLOSE 有独立 ring，取消/回收通知不依赖数据 ring 或新的内存分配。停机先停止 admission、终止等待和回收公开 socket，再停止定时器并销毁 owner。
+
+公开 poller 采用水平触发快照和持久化订阅，避免再引入一个会溢出的通知 ring；注册绑定完整代际，等待端轮转扫描，futex 只负责唤醒。代价是每次检查最多扫描 `NSOCK_FD_MAX` 项。owner-local 原有 ready ring 则补充保留状态与溢出扫描恢复。
+
+SO_REUSEADDR 预留统一检查精确/通配地址及跨 owner 冲突。共享 UDP 按精确地址、最后绑定者选取单一接收者，并在跨 worker 转交前记录代际。TCP 四元组和 TIME_WAIT 保护不变。
+
+### 接口、验证与边界
+
+具体接口、超时、错误清除、NODELAY 默认值及复用规则见 [公开 socket API](SOCKET_API.md)。回归包含调用者取消、ring 满、跨 owner、poller 关闭、ready 溢出及资源归零，并有独立的真实对端入口。公开 UDP 超 MTU 返回 `EMSGSIZE`；ET/ONESHOT、SO_REUSEPORT 和 UDP TX 分片仍不在本次实现中。

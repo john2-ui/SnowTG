@@ -66,6 +66,8 @@ make -C pro-stack
 
 # TCP/UDP echo 示例：apps/stack-demo/build/stack-demo
 make -C apps/stack-demo
+# 非阻塞 TCP/UDP、nepoll 与异步 connect 示例
+make -C apps/socket-demo
 
 # 混合流量发生器：traffic-gen/build/traffic-gen
 make -C traffic-gen
@@ -412,4 +414,6 @@ make -C pro-stack LOG_LEVEL=LOG_LVL_TRACE \
 | [traffic-gen/core/](traffic-gen/core/) | 事务 / flow 生命周期、连接池、调度与统计 |
 | [traffic-gen/proto/](traffic-gen/proto/) | HTTP、DNS 应用协议实现 |
 | [test/](test/) | 协议、调度、参数与运行时回归 |
-| [apps/](apps/) | TCP/UDP echo 示例 |
+| [apps/](apps/README.md) | 阻塞/非阻塞 TCP/UDP echo、nepoll 与异步 connect 示例 |
+
+公开应用接口的非阻塞模式、socket 选项、`nepoll_*` 和 command 生命周期见 [公开 socket API](docs/SOCKET_API.md)。
