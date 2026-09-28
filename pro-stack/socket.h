@@ -76,7 +76,12 @@ enum nsock_io_mode {
  */
 struct nsock {
         uint8_t protocol; /**< IPPROTO_UDP / IPPROTO_TCP. */
-        int terminal_error; /**< Sticky owner-local errno; zero for orderly EOF. */
+        int public_fd;    /**< -1 for owner-local or unpublished sockets. */
+        bool nonblock, reuseaddr, nodelay;
+        int pending_error;
+        uint64_t recv_timeout_ns, send_timeout_ns;
+        int terminal_error; /**< Sticky owner-local errno; zero for orderly EOF.
+                             */
 
         uint32_t local_ip;   /**< Bound IPv4, network byte order. */
         uint16_t local_port; /**< Bound transport port, network byte order. */
@@ -98,7 +103,8 @@ struct nsock {
         /** Socket has been published through CREATE/ACCEPT to an application.
          */
         bool app_visible;
-        /** fd has been detached; protocol teardown may still be in progress. */
+        /** Owner accepted close; fd retirement/transport teardown may still be
+         * pending. */
         bool app_closed;
 
         /**
@@ -270,6 +276,8 @@ struct nsock *nsock_from_4tuple(uint32_t remote_ip, uint32_t local_ip,
  * @name BSD-style socket API (dispatchers)
  * @{
  */
+/** Create an IPv4 TCP/UDP descriptor; SOCK_NONBLOCK is accepted. TCP_NODELAY
+ * defaults to 1 to preserve the stack's existing immediate-send behavior. */
 int nsocket(int domain, int type, int protocol);
 int nbind(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 /** Connected send (TCP). */
@@ -290,6 +298,11 @@ int ngetsockopt(int sockfd, int level, int optname, void *optval,
 int nconnect(int sockfd, const struct sockaddr *addr, socklen_t addrlen);
 int nlisten(int sockfd, int backlog);
 int naccept(int sockfd, struct sockaddr *addr, socklen_t *addrlen);
+/** Accept without inheriting listener O_NONBLOCK; flags configure the child.
+ * Whether the call waits is determined by the listener, not these flags. */
+int naccept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags);
+/** F_GETFL/F_SETFL support O_NONBLOCK; unrelated commands/flags fail EINVAL. */
+int nfcntl(int sockfd, int command, ...);
 /** @} */
 
 #endif /* NETARCH_SOCKET_H */

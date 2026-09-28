@@ -1,23 +1,43 @@
+/**
+ * @file socket_owner.c
+ * @brief Owner-serialized commands, cancellation, and coalesced transport
+ * events.
+ *
+ * Application descriptors are deep-copied before submission. A managed request
+ * holds one caller reference and, after enqueue, one owner reference. Returning
+ * or cancelled callers transfer their reference to the allocation-free control
+ * list; only the owner unlinks parked work and retires the pair of references.
+ * CREATE/ACCEPT retain the caller reference until fd publication is settled.
+ * Timers borrow the owner reference and are cancelled before final reclamation.
+ */
 #include "socket_owner.h"
 
 #include "config.h"
 #include "log.h"
+#include "net_context.h"
 #include "owner_io.h"
 #include "socket.h"
 #include "socket_owner_internal.h"
+#include "socket_public_internal.h"
 #include "tcp.h"
 
 #include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <linux/futex.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <pthread.h>
 #include <rte_lcore.h>
 #include <rte_mempool.h>
-#include <rte_pause.h>
 #include <rte_ring.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/syscall.h>
+#include <time.h>
+#include <unistd.h>
 
 /*
  * Every packet worker owns an independent slot table, command/ready queues,
@@ -25,8 +45,11 @@
  * commands can be routed without exposing an nsock pointer across lcores.
  */
 static struct socket_owner g_owners[RTE_MAX_LCORE];
-static bool g_owner_ready[RTE_MAX_LCORE];
+static atomic_bool g_owner_ready[RTE_MAX_LCORE];
+static pthread_mutex_t submit_lock = PTHREAD_MUTEX_INITIALIZER;
 static atomic_uint g_create_owner_next;
+static atomic_uint_fast64_t command_live;
+uint64_t socket_owner_command_live(void) { return atomic_load(&command_live); }
 
 struct socket_ready_event {
         struct nsock_handle handle;
@@ -80,15 +103,19 @@ static struct socket_owner *socket_owner_current(void) {
 }
 
 static struct socket_owner *socket_owner_default(void) {
-        unsigned int start = atomic_fetch_add_explicit(&g_create_owner_next, 1,
-                                                       memory_order_relaxed);
-
-        for (unsigned int offset = 0; offset < RTE_MAX_LCORE; offset++) {
-                unsigned int lcore_id = (start + offset) % RTE_MAX_LCORE;
-                struct socket_owner *owner = socket_owner_for_lcore(lcore_id);
-                if (owner != NULL)
-                        return owner;
-        }
+        unsigned count = 0;
+        for (unsigned i = 0; i < RTE_MAX_LCORE; i++)
+                if (g_owner_ready[i] && g_owners[i].accepting)
+                        count++;
+        if (!count)
+                return NULL;
+        unsigned selected = atomic_fetch_add_explicit(&g_create_owner_next, 1,
+                                                      memory_order_relaxed) %
+                            count;
+        for (unsigned i = 0; i < RTE_MAX_LCORE; i++)
+                if (g_owner_ready[i] && g_owners[i].accepting &&
+                    selected-- == 0)
+                        return &g_owners[i];
         return NULL;
 }
 
@@ -103,6 +130,8 @@ static void socket_owner_init_cleanup(struct socket_owner *owner) {
                 rte_mempool_free(owner->ready_event_pool);
         if (owner->ready_ring != NULL)
                 rte_ring_free(owner->ready_ring);
+        if (owner->close_ring != NULL)
+                rte_ring_free(owner->close_ring);
         if (owner->command_ring != NULL)
                 rte_ring_free(owner->command_ring);
         free(owner->free_ids);
@@ -140,6 +169,10 @@ static const char *sock_cmd_type_str(enum sock_cmd_type type) {
                 return "getsockopt";
         case SOCK_CMD_CLOSE:
                 return "close";
+        case SOCK_CMD_FLAGS:
+                return "flags";
+        case SOCK_CMD_PUBLISH:
+                return "publish";
         default:
                 return "unknown";
         }
@@ -195,6 +228,7 @@ struct nsock *socket_owner_slot_at_local(uint32_t id) {
 /** Append a command to an owner-only FIFO wait queue. */
 static void waitq_push(struct sock_cmd **head, struct sock_cmd **tail,
                        struct sock_cmd *cmd) {
+        cmd->state = SOCK_CMD_PARKED;
         cmd->next = NULL;
         if (*tail != NULL)
                 (*tail)->next = cmd;
@@ -220,6 +254,7 @@ static struct sock_cmd *waitq_pop(struct sock_cmd **head,
  */
 static void waitq_push_front(struct sock_cmd **head, struct sock_cmd **tail,
                              struct sock_cmd *cmd) {
+        cmd->state = SOCK_CMD_PARKED;
         cmd->next = *head;
         *head = cmd;
         if (*tail == NULL)
@@ -295,6 +330,16 @@ int socket_owner_init_with_capacity(unsigned int lcore_id, uint32_t capacity) {
                 return -1;
         }
 
+        snprintf(command_name, sizeof(command_name), "socket_close_%u",
+                 lcore_id);
+        owner->close_ring = rte_ring_create(command_name, command_capacity,
+                                            rte_socket_id(), RING_F_SC_DEQ);
+        if (owner->close_ring == NULL) {
+                socket_owner_init_cleanup(owner);
+                return -1;
+        }
+        owner->accepting = true;
+        atomic_init(&owner->space_seq, 0);
         owner->ready_ring =
             rte_ring_create(ready_name, ready_capacity, rte_socket_id(),
                             RING_F_SP_ENQ | RING_F_SC_DEQ);
@@ -337,12 +382,14 @@ int socket_owner_init(unsigned int lcore_id) {
 }
 
 void socket_owner_fini(void) {
+        pthread_mutex_lock(&submit_lock);
         for (unsigned int lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
                 if (!g_owner_ready[lcore_id])
                         continue;
                 socket_owner_init_cleanup(&g_owners[lcore_id]);
                 g_owner_ready[lcore_id] = false;
         }
+        pthread_mutex_unlock(&submit_lock);
 }
 
 /** @copydoc socket_owner_tcp_memory */
@@ -437,7 +484,7 @@ void socket_owner_retire(struct nsock *sk) {
         }
 
         /*
-         * Complete parked stack-resident commands before making the socket
+         * Complete parked managed commands before making the socket
          * unreachable.  Otherwise their application threads would wait
          * forever and their command storage could never be reclaimed.
          */
@@ -479,13 +526,17 @@ void socket_owner_ready_post(struct nsock *sk, uint32_t events) {
                 return;
         }
 
+        if (sk->protocol == IPPROTO_UDP && (events & OWNER_IO_EV_WRITE))
+                socket_owner_wake_send(sk);
+        socket_public_refresh(sk);
         sk->ready_mask |= events;
         if (sk->ready_queued)
                 return;
 
         if (rte_mempool_get(owner->ready_event_pool, (void **)&event) != 0) {
-                LOG_OWNER_ERROR(OWNER_SK_FMT
-                                " event=ready-drop reason=event-pool-empty",
+                owner->ready_overflow = true;
+                LOG_OWNER_DEBUG(OWNER_SK_FMT
+                                " event=ready-deferred reason=event-pool-empty",
                                 OWNER_SK_ARG(sk));
                 return;
         }
@@ -493,8 +544,9 @@ void socket_owner_ready_post(struct nsock *sk, uint32_t events) {
         event->handle = socket_owner_handle(sk);
         if (rte_ring_sp_enqueue(owner->ready_ring, event) != 0) {
                 rte_mempool_put(owner->ready_event_pool, event);
-                LOG_OWNER_ERROR(OWNER_SK_FMT
-                                " event=ready-drop reason=ring-full",
+                owner->ready_overflow = true;
+                LOG_OWNER_DEBUG(OWNER_SK_FMT
+                                " event=ready-deferred reason=ring-full",
                                 OWNER_SK_ARG(sk));
                 return;
         }
@@ -530,71 +582,418 @@ unsigned int socket_owner_ready_burst(struct owner_io_event *events,
                 rte_mempool_put(owner->ready_event_pool, event);
         }
 
+        if (owner->ready_overflow) {
+                uint32_t scanned = 0;
+                while (scanned < owner->slot_capacity &&
+                       produced < max_events) {
+                        struct nsock *sk = owner->slots[owner->ready_scan];
+                        owner->ready_scan =
+                            (owner->ready_scan + 1) % owner->slot_capacity;
+                        scanned++;
+                        if (sk && sk->ready_mask && !sk->ready_queued) {
+                                events[produced++] = (struct owner_io_event){
+                                    socket_owner_handle(sk), sk->ready_mask};
+                                sk->ready_mask = 0;
+                                owner->ready_recoveries++;
+                        }
+                }
+                if (scanned == owner->slot_capacity)
+                        owner->ready_overflow = false;
+        }
         return produced;
 }
 
+/** @brief Read the monotonic application deadline clock in nanoseconds. */
+static uint64_t command_now(void) {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        return (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+}
+
+/** @brief Publish queue progress before waking producers; the sequence closes
+ * the check/wait race. */
+static void space_wake(struct socket_owner *owner) {
+        atomic_fetch_add_explicit(&owner->space_seq, 1, memory_order_release);
+        syscall(SYS_futex, &owner->space_seq, FUTEX_WAKE_PRIVATE, INT_MAX, NULL,
+                NULL, 0);
+}
+
+/** @brief Release one reference; no queue, timer or caller may access the final
+ * object afterward. */
+static void command_put(struct sock_cmd *cmd) {
+        if (atomic_fetch_sub(&cmd->refs, 1) != 1)
+                return;
+        atomic_fetch_sub(&command_live, 1);
+        free(cmd->storage);
+        pthread_cond_destroy(&cmd->done_cond);
+        pthread_mutex_destroy(&cmd->done_mutex);
+        free(cmd);
+}
+
+void socket_owner_cancel(struct sock_cmd *cmd, int error) {
+        int expected = 0;
+        if (!atomic_compare_exchange_strong(&cmd->cancel_error, &expected,
+                                            error ? error : ECANCELED))
+                return;
+        /* Cancellation must progress even while its caller keeps waiting and
+         * no packet arrives. The first request owns one intrusive notification
+         * and reference; repeated cancellation cannot grow the control queue.
+         */
+        pthread_mutex_lock(&submit_lock);
+        if (cmd->owner && cmd->owner->accepting) {
+                atomic_fetch_add(&cmd->refs, 1);
+                cmd->cancel_next = cmd->owner->cancel_head;
+                cmd->owner->cancel_head = cmd;
+                atomic_store_explicit(&cmd->owner->cancel_pending, true,
+                                      memory_order_release);
+        }
+        pthread_mutex_unlock(&submit_lock);
+}
+
 void socket_owner_complete(struct sock_cmd *cmd, ssize_t result, int error) {
+        owner_timer_cancel(&cmd->timer);
+        struct nsock *sk = owner_lookup(cmd->handle);
+        if (sk)
+                socket_public_refresh(sk);
         pthread_mutex_lock(&cmd->done_mutex);
-        cmd->result = result;
-        cmd->error = error;
-        cmd->done = true;
-        pthread_cond_signal(&cmd->done_cond);
+        if (!cmd->done) {
+                cmd->result = result;
+                cmd->error = error;
+                cmd->state =
+                    result < 0 && (error == ECANCELED || error == ETIMEDOUT)
+                        ? SOCK_CMD_CANCELLED
+                        : SOCK_CMD_DONE;
+                cmd->done = true;
+                pthread_cond_broadcast(&cmd->done_cond);
+        }
         pthread_mutex_unlock(&cmd->done_mutex);
 }
 
-int socket_owner_call(struct sock_cmd *cmd) {
-        struct socket_owner *owner;
+/** @brief Unlink a parked request on its owner without disturbing FIFO order.
+ */
+static void command_unlink_wait(struct nsock *sk, struct sock_cmd *cmd) {
+        struct sock_cmd **heads[] = {&sk->recv_wait_head, &sk->send_wait_head,
+                                     &sk->accept_wait_head};
+        struct sock_cmd **tails[] = {&sk->recv_wait_tail, &sk->send_wait_tail,
+                                     &sk->accept_wait_tail};
+        for (unsigned i = 0; i < 3; i++) {
+                struct sock_cmd *prev = NULL;
+                for (struct sock_cmd *it = *heads[i]; it; it = it->next) {
+                        if (it == cmd) {
+                                if (prev)
+                                        prev->next = it->next;
+                                else
+                                        *heads[i] = it->next;
+                                if (*tails[i] == it)
+                                        *tails[i] = prev;
+                                it->next = NULL;
+                                return;
+                        }
+                        prev = it;
+                }
+        }
+        if (sk->connect_waiter == cmd)
+                sk->connect_waiter = NULL;
+}
 
-        if (cmd == NULL) {
+/** @brief Commit cancellation on the owner; completed side effects always win.
+ */
+static void command_cancel_local(struct sock_cmd *cmd, int error) {
+        if (cmd->done)
+                return;
+        struct nsock *sk = owner_lookup(cmd->handle);
+        bool connecting = sk && sk->connect_waiter == cmd;
+        if (sk)
+                command_unlink_wait(sk, cmd);
+        cmd->owner->command_cancels++;
+        socket_owner_complete(cmd, -1, error);
+        if (connecting)
+                tcp_force_abort(sk, error, "command-cancel");
+}
+
+/** @brief Expire one owner-parked request without retaining application memory.
+ */
+static void command_timeout(struct owner_timer *timer, void *arg,
+                            uint64_t now) {
+        (void)timer;
+        (void)now;
+        command_cancel_local(arg, ETIMEDOUT);
+}
+
+/* Transfer the caller reference into an allocation-free control notification.
+ * The owner retains a separate reference until this notification is consumed.
+ */
+static void command_release_caller(struct sock_cmd *cmd) {
+        pthread_mutex_lock(&submit_lock);
+        if (cmd->owner && cmd->owner->accepting) {
+                cmd->control_next = cmd->owner->control_head;
+                cmd->owner->control_head = cmd;
+                atomic_store_explicit(&cmd->owner->control_pending, true,
+                                      memory_order_release);
+                pthread_mutex_unlock(&submit_lock);
+        } else {
+                pthread_mutex_unlock(&submit_lock);
+                command_put(cmd);
+        }
+}
+
+void socket_owner_result_release(struct sock_cmd *descriptor, bool claimed) {
+        struct sock_cmd *cmd = descriptor->managed_result;
+        if (!cmd)
+                return;
+        descriptor->managed_result = NULL;
+        cmd->claimed = claimed;
+        command_release_caller(cmd);
+}
+
+static void command_submission_cleanup(void *arg) { command_put(arg); }
+
+static void command_wait_cleanup(void *arg) {
+        struct sock_cmd *cmd = arg;
+        /* pthread_cond_wait reacquires this mutex before invoking cleanup. */
+        pthread_mutex_unlock(&cmd->done_mutex);
+        socket_owner_cancel(cmd, ECANCELED);
+        command_release_caller(cmd);
+}
+
+static void command_active_remove(struct sock_cmd *cmd) {
+        struct socket_owner *owner = cmd->owner;
+        if (cmd->active_prev)
+                cmd->active_prev->active_next = cmd->active_next;
+        else
+                owner->active_head = cmd->active_next;
+        if (cmd->active_next)
+                cmd->active_next->active_prev = cmd->active_prev;
+}
+
+/** @brief Consume the transferred caller reference and close any unclaimed
+ * result. */
+static void command_reap(struct sock_cmd *cmd) {
+        if (!cmd->done)
+                command_cancel_local(cmd, atomic_load(&cmd->cancel_error)
+                                              ?: ECANCELED);
+        if (!cmd->claimed && cmd->result >= 0 &&
+            (cmd->type == SOCK_CMD_CREATE || cmd->type == SOCK_CMD_ACCEPT)) {
+                struct nsock *sk = owner_lookup(cmd->result_handle);
+                if (sk && !sk->app_closed) {
+                        sk->app_closed = true;
+                        sk->ops->close(sk);
+                }
+        }
+        command_active_remove(cmd);
+        command_put(cmd); /* owner */
+        command_put(cmd); /* transferred caller */
+}
+
+/** @brief Deep-copy caller-owned buffers before a request can escape to its
+ * owner. */
+static struct sock_cmd *command_clone(const struct sock_cmd *src) {
+        struct sock_cmd *cmd = calloc(1, sizeof(*cmd));
+        if (!cmd) {
+                errno = ENOMEM;
+                return NULL;
+        }
+        cmd->type = src->type;
+        cmd->handle = src->handle;
+        cmd->args = src->args;
+        cmd->nonblock = src->nonblock;
+        cmd->timeout_ns = src->timeout_ns;
+        cmd->result_handle.id = NSOCK_INVALID_ID;
+        atomic_init(&cmd->refs, 1);
+        atomic_init(&cmd->cancel_error, 0);
+        owner_timer_init(&cmd->timer, command_timeout, cmd);
+        if (pthread_mutex_init(&cmd->done_mutex, NULL)) {
+                free(cmd);
+                errno = ENOMEM;
+                return NULL;
+        }
+        pthread_condattr_t attr;
+        pthread_condattr_init(&attr);
+        pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+        int rc = pthread_cond_init(&cmd->done_cond, &attr);
+        pthread_condattr_destroy(&attr);
+        if (rc) {
+                pthread_mutex_destroy(&cmd->done_mutex);
+                free(cmd);
+                errno = rc;
+                return NULL;
+        }
+        atomic_fetch_add(&command_live, 1);
+        if (cmd->type == SOCK_CMD_SEND || cmd->type == SOCK_CMD_RECV ||
+            cmd->type == SOCK_CMD_SENDTO || cmd->type == SOCK_CMD_RECVFROM) {
+                size_t len = cmd->args.io.len;
+                bool datagram = cmd->handle.protocol == IPPROTO_UDP;
+                if (datagram && len > 65507 && cmd->type == SOCK_CMD_SENDTO) {
+                        command_put(cmd);
+                        errno = EMSGSIZE;
+                        return NULL;
+                }
+                if (len > (datagram ? 65507U : 65536U))
+                        len = datagram ? 65507U : 65536U;
+                cmd->storage = malloc(len ? len : 1);
+                if (!cmd->storage) {
+                        command_put(cmd);
+                        errno = ENOMEM;
+                        return NULL;
+                }
+                cmd->args.io.buf = cmd->storage;
+                cmd->args.io.len = len;
+                if (len && (cmd->type == SOCK_CMD_SEND ||
+                            cmd->type == SOCK_CMD_SENDTO))
+                        memcpy(cmd->storage, src->args.io.buf, len);
+                cmd->output_len = sizeof(cmd->output_addr);
+                cmd->args.io.out_addr = (struct sockaddr *)&cmd->output_addr;
+                cmd->args.io.out_addrlen = &cmd->output_len;
+        } else if (cmd->type == SOCK_CMD_ACCEPT) {
+                cmd->output_len = sizeof(cmd->output_addr);
+                cmd->args.address.out_addr =
+                    (struct sockaddr *)&cmd->output_addr;
+                cmd->args.address.out_addrlen = &cmd->output_len;
+        } else if (cmd->type == SOCK_CMD_GETSOCKOPT) {
+                cmd->output_len = sizeof(cmd->args.sockopt.time);
+                cmd->args.sockopt.out_value = &cmd->args.sockopt.value;
+                cmd->args.sockopt.out_len = &cmd->output_len;
+        }
+        return cmd;
+}
+
+static void copy_address(struct sockaddr *dst, socklen_t *len,
+                         const struct sock_cmd *cmd) {
+        if (!dst || !len)
+                return;
+        size_t n = *len < cmd->output_len ? *len : cmd->output_len;
+        memcpy(dst, &cmd->output_addr, n);
+        *len = cmd->output_len;
+}
+
+int socket_owner_call(struct sock_cmd *src) {
+        if (!src) {
                 errno = EINVAL;
                 return -1;
         }
-        if (cmd->type == SOCK_CMD_CREATE)
-                owner = socket_owner_default();
-        else
-                owner = socket_owner_for_lcore(cmd->handle.owner_lcore);
-        if (owner == NULL) {
-                errno = ENETDOWN;
+        struct sock_cmd *cmd = command_clone(src);
+        if (!cmd)
+                return -1;
+        int old_cancel;
+        /* Submission owns no owner reference until enqueue succeeds. */
+        pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &old_cancel);
+        if (cmd->timeout_ns) {
+                uint64_t now = command_now();
+                cmd->deadline_ns = UINT64_MAX - now < cmd->timeout_ns
+                                       ? UINT64_MAX
+                                       : now + cmd->timeout_ns;
+        }
+        int error = 0;
+        for (;;) {
+                pthread_mutex_lock(&submit_lock);
+                struct socket_owner *owner = cmd->owner;
+                if (!owner) {
+                        owner = cmd->type == SOCK_CMD_CREATE
+                                    ? socket_owner_default()
+                                    : socket_owner_for_lcore(
+                                          cmd->handle.owner_lcore);
+                        cmd->owner = owner;
+                }
+                if (!owner || !owner->accepting) {
+                        pthread_mutex_unlock(&submit_lock);
+                        error = ENETDOWN;
+                        break;
+                }
+                struct rte_ring *ring = cmd->type == SOCK_CMD_CLOSE
+                                            ? owner->close_ring
+                                            : owner->command_ring;
+                unsigned seq = atomic_load(&owner->space_seq);
+                cmd->state = SOCK_CMD_QUEUED;
+                atomic_fetch_add(&cmd->refs, 1);
+                if (rte_ring_mp_enqueue(ring, cmd) == 0) {
+                        unsigned depth = rte_ring_count(ring);
+                        if (depth > owner->command_peak)
+                                owner->command_peak = depth;
+                        pthread_mutex_unlock(&submit_lock);
+                        break;
+                }
+                atomic_fetch_sub(&cmd->refs, 1);
+                owner->command_waits++;
+                pthread_mutex_unlock(&submit_lock);
+                if (cmd->nonblock) {
+                        error = EAGAIN;
+                        break;
+                }
+                if (cmd->deadline_ns && command_now() >= cmd->deadline_ns) {
+                        error = ETIMEDOUT;
+                        break;
+                }
+                /* Bounded sleep also permits pending pthread cancellation
+                 * while a full ring has not yet acquired our command. */
+                struct timespec delay = {.tv_nsec = 10000000};
+                pthread_cleanup_push(command_submission_cleanup, cmd);
+                pthread_setcancelstate(old_cancel, NULL);
+                syscall(SYS_futex, &owner->space_seq, FUTEX_WAIT_PRIVATE, seq,
+                        &delay, NULL, 0);
+                pthread_testcancel();
+                pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+                pthread_cleanup_pop(0);
+        }
+        if (error) {
+                command_put(cmd);
+                pthread_setcancelstate(old_cancel, NULL);
+                errno = error;
                 return -1;
         }
-        if (pthread_mutex_init(&cmd->done_mutex, NULL) != 0) {
-                errno = ENOMEM;
-                return -1;
-        }
-        if (pthread_cond_init(&cmd->done_cond, NULL) != 0) {
-                pthread_mutex_destroy(&cmd->done_mutex);
-                errno = ENOMEM;
-                return -1;
-        }
-        cmd->done = false;
-        cmd->next = NULL;
-
-        /*
-         * Apply backpressure to command producers instead of returning
-         * ENOBUFS.  In particular, nclose has already detached its fd before
-         * submitting CLOSE; dropping that command would leave an unreachable
-         * live TCB.  Waiting for ring space is consistent with the synchronous
-         * API, which already waits for owner completion.
-         */
-        while (rte_ring_mp_enqueue(owner->command_ring, cmd) != 0)
-                rte_pause();
-
-        /*
-         * Waiting here blocks only the application lcore.  A command that
-         * cannot yet progress is retained by the owner, whose loop continues
-         * to process packets and timers until it can complete the request.
-         */
         pthread_mutex_lock(&cmd->done_mutex);
-        while (!cmd->done)
-                pthread_cond_wait(&cmd->done_cond, &cmd->done_mutex);
+        pthread_cleanup_push(command_wait_cleanup, cmd);
+        pthread_setcancelstate(old_cancel, NULL);
+        while (!cmd->done) {
+                if (cmd->deadline_ns && !atomic_load(&cmd->cancel_error)) {
+                        struct timespec deadline = {
+                            .tv_sec = cmd->deadline_ns / 1000000000ULL,
+                            .tv_nsec = cmd->deadline_ns % 1000000000ULL};
+                        if (pthread_cond_timedwait(&cmd->done_cond,
+                                                   &cmd->done_mutex,
+                                                   &deadline) == ETIMEDOUT)
+                                socket_owner_cancel(cmd, ETIMEDOUT);
+                } else {
+                        pthread_cond_wait(&cmd->done_cond, &cmd->done_mutex);
+                }
+        }
+        pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
+        bool holds_result = cmd->result >= 0 && (cmd->type == SOCK_CMD_CREATE ||
+                                                 cmd->type == SOCK_CMD_ACCEPT);
+        cmd->claimed = !holds_result;
+        if (holds_result)
+                src->managed_result = cmd;
+        src->result = cmd->result;
+        src->error = cmd->error;
+        src->result_handle = cmd->result_handle;
+        if (cmd->result >= 0) {
+                if (cmd->type == SOCK_CMD_RECV ||
+                    cmd->type == SOCK_CMD_RECVFROM) {
+                        if (cmd->result)
+                                memcpy(src->args.io.buf, cmd->storage,
+                                       (size_t)cmd->result);
+                        copy_address(src->args.io.out_addr,
+                                     src->args.io.out_addrlen, cmd);
+                } else if (cmd->type == SOCK_CMD_ACCEPT) {
+                        copy_address(src->args.address.out_addr,
+                                     src->args.address.out_addrlen, cmd);
+                } else if (cmd->type == SOCK_CMD_GETSOCKOPT) {
+                        size_t n = *src->args.sockopt.out_len;
+                        if (n > cmd->output_len)
+                                n = cmd->output_len;
+                        memcpy(src->args.sockopt.out_value,
+                               &cmd->args.sockopt.value, n);
+                        *src->args.sockopt.out_len = cmd->output_len;
+                }
+        }
+        pthread_cleanup_pop(0);
         pthread_mutex_unlock(&cmd->done_mutex);
-
-        pthread_cond_destroy(&cmd->done_cond);
-        pthread_mutex_destroy(&cmd->done_mutex);
-        if (cmd->result < 0)
-                errno = cmd->error;
-
-        return cmd->result < 0 ? -1 : 0;
+        error = cmd->error;
+        if (!src->managed_result)
+                command_release_caller(cmd);
+        pthread_setcancelstate(old_cancel, NULL);
+        if (src->result < 0)
+                errno = error;
+        return src->result < 0 ? -1 : 0;
 }
 
 /** Convert legacy transport "-1 plus errno" into one command completion. */
@@ -615,7 +1014,12 @@ void socket_owner_wake_recv(struct nsock *sk) {
                 struct sock_cmd *cmd =
                     waitq_pop(&sk->recv_wait_head, &sk->recv_wait_tail);
                 ssize_t result;
-
+                if (atomic_load(&cmd->cancel_error)) {
+                        command_cancel_local(cmd,
+                                             atomic_load(&cmd->cancel_error));
+                        continue;
+                }
+                cmd->state = SOCK_CMD_RUNNING;
                 errno = 0;
                 if (cmd->type == SOCK_CMD_RECV) {
                         result =
@@ -628,7 +1032,7 @@ void socket_owner_wake_recv(struct nsock *sk) {
                             cmd->args.io.out_addrlen);
                 }
 
-                if (result < 0 && errno == EAGAIN &&
+                if (result < 0 && errno == EAGAIN && !cmd->nonblock &&
                     !(cmd->args.io.flags & MSG_DONTWAIT)) {
                         LOG_OWNER_DEBUG(OWNER_SK_FMT " event=wait-park op=recv",
                                         OWNER_SK_ARG(sk));
@@ -647,10 +1051,20 @@ void socket_owner_wake_recv(struct nsock *sk) {
 void socket_owner_wake_send(struct nsock *sk) {
         while (sk != NULL && sk->send_wait_head != NULL) {
                 struct sock_cmd *cmd = sk->send_wait_head;
-
+                if (atomic_load(&cmd->cancel_error)) {
+                        command_cancel_local(cmd,
+                                             atomic_load(&cmd->cancel_error));
+                        continue;
+                }
                 errno = 0;
-                ssize_t result = sk->ops->send(
-                    sk, cmd->args.io.buf, cmd->args.io.len, cmd->args.io.flags);
+                ssize_t result =
+                    cmd->type == SOCK_CMD_SENDTO
+                        ? sk->ops->sendto(sk, cmd->args.io.buf,
+                                          cmd->args.io.len, cmd->args.io.flags,
+                                          (struct sockaddr *)&cmd->args.io.addr,
+                                          cmd->args.io.addrlen)
+                        : sk->ops->send(sk, cmd->args.io.buf, cmd->args.io.len,
+                                        cmd->args.io.flags);
                 if (result < 0 && errno == EAGAIN)
                         return;
 
@@ -661,9 +1075,16 @@ void socket_owner_wake_send(struct nsock *sk) {
 
 void socket_owner_wake_accept(struct nsock *listener) {
         while (listener != NULL && listener->accept_wait_head != NULL) {
+                struct sock_cmd *waiting = listener->accept_wait_head;
+                if (atomic_load(&waiting->cancel_error)) {
+                        command_cancel_local(
+                            waiting, atomic_load(&waiting->cancel_error));
+                        continue;
+                }
                 struct nsock *child = tcp_accept_owned(listener);
                 if (child == NULL) {
-                        if (errno == EAGAIN)
+                        if (errno == EAGAIN &&
+                            !listener->accept_wait_head->nonblock)
                                 return;
 
                         struct sock_cmd *failed =
@@ -676,6 +1097,9 @@ void socket_owner_wake_accept(struct nsock *listener) {
                 struct sock_cmd *cmd = waitq_pop(&listener->accept_wait_head,
                                                  &listener->accept_wait_tail);
                 child->app_visible = true;
+                child->nonblock =
+                    (cmd->args.address.flags & SOCK_NONBLOCK) != 0;
+                child->nodelay = listener->nodelay;
                 cmd->result_handle = socket_owner_handle(child);
                 if (cmd->args.address.out_addr != NULL) {
                         struct sockaddr_in *sin =
@@ -691,7 +1115,11 @@ void socket_owner_wake_accept(struct nsock *listener) {
 }
 
 void socket_owner_complete_connect(struct nsock *sk, int error) {
-        if (sk == NULL || sk->connect_waiter == NULL)
+        if (sk == NULL)
+                return;
+        if (error)
+                sk->pending_error = error;
+        if (sk->connect_waiter == NULL)
                 return;
         struct sock_cmd *cmd = sk->connect_waiter;
         sk->connect_waiter = NULL;
@@ -703,6 +1131,8 @@ void socket_owner_abort_waiters(struct nsock *sk, int error) {
         unsigned int aborted = 0;
         if (sk == NULL)
                 return;
+        if (error != ECANCELED)
+                sk->pending_error = error;
 
         if (sk->connect_waiter != NULL) {
                 cmd = sk->connect_waiter;
@@ -732,6 +1162,72 @@ void socket_owner_abort_waiters(struct nsock *sk, int error) {
                                OWNER_SK_ARG(sk), aborted, error);
 }
 
+/** @brief Read or update owner-local socket options; no output points into
+ * caller storage. */
+static int socket_option(struct nsock *sk, struct sock_cmd *cmd) {
+        bool set = cmd->type == SOCK_CMD_SETSOCKOPT;
+        int level = cmd->args.sockopt.level, name = cmd->args.sockopt.optname;
+        int *value = &cmd->args.sockopt.integer;
+        if (level == SOL_SOCKET) {
+                if (name == SO_ERROR && !set) {
+                        *value = sk->pending_error;
+                        sk->pending_error = 0;
+                        cmd->output_len = sizeof(int);
+                        return 0;
+                }
+                if (name == SO_REUSEADDR) {
+                        if (set && sk->registry_flags)
+                                return EINVAL;
+                        if (set)
+                                sk->reuseaddr = *value != 0;
+                        else
+                                *value = sk->reuseaddr;
+                        cmd->output_len = sizeof(int);
+                        return 0;
+                }
+                if (name == SO_RCVTIMEO || name == SO_SNDTIMEO) {
+                        uint64_t *ns = name == SO_RCVTIMEO
+                                           ? &sk->recv_timeout_ns
+                                           : &sk->send_timeout_ns;
+                        struct timeval *tv = &cmd->args.sockopt.time;
+                        if (set)
+                                *ns = (uint64_t)tv->tv_sec * 1000000000ULL +
+                                      (uint64_t)tv->tv_usec * 1000;
+                        else
+                                *tv = (struct timeval){
+                                    .tv_sec = *ns / 1000000000ULL,
+                                    .tv_usec = (*ns % 1000000000ULL) / 1000};
+                        cmd->output_len = sizeof(*tv);
+                        return 0;
+                }
+                if (name == SO_LINGER && sk->protocol == IPPROTO_TCP) {
+                        if (set) {
+                                sk->u.tcp.linger_enabled =
+                                    cmd->args.sockopt.value.l_onoff != 0;
+                                sk->u.tcp.linger_seconds =
+                                    cmd->args.sockopt.value.l_linger;
+                        } else {
+                                cmd->args.sockopt.value =
+                                    (struct linger){sk->u.tcp.linger_enabled,
+                                                    sk->u.tcp.linger_seconds};
+                        }
+                        cmd->output_len = sizeof(struct linger);
+                        return 0;
+                }
+        } else if (level == IPPROTO_TCP && name == TCP_NODELAY &&
+                   sk->protocol == IPPROTO_TCP) {
+                if (set) {
+                        sk->nodelay = *value != 0;
+                        if (sk->nodelay)
+                                nsock_tx_mark_dirty(sk);
+                } else
+                        *value = sk->nodelay;
+                cmd->output_len = sizeof(int);
+                return 0;
+        }
+        return ENOPROTOOPT;
+}
+
 /** Handle one request without ever sleeping on protocol progress. */
 static void owner_process_one(struct sock_cmd *cmd) {
         struct nsock *sk = NULL;
@@ -751,6 +1247,7 @@ static void owner_process_one(struct sock_cmd *cmd) {
                         return;
                 }
                 sk->app_visible = true;
+                sk->nonblock = (cmd->args.create.type & SOCK_NONBLOCK) != 0;
                 cmd->result_handle = socket_owner_handle(sk);
                 socket_owner_complete(cmd, 0, 0);
                 return;
@@ -788,6 +1285,14 @@ static void owner_process_one(struct sock_cmd *cmd) {
                 return;
         }
         case SOCK_CMD_CONNECT:
+                if (sk->protocol == IPPROTO_TCP &&
+                    sk->u.tcp.status != TCP_STATUS_CLOSED) {
+                        socket_owner_complete(
+                            cmd, -1,
+                            sk->u.tcp.status == TCP_STATUS_SYN_SENT ? EALREADY
+                                                                    : EISCONN);
+                        return;
+                }
                 if (sk->ops->connect == NULL || sk->connect_waiter != NULL) {
                         socket_owner_complete(cmd, -1,
                                               sk->connect_waiter ? EALREADY
@@ -797,7 +1302,8 @@ static void owner_process_one(struct sock_cmd *cmd) {
                 result = sk->ops->connect(
                     sk, (const struct sockaddr *)&cmd->args.address.addr,
                     cmd->args.address.addrlen);
-                if (result < 0 && errno == EINPROGRESS) {
+                if (result < 0 && errno == EINPROGRESS && !cmd->nonblock) {
+                        cmd->state = SOCK_CMD_PARKED;
                         sk->connect_waiter = cmd;
                         LOG_OWNER_DEBUG(OWNER_SK_FMT
                                         " event=wait-park op=connect",
@@ -831,7 +1337,7 @@ static void owner_process_one(struct sock_cmd *cmd) {
                 }
                 result = sk->ops->send(sk, cmd->args.io.buf, cmd->args.io.len,
                                        cmd->args.io.flags);
-                if (result < 0 && errno == EAGAIN &&
+                if (result < 0 && errno == EAGAIN && !cmd->nonblock &&
                     !(cmd->args.io.flags & MSG_DONTWAIT)) {
                         waitq_push(&sk->send_wait_head, &sk->send_wait_tail,
                                    cmd);
@@ -859,39 +1365,37 @@ static void owner_process_one(struct sock_cmd *cmd) {
                         socket_owner_complete(cmd, -1, EOPNOTSUPP);
                         return;
                 }
-                complete_transport_result(
-                    cmd,
-                    sk->ops->sendto(sk, cmd->args.io.buf, cmd->args.io.len,
-                                    cmd->args.io.flags,
-                                    (const struct sockaddr *)&cmd->args.io.addr,
-                                    cmd->args.io.addrlen));
+                if (g_net.ipv4_mtu <= 28 ||
+                    cmd->args.io.len > g_net.ipv4_mtu - 28U) {
+                        socket_owner_complete(cmd, -1, EMSGSIZE);
+                        return;
+                }
+                result = sk->ops->sendto(sk, cmd->args.io.buf, cmd->args.io.len,
+                                         cmd->args.io.flags,
+                                         (struct sockaddr *)&cmd->args.io.addr,
+                                         cmd->args.io.addrlen);
+                if (result < 0 && errno == EAGAIN && !cmd->nonblock) {
+                        waitq_push(&sk->send_wait_head, &sk->send_wait_tail,
+                                   cmd);
+                        return;
+                }
+                complete_transport_result(cmd, result);
                 return;
         case SOCK_CMD_SETSOCKOPT:
-                if (sk->protocol != IPPROTO_TCP ||
-                    cmd->args.sockopt.level != SOL_SOCKET ||
-                    cmd->args.sockopt.optname != SO_LINGER) {
-                        socket_owner_complete(cmd, -1, ENOPROTOOPT);
-                        return;
-                }
-                sk->u.tcp.linger_enabled =
-                    cmd->args.sockopt.value.l_onoff != 0;
-                sk->u.tcp.linger_seconds =
-                    (uint32_t)cmd->args.sockopt.value.l_linger;
+        case SOCK_CMD_GETSOCKOPT: {
+                int error = socket_option(sk, cmd);
+                socket_owner_complete(cmd, error ? -1 : 0, error);
+                return;
+        }
+        case SOCK_CMD_PUBLISH:
+                sk->public_fd = cmd->args.sockopt.integer;
                 socket_owner_complete(cmd, 0, 0);
                 return;
-        case SOCK_CMD_GETSOCKOPT:
-                if (sk->protocol != IPPROTO_TCP ||
-                    cmd->args.sockopt.level != SOL_SOCKET ||
-                    cmd->args.sockopt.optname != SO_LINGER) {
-                        socket_owner_complete(cmd, -1, ENOPROTOOPT);
-                        return;
-                }
-                cmd->args.sockopt.out_value->l_onoff =
-                    sk->u.tcp.linger_enabled ? 1 : 0;
-                cmd->args.sockopt.out_value->l_linger =
-                    (int)sk->u.tcp.linger_seconds;
-                *cmd->args.sockopt.out_len = sizeof(struct linger);
-                socket_owner_complete(cmd, 0, 0);
+        case SOCK_CMD_FLAGS:
+                if (cmd->args.sockopt.optname == F_SETFL)
+                        sk->nonblock =
+                            (cmd->args.sockopt.integer & O_NONBLOCK) != 0;
+                socket_owner_complete(cmd, sk->nonblock ? O_NONBLOCK : 0, 0);
                 return;
         case SOCK_CMD_CLOSE:
                 if (sk->app_closed) {
@@ -918,15 +1422,168 @@ static void owner_process_one(struct sock_cmd *cmd) {
         }
 }
 
+/** @brief Acquire owner-list membership, enforce the admission deadline, then
+ * execute. */
+static void command_start(struct socket_owner *owner, struct sock_cmd *cmd) {
+        cmd->active_next = owner->active_head;
+        if (owner->active_head)
+                owner->active_head->active_prev = cmd;
+        owner->active_head = cmd;
+        cmd->state = SOCK_CMD_RUNNING;
+        int error = atomic_load(&cmd->cancel_error);
+        if (!error && cmd->deadline_ns && command_now() >= cmd->deadline_ns)
+                error = ETIMEDOUT;
+        if (error) {
+                command_cancel_local(cmd, error);
+                return;
+        }
+        if (cmd->deadline_ns) {
+                uint64_t now = command_now();
+                uint64_t remaining =
+                    cmd->deadline_ns > now ? cmd->deadline_ns - now : 1;
+                if (owner_timer_arm_after_ms(
+                        &cmd->timer, remaining / 1000000 +
+                                         (remaining % 1000000 != 0)) != 0) {
+                        socket_owner_complete(cmd, -1, ENOBUFS);
+                        return;
+                }
+        }
+        owner_process_one(cmd);
+}
+
+/** Drain independent cancellation notifications. A queued command still owns
+ * its ring reference and observes cancel_error when dequeued; parked commands
+ * complete immediately without requiring ingress or caller abandonment. */
+static void command_cancellations(struct socket_owner *owner) {
+        if (!atomic_load_explicit(&owner->cancel_pending, memory_order_acquire))
+                return;
+        for (unsigned i = 0; i < BURST_SIZE; i++) {
+                pthread_mutex_lock(&submit_lock);
+                struct sock_cmd *cmd = owner->cancel_head;
+                if (cmd)
+                        owner->cancel_head = cmd->cancel_next;
+                atomic_store_explicit(&owner->cancel_pending,
+                                      owner->cancel_head != NULL,
+                                      memory_order_release);
+                pthread_mutex_unlock(&submit_lock);
+                if (!cmd)
+                        break;
+                if (cmd->state != SOCK_CMD_QUEUED)
+                        command_cancel_local(cmd,
+                                             atomic_load(&cmd->cancel_error));
+                command_put(cmd); /* cancellation notification */
+        }
+}
+
+/** @brief Drain a bounded control batch, deferring requests still held by a
+ * data ring. */
+static void command_controls(struct socket_owner *owner) {
+        /* The traffic generator has no public callers: its owner loop must
+         * not contend on a process-wide mutex just to observe an empty list. */
+        if (!atomic_load_explicit(&owner->control_pending,
+                                  memory_order_acquire))
+                return;
+        pthread_mutex_lock(&submit_lock);
+        struct sock_cmd *list = owner->control_head;
+        struct sock_cmd *last = list;
+        for (unsigned i = 1; last && last->control_next && i < BURST_SIZE; i++)
+                last = last->control_next;
+        owner->control_head = last ? last->control_next : NULL;
+        if (last)
+                last->control_next = NULL;
+        atomic_store_explicit(&owner->control_pending,
+                              owner->control_head != NULL,
+                              memory_order_release);
+        pthread_mutex_unlock(&submit_lock);
+        struct sock_cmd *deferred = NULL;
+        while (list) {
+                struct sock_cmd *cmd = list;
+                list = cmd->control_next;
+                if (cmd->state == SOCK_CMD_QUEUED) {
+                        cmd->control_next = deferred;
+                        deferred = cmd;
+                } else
+                        command_reap(cmd);
+        }
+        if (deferred) {
+                pthread_mutex_lock(&submit_lock);
+                struct sock_cmd *tail = deferred;
+                while (tail->control_next)
+                        tail = tail->control_next;
+                tail->control_next = owner->control_head;
+                owner->control_head = deferred;
+                atomic_store_explicit(&owner->control_pending, true,
+                                      memory_order_release);
+                pthread_mutex_unlock(&submit_lock);
+        }
+}
+
 void socket_owner_process_commands(void) {
         struct sock_cmd *commands[BURST_SIZE];
         struct socket_owner *owner = socket_owner_current();
-
         if (owner == NULL)
                 return;
-        unsigned int count = rte_ring_sc_dequeue_burst(
-            owner->command_ring, (void **)commands, BURST_SIZE, NULL);
+        struct rte_ring *rings[] = {owner->close_ring, owner->command_ring};
+        for (unsigned r = 0; r < 2; r++) {
+                unsigned count = rte_ring_sc_dequeue_burst(
+                    rings[r], (void **)commands, BURST_SIZE, NULL);
+                if (count)
+                        space_wake(owner);
+                for (unsigned i = 0; i < count; i++)
+                        command_start(owner, commands[i]);
+        }
+        command_cancellations(owner);
+        command_controls(owner);
+}
 
-        for (unsigned int i = 0; i < count; i++)
-                owner_process_one(commands[i]);
+void socket_owner_shutdown_local(void) {
+        struct socket_owner *owner = socket_owner_current();
+        if (!owner)
+                return;
+        pthread_mutex_lock(&submit_lock);
+        owner->accepting = false;
+        struct sock_cmd *control = owner->control_head;
+        owner->control_head = NULL;
+        struct sock_cmd *cancellations = owner->cancel_head;
+        owner->cancel_head = NULL;
+        space_wake(owner);
+        pthread_mutex_unlock(&submit_lock);
+        struct rte_ring *rings[] = {owner->close_ring, owner->command_ring};
+        for (unsigned r = 0; r < 2; r++) {
+                struct sock_cmd *cmd;
+                while (rte_ring_sc_dequeue(rings[r], (void **)&cmd) == 0) {
+                        socket_owner_cancel(cmd, ENETDOWN);
+                        command_start(owner, cmd);
+                }
+        }
+        while (owner->active_head) {
+                struct sock_cmd *cmd = owner->active_head;
+                if (!cmd->done)
+                        command_cancel_local(cmd, ENETDOWN);
+                /* Shutdown closes all public sockets below, including results
+                 * a returning caller has not published yet. */
+                command_active_remove(cmd);
+                command_put(cmd);
+        }
+        while (control) {
+                struct sock_cmd *next = control->control_next;
+                command_put(control);
+                control = next;
+        }
+        while (cancellations) {
+                struct sock_cmd *next = cancellations->cancel_next;
+                command_put(cancellations);
+                cancellations = next;
+        }
+        for (uint32_t i = 0; i < owner->slot_capacity; i++) {
+                struct nsock *sk = owner->slots[i];
+                if (!sk || !sk->app_visible)
+                        continue;
+                sk->app_closed = true;
+                socket_public_refresh(sk);
+                if (sk->protocol == IPPROTO_TCP)
+                        tcp_force_abort(sk, ENETDOWN, "owner-stop");
+                else
+                        sk->ops->close(sk);
+        }
 }

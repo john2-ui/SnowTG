@@ -1,3 +1,5 @@
+#include "socket_owner_internal.h"
+#include "rx_dispatch.h"
 /**
  * @file udp.c
  * @brief UDP packet construction, ingress delivery, egress, and the udp_ops
@@ -21,6 +23,7 @@
 #include "ring.h"
 #include "socket.h"
 #include "socket_owner_internal.h"
+#include "rx_dispatch.h"
 #include "udp_memory.h"
 
 #include <errno.h>
@@ -262,7 +265,8 @@ static int udp_build_datagrams(struct nsock *sk,
                     chunk == 0 ? NULL : (const uint8_t *)buf + offset;
 
                 packets[i] = udp_build_pkt(
-                    g_net.mp, dst_mac, sk->local_ip, daddr->sin_addr.s_addr,
+                    g_net.mp, dst_mac, sk->local_ip ? sk->local_ip : g_net.local_ip,
+                    daddr->sin_addr.s_addr,
                     sk->local_port, daddr->sin_port, data, (uint16_t)chunk);
                 if (packets[i] == NULL) {
                         for (unsigned int j = 0; j < i; j++)
@@ -316,8 +320,13 @@ int udp_ingress(struct rte_mbuf *mbuf) {
                  payload_len);
 #endif
 
-        struct nsock *sk =
-            nsock_from_ip_port(ip->dst_addr, udp->dst_port, ip->next_proto_id);
+        struct nsock *sk;
+        if (mbuf->dynfield1[2] == RX_DISPATCH_UDP_GENERATION_TAG) {
+                struct nsock_handle handle = {mbuf->dynfield1[3], mbuf->dynfield1[4],
+                                              mbuf->dynfield1[5], IPPROTO_UDP};
+                sk = socket_owner_resolve_local(handle);
+                if (sk && sk->app_closed) sk = NULL;
+        } else sk = nsock_from_ip_port(ip->dst_addr, udp->dst_port, ip->next_proto_id);
         if (sk == NULL) {
 #if ENABLE_UDP_DEBUG
                 LOG_WARN("no socket for " IP_FMT ":%u proto=%u",
@@ -496,7 +505,7 @@ ssize_t udp_sendto(struct nsock *sk, const void *buf, size_t len,
 ssize_t udp_recvfrom(struct nsock *sk, void *buf, size_t len,
                      __attribute__((unused)) int flags,
                      struct sockaddr *src_addr,
-                     __attribute__((unused)) socklen_t *addrlen) {
+                     socklen_t *addrlen) {
         struct rte_mbuf *mbuf = sk->u.udp.rx_current;
 
         if (mbuf == NULL) {
@@ -529,6 +538,8 @@ ssize_t udp_recvfrom(struct nsock *sk, void *buf, size_t len,
                 sin->sin_family = AF_INET;
                 sin->sin_port = udp->src_port;
                 sin->sin_addr.s_addr = ip->src_addr;
+                if (addrlen)
+                        *addrlen = sizeof(*sin);
         }
 
         const uint8_t *pkt = rte_pktmbuf_mtod(mbuf, const uint8_t *);

@@ -629,7 +629,7 @@ static uint32_t tcp_app_snd_limit(const struct nsock *sk) {
  * @param sk TCP socket whose available send-buffer space is queried.
  * @return Bytes admissible to @ref tcp_send, or zero when it must wait.
  */
-static uint32_t tcp_app_snd_space(const struct nsock *sk) {
+uint32_t tcp_app_snd_space(const struct nsock *sk) {
         uint32_t limit = tcp_app_snd_limit(sk);
 
         if (sk->u.tcp.sndbuf.len >= limit)
@@ -920,6 +920,7 @@ struct nsock *tcp_stream_create(uint32_t remote_ip, uint32_t local_ip,
                 return NULL;
         }
         sk->terminal_error = 0;
+        sk->pending_error = 0;
         sk->u.tcp.listener = NULL;
         sk->u.tcp.sent_seq = tcp_next_isn();
         sk->u.tcp.snd_una = sk->u.tcp.sent_seq;
@@ -1857,8 +1858,11 @@ static int tcp_state_listen(struct nsock *listener, struct rte_tcp_hdr *hdr,
                 return 0;
         }
 
+        /* A wildcard listener reserves all local addresses, but each child
+         * must register the concrete destination of its SYN. Later ACK/data
+         * packets are looked up using that exact four-tuple. */
         struct nsock *child = tcp_stream_create(
-            remote_ip, listener->local_ip, remote_port, listener->local_port);
+            remote_ip, iphdr->dst_addr, remote_port, listener->local_port);
         if (child == NULL) {
                 tcp_send_reset_reply(eth, iphdr, hdr);
                 LOG_ERROR("tcp stream create failed listener_" TCP_ID_FMT
@@ -2083,6 +2087,7 @@ static int tcp_state_syn_recv(struct nsock *sk, struct rte_tcp_hdr *hdr,
                                  rte_be_to_cpu_16(sk->u.tcp.remote_port));
                         /* Satisfy one or more owner-parked ACCEPT commands. */
                         socket_owner_wake_accept(listener);
+                        socket_owner_ready_post(listener, OWNER_IO_EV_ACCEPT | OWNER_IO_EV_READ);
                 } else {
                         struct rte_ether_hdr *eth =
                             rte_pktmbuf_mtod(mbuf, struct rte_ether_hdr *);
@@ -3086,6 +3091,9 @@ tcp_tx_flush_sndbuf(struct nsock *sk, struct rte_mempool *mp) {
         f.rx_win = tcp_wire_rcv_wnd(sk, f.tcp_flags);
         (void)tcp_options_apply_established(sk, &f);
         uint32_t mss = tcp_options_data_mss(sk, &f);
+        if (!sk->nodelay && in_flight && unsent < mss && !sk->app_closed &&
+            sk->u.tcp.sack.pending.kind != TCP_RECOVERY_TX_NEW_DATA)
+                goto out;
         if (seglen > mss)
                 seglen = mss;
         if (seglen == 0)
@@ -3364,7 +3372,8 @@ ssize_t tcp_send(struct nsock *sk, const void *buf, size_t len, int flags) {
         if (len == 0)
                 return 0;
 
-        if (sk->u.tcp.status != TCP_STATUS_ESTABLISHED) {
+        if (sk->u.tcp.status != TCP_STATUS_ESTABLISHED &&
+            sk->u.tcp.status != TCP_STATUS_CLOSE_WAIT) {
                 errno = sk->terminal_error ? sk->terminal_error : EPIPE;
                 return -1;
         }
@@ -3551,8 +3560,8 @@ static void tcp_close_listener(struct nsock *sk, int error,
 /**
  * @brief Start TCP teardown without blocking the owning packet worker.
  *
- * nclose() has already detached the application fd and marked app_closed
- * before entering here.  This function either destroys an immediately
+ * The owner has accepted close and marked app_closed before entering here;
+ * the public wrapper retires its fd when this command completes.  This function either destroys an immediately
  * reclaimable socket or starts FIN/RTO processing and returns.  Terminal
  * packet/timer handlers perform final reclamation later.
  */
@@ -3749,6 +3758,7 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
         }
 
         sk->terminal_error = 0;
+        sk->pending_error = 0;
         sk->u.tcp.listener = NULL;
         sk->u.tcp.sent_seq = tcp_next_isn();
         sk->u.tcp.snd_una = sk->u.tcp.sent_seq;
@@ -3768,6 +3778,7 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
         tcp_cc_init_default(&sk->u.tcp, false);
 
         if (nsock_tcp_conn_register(sk) != 0) {
+                errno = EADDRINUSE;
                 LOG_ERROR("tcp_connect: duplicate 4-tuple");
                 return -1;
         }
@@ -3808,6 +3819,14 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
  * @return 0 on success, or -1 if the accept queue cannot be allocated.
  */
 int tcp_listen(struct nsock *sk, int backlog) {
+        if (sk->u.tcp.status == TCP_STATUS_LISTEN) {
+                sk->u.tcp.backlog = backlog > 0 ? (uint32_t)backlog : 1;
+                return 0;
+        }
+        if (sk->u.tcp.status != TCP_STATUS_CLOSED) {
+                errno = EINVAL;
+                return -1;
+        }
         /* Listener has no peer; children carry the remote 4-tuple half. */
         sk->u.tcp.status = TCP_STATUS_LISTEN;
         sk->u.tcp.peer_eof = false;
@@ -3846,11 +3865,14 @@ int tcp_listen(struct nsock *sk, int backlog) {
                 sk->u.tcp.status = TCP_STATUS_CLOSED;
                 return -1;
         }
-        if (nsock_tcp_listener_register(sk) != 0) {
+        int listen_rc = nsock_tcp_listener_register(sk);
+        if (listen_rc != 0) {
                 LOG_ERROR("tcp_listen: local endpoint already listening");
                 rte_ring_free(sk->u.tcp.accept_queue);
                 sk->u.tcp.accept_queue = NULL;
                 sk->u.tcp.status = TCP_STATUS_CLOSED;
+                /* DPDK cleanup may change errno; publish the bind failure last. */
+                errno = -listen_rc;
                 return -1;
         }
         LOG_TCP_INFO(TCP_SK_FMT " event=listen backlog=%d ring_sz=%u",
@@ -3861,11 +3883,10 @@ int tcp_listen(struct nsock *sk, int backlog) {
 /**
  * @brief Block until an established passive-open child can be accepted.
  * @param sk Listening socket.
- * @param addr Optional output buffer for the peer IPv4 address and port.
- * @param addrlen Address length pointer; currently ignored.
- * @return Newly assigned child fd, or -1 on invalid listener or fd exhaustion.
+ * @return An established child owned by this worker, or NULL with errno.
  *
- * The child receives an fd only after the three-way handshake completed.
+ * The command layer copies the peer address and retains the result until the
+ * caller publishes an fd. An unclaimed child is closed by command reclamation.
  */
 struct nsock *tcp_accept_owned(struct nsock *sk) {
         if (sk->u.tcp.status != TCP_STATUS_LISTEN ||

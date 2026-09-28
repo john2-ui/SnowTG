@@ -344,6 +344,7 @@ int stack_runtime_worker_entry(void *arg) {
                         for (unsigned int i = 0; i < nb_rx; i++) {
                                 /* NIC mbufs may retain metadata from an old clone. */
                                 mbufs[i]->dynfield1[0] = 0;
+                                mbufs[i]->dynfield1[2] = 0;
                                 stack_runtime_rx_process(worker, mbufs[i], phase_start);
                         }
                 } else {
@@ -408,6 +409,7 @@ int stack_runtime_worker_entry(void *arg) {
         stack_runtime_tx_drain(worker, UINT_MAX, false);
         if (worker->on_exit != NULL)
                 worker->on_exit(worker->reactor_ctx);
+        socket_owner_shutdown_local();
         owner_timer_engine_fini(&worker->timer_engine);
         return 0;
 }

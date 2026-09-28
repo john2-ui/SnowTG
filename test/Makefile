@@ -27,7 +27,7 @@ ARP_CFLAGS := $(PAWS_CFLAGS) -DLOG_LEVEL=LOG_LVL_ERROR -DARP_TESTING
 
 DPDK_PKGCONF := pkg-config
 DPDK_CFLAGS := $(shell $(DPDK_PKGCONF) --cflags libdpdk)
-DPDK_LIBS := $(shell $(DPDK_PKGCONF) --libs libdpdk)
+DPDK_LIBS := $(shell $(DPDK_PKGCONF) --libs libdpdk) -pthread
 
 RBTREE_TEST := $(BUILD_DIR)/test_rbtree
 OFO_TEST := $(BUILD_DIR)/test_ofo
@@ -462,3 +462,14 @@ test-tcp-ack: $(BUILD_DIR)/test_tcp_ack
 $(BUILD_DIR)/test_tcp_ack: test_tcp_ack.c $(STACK_LIB) | $(BUILD_DIR)
 	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) test_tcp_ack.c $(STACK_LIB) \
 		-o $@ $(DPDK_LIBS) $(SANITIZER_LDFLAGS)
+
+.PHONY: test-socket-public
+test-socket-public: $(BUILD_DIR)/test_socket_public
+	$(BUILD_DIR)/test_socket_public -m 256 --no-huge --no-pci --file-prefix socket-public-test
+test: test-socket-public
+$(BUILD_DIR)/test_socket_public: test_socket_public.c $(STACK_LIB) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DPDK_CFLAGS) -I../pro-stack $< $(STACK_LIB) -o $@ $(DPDK_LIBS) -pthread $(SANITIZER_LDFLAGS)
+
+# Opt-in hardware acceptance; no NIC preparation or remote changes in `test`.
+$(BUILD_DIR)/test_socket_live: test_socket_live.c $(STACK_LIB) | $(BUILD_DIR)
+	$(CC) $(CFLAGS) $(DPDK_CFLAGS) -I../pro-stack $< $(STACK_LIB) -o $@ $(DPDK_LIBS) -pthread $(SANITIZER_LDFLAGS)

@@ -15,6 +15,10 @@
 /** Fixed global open-addressed established-flow table capacity. */
 #define RX_DISPATCH_FLOW_TABLE_SIZE 65536U
 
+/** Private mbuf handoff metadata: words 2..5 hold tag, slot, generation, owner.
+ * Clear word 2 on fresh NIC RX; forwarded packets must retain it. */
+#define RX_DISPATCH_UDP_GENERATION_TAG 0x53475544U
+
 enum rx_dispatch_action {
         RX_DISPATCH_DELIVER,
         RX_DISPATCH_FANOUT,
@@ -82,7 +86,7 @@ void rx_dispatch_unregister_tcp_connection(uint32_t remote_ip,
  * ARP returns @c RX_DISPATCH_FANOUT. Short, fragmented, or unsupported
  * packets return worker zero so the normal stack validation owns the drop.
  */
-void rx_dispatch_classify(const struct rte_mbuf *mbuf, uint16_t rx_queue,
+void rx_dispatch_classify(struct rte_mbuf *mbuf, uint16_t rx_queue,
                           struct rx_dispatch_result *out);
 
 #endif /* NETARCH_RX_DISPATCH_H */

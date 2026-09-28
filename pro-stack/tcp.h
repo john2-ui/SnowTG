@@ -200,6 +200,7 @@ void tcp_test_process_peer_ack(struct nsock *sk, uint32_t ack,
  * @param isn Initial sequence number for @c head_seq.
  * @return 0 on success, -1 for an invalid destination.
  */
+uint32_t tcp_app_snd_space(const struct nsock *sk);
 int tcp_sndbuf_init(struct tcp_sndbuf *sb, uint32_t isn);
 /**
  * @brief Deallocate a TCP send buffer.

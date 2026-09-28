@@ -133,6 +133,7 @@ int main(int argc, char *argv[]) {
                 unsigned int ready = 0;
                 uint64_t now_cycles = rte_get_timer_cycles();
                 for (unsigned int i = 0; i < nb_rx; i++) {
+                        rx[i]->dynfield1[2] = 0; /* Clear prior UDP handoff identity. */
                         struct rte_mbuf *mbuf = ipv4_reassembly_process(
                             &reassembly, rx[i], now_cycles);
                         if (mbuf != NULL)

@@ -1,3 +1,8 @@
+#include "socket_bind_internal.h"
+/* Standalone classifier tests and legacy users need no socket registry. */
+extern bool socket_bind_udp_shared(uint16_t) __attribute__((weak));
+extern bool socket_bind_udp_select(uint32_t, uint16_t, struct nsock_handle *)
+    __attribute__((weak));
 #include "rx_dispatch.h"
 
 #include "port.h"
@@ -508,7 +513,7 @@ static void rx_dispatch_hash_or_hardware(uint8_t protocol, uint32_t remote_ip,
         rx_dispatch_fixed(out, false);
 }
 
-void rx_dispatch_classify(const struct rte_mbuf *mbuf, uint16_t rx_queue,
+void rx_dispatch_classify(struct rte_mbuf *mbuf, uint16_t rx_queue,
                           struct rx_dispatch_result *out) {
         const struct rte_ether_hdr *eth;
         const struct rte_ipv4_hdr *ip;
@@ -586,6 +591,27 @@ void rx_dispatch_classify(const struct rte_mbuf *mbuf, uint16_t rx_queue,
                         return;
                 }
                 udp = (const struct rte_udp_hdr *)l4;
+                struct nsock_handle handle;
+                if (mbuf->dynfield1[2] == RX_DISPATCH_UDP_GENERATION_TAG) {
+                        if (rx_dispatch_apply_owner(
+                                rx_dispatch_worker_index(mbuf->dynfield1[5]),
+                                out))
+                                return;
+                }
+                if (socket_bind_udp_shared &&
+                    socket_bind_udp_shared(udp->dst_port) &&
+                    socket_bind_udp_select(ip->dst_addr, udp->dst_port,
+                                           &handle)) {
+                        struct rte_mbuf *tagged = mbuf;
+                        tagged->dynfield1[2] = RX_DISPATCH_UDP_GENERATION_TAG;
+                        tagged->dynfield1[3] = handle.id;
+                        tagged->dynfield1[4] = handle.generation;
+                        tagged->dynfield1[5] = handle.owner_lcore;
+                        if (rx_dispatch_apply_owner(
+                                rx_dispatch_worker_index(handle.owner_lcore),
+                                out))
+                                return;
+                }
                 owner = rx_dispatch_lookup_endpoint(IPPROTO_UDP, ip->dst_addr,
                                                     udp->dst_port);
                 if (owner < 0 && ip->dst_addr != INADDR_ANY)

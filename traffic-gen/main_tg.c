@@ -1227,6 +1227,7 @@ int main(int argc, char *argv[]) {
                                         g_dataplane.main.rx_burst_max = nb_rx;
                         }
 
+                        for (unsigned i = 0; i < nb_rx; i++) rx[i]->dynfield1[2] = 0;
                         if (nb_rx != 0)
                                 tg_dispatch_rx_burst(workers, worker_count, mp,
                                                      &reassembly, rx_queue, rx,

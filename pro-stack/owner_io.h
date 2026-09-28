@@ -24,6 +24,7 @@ enum owner_io_events {
         OWNER_IO_EV_CONNECTED = 1u << 2,
         OWNER_IO_EV_ERROR = 1u << 3,
         OWNER_IO_EV_HUP = 1u << 4,
+        OWNER_IO_EV_ACCEPT = 1u << 5,
 };
 
 /** Invoked on the owner worker after owner-local socket destruction. */

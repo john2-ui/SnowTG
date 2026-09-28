@@ -16,8 +16,14 @@
 #include "rx_dispatch.h"
 #include "tcp.h"
 
+#include "nepoll.h"
+#include "socket_bind_internal.h"
+#include "socket_owner_internal.h"
+#include "socket_public_internal.h"
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <pthread.h>
 #include <rte_hash.h>
 #include <rte_jhash.h>
@@ -26,6 +32,7 @@
 #include <rte_random.h>
 #include <rte_ring.h>
 #include <rte_timer.h>
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <string.h>
@@ -46,7 +53,9 @@ struct tcp_conn_key {
 };
 
 struct fd_entry {
-        bool used;
+        bool used, nonblock;
+        uint64_t recv_timeout_ns, send_timeout_ns;
+        uint32_t readiness;
         struct nsock_handle handle;
 };
 
@@ -54,7 +63,6 @@ static struct fd_entry fd_table[NSOCK_FD_MAX];
 
 struct socket_registry {
         struct rte_hash *udp_bind_hash;
-        struct rte_hash *tcp_bind_hash;
         struct rte_hash *tcp_listener_hash;
         struct rte_hash *tcp_conn_hash;
         uint32_t capacity;
@@ -147,9 +155,6 @@ int socket_registry_init_owner_with_capacity(unsigned int lcore_id,
         registry->udp_bind_hash =
             registry_hash_create("nsock_udp_bind", lcore_id,
                                  sizeof(struct local_key), hash_capacity);
-        registry->tcp_bind_hash =
-            registry_hash_create("nsock_tcp_bind", lcore_id,
-                                 sizeof(struct local_key), hash_capacity);
         registry->tcp_listener_hash =
             registry_hash_create("nsock_tcp_listener", lcore_id,
                                  sizeof(struct local_key), hash_capacity);
@@ -158,13 +163,10 @@ int socket_registry_init_owner_with_capacity(unsigned int lcore_id,
                                  sizeof(struct tcp_conn_key), hash_capacity);
 
         if (registry->udp_bind_hash == NULL ||
-            registry->tcp_bind_hash == NULL ||
             registry->tcp_listener_hash == NULL ||
             registry->tcp_conn_hash == NULL) {
                 if (registry->udp_bind_hash != NULL)
                         rte_hash_free(registry->udp_bind_hash);
-                if (registry->tcp_bind_hash != NULL)
-                        rte_hash_free(registry->tcp_bind_hash);
                 if (registry->tcp_listener_hash != NULL)
                         rte_hash_free(registry->tcp_listener_hash);
                 if (registry->tcp_conn_hash != NULL)
@@ -200,8 +202,6 @@ void socket_registry_fini(void) {
                         rte_hash_free(registry->tcp_conn_hash);
                 if (registry->tcp_listener_hash != NULL)
                         rte_hash_free(registry->tcp_listener_hash);
-                if (registry->tcp_bind_hash != NULL)
-                        rte_hash_free(registry->tcp_bind_hash);
                 if (registry->udp_bind_hash != NULL)
                         rte_hash_free(registry->udp_bind_hash);
                 memset(registry, 0, sizeof(*registry));
@@ -248,7 +248,6 @@ int nsock_bind_local(struct nsock *sk, uint32_t ip, uint16_t port) {
                 hash = registry->udp_bind_hash;
                 flag = NSOCK_REG_UDP_BIND;
         } else if (sk->protocol == IPPROTO_TCP) {
-                hash = registry->tcp_bind_hash;
                 flag = NSOCK_REG_TCP_BIND;
         } else {
                 return -EINVAL;
@@ -259,26 +258,28 @@ int nsock_bind_local(struct nsock *sk, uint32_t ip, uint16_t port) {
         if (sk->registry_flags & flag)
                 return -EINVAL;
 
-        rc = hash_add_unique(hash, &new_key, sk);
+        rc = socket_bind_add(sk, ip, port);
         if (rc != 0)
                 return rc;
-        /*
-         * UDP lookup is local-port based, so publish its owner before making
-         * the bind visible. TCP active opens instead publish an exact 4-tuple
-         * below; a TCP local bind alone cannot determine connection ownership.
-         */
-        if (sk->protocol == IPPROTO_UDP) {
-                rc = rx_dispatch_register_endpoint(sk->protocol, ip, port,
-                                                   sk->owner_lcore);
-                if (rc != 0) {
-                        hash_del(hash, &new_key);
-                        return rc;
-                }
-        }
+        /* The process-wide binding index owns reservations. TCP connection and
+         * listener indexes remain owner-local; UDP routing copies a handle. */
         sk->local_ip = ip;
         sk->local_port = port;
         sk->registry_flags |= flag;
-
+        if (sk->protocol == IPPROTO_UDP && !sk->reuseaddr) {
+                rc = hash_add_unique(hash, &new_key, sk);
+                if (!rc)
+                        rc = rx_dispatch_register_endpoint(
+                            sk->protocol, ip, port, sk->owner_lcore);
+                if (rc) {
+                        hash_del(hash, &new_key);
+                        socket_bind_remove(sk);
+                        sk->registry_flags &= ~flag;
+                        sk->local_ip = 0;
+                        sk->local_port = 0;
+                        return rc;
+                }
+        }
         return 0;
 }
 
@@ -323,12 +324,7 @@ int nsock_udp_bind_ephemeral(struct nsock *sk, uint32_t ip) {
 }
 
 int nsock_tcp_local_taken(uint32_t ip, uint16_t port) {
-        struct socket_registry *registry = registry_current();
-        struct local_key key = local_key_make(ip, port);
-        void *data = NULL;
-
-        return registry != NULL &&
-               rte_hash_lookup_data(registry->tcp_bind_hash, &key, &data) >= 0;
+        return socket_bind_taken(IPPROTO_TCP, ip, port);
 }
 
 int nsock_tcp_listener_register(struct nsock *sk) {
@@ -342,12 +338,18 @@ int nsock_tcp_listener_register(struct nsock *sk) {
 
         key = local_key_make(sk->local_ip, sk->local_port);
 
-        rc = hash_add_unique(registry->tcp_listener_hash, &key, sk);
+        rc = socket_bind_listen(sk, true);
         if (rc != 0)
                 return rc;
+        rc = hash_add_unique(registry->tcp_listener_hash, &key, sk);
+        if (rc != 0) {
+                socket_bind_listen(sk, false);
+                return rc;
+        }
         rc = rx_dispatch_register_endpoint(IPPROTO_TCP, sk->local_ip,
                                            sk->local_port, sk->owner_lcore);
         if (rc != 0) {
+                socket_bind_listen(sk, false);
                 hash_del(registry->tcp_listener_hash, &key);
                 return rc;
         }
@@ -366,6 +368,7 @@ void nsock_tcp_listener_unregister(struct nsock *sk) {
         hash_del(registry->tcp_listener_hash, &key);
         rx_dispatch_unregister_endpoint(IPPROTO_TCP, sk->local_ip,
                                         sk->local_port, sk->owner_lcore);
+        socket_bind_listen(sk, false);
         sk->registry_flags &= (uint8_t)~NSOCK_REG_TCP_LISTENER;
 }
 
@@ -640,17 +643,36 @@ unsigned int nsock_tx_dirty_drain(struct rte_mempool *mp, unsigned int budget) {
  * releasing or reusing a socket slot can never leave an application with a
  * dereferenceable dangling pointer.
  */
-static int fd_publish(struct nsock_handle handle) {
+static int fd_publish(struct nsock_handle handle, bool nonblock,
+                      struct sock_cmd *result) {
         pthread_mutex_lock(&fd_table_lock);
         for (int i = 0; i < NSOCK_FD_MAX; i++) {
                 if (!fd_table[i].used) {
                         fd_table[i].used = true;
+                        fd_table[i].nonblock = nonblock;
                         fd_table[i].handle = handle;
                         pthread_mutex_unlock(&fd_table_lock);
+                        struct sock_cmd cmd = {.type = SOCK_CMD_PUBLISH,
+                                               .handle = handle};
+                        cmd.args.sockopt.integer = i;
+                        int previous_cancel;
+                        pthread_setcancelstate(PTHREAD_CANCEL_DISABLE,
+                                               &previous_cancel);
+                        if (socket_owner_call(&cmd)) {
+                                pthread_mutex_lock(&fd_table_lock);
+                                memset(&fd_table[i], 0, sizeof(fd_table[i]));
+                                pthread_mutex_unlock(&fd_table_lock);
+                                pthread_setcancelstate(previous_cancel, NULL);
+                                return -1;
+                        }
+                        result->published_fd_plus_one = i + 1;
+                        socket_owner_result_release(result, true);
+                        pthread_setcancelstate(previous_cancel, NULL);
                         return i;
                 }
         }
         pthread_mutex_unlock(&fd_table_lock);
+        errno = EMFILE;
         return -1;
 }
 
@@ -664,27 +686,6 @@ static int fd_resolve(int fd, struct nsock_handle *handle) {
                 return -EBADF;
         }
         *handle = fd_table[fd].handle;
-        pthread_mutex_unlock(&fd_table_lock);
-        return 0;
-}
-
-/*
- * Atomically remove an fd and return its former handle.  This is the
- * linearization point for close: after fd_take succeeds every later API call
- * observes EBADF, although the owner may retain the TCP TCB through FIN and
- * TIME_WAIT.
- */
-static int fd_take(int fd, struct nsock_handle *handle) {
-        if (fd < 0 || fd >= NSOCK_FD_MAX || handle == NULL)
-                return -EBADF;
-
-        pthread_mutex_lock(&fd_table_lock);
-        if (!fd_table[fd].used) {
-                pthread_mutex_unlock(&fd_table_lock);
-                return -EBADF;
-        }
-        *handle = fd_table[fd].handle;
-        memset(&fd_table[fd], 0, sizeof(fd_table[fd]));
         pthread_mutex_unlock(&fd_table_lock);
         return 0;
 }
@@ -823,6 +824,8 @@ struct nsock *nsock_alloc_mode(uint8_t protocol, enum nsock_io_mode io_mode) {
 
         sk->id = NSOCK_INVALID_ID;
         sk->protocol = protocol;
+        sk->nodelay = true;
+        sk->public_fd = -1;
         sk->ops = ops;
         sk->io_mode = io_mode;
 
@@ -837,9 +840,9 @@ struct nsock *nsock_alloc_mode(uint8_t protocol, enum nsock_io_mode io_mode) {
                 sk->recv_buf =
                     rte_ring_create(recv_name, RING_SIZE, rte_socket_id(),
                                     RING_F_SP_ENQ | RING_F_SC_DEQ);
-                sk->send_buf = rte_ring_create(send_name, RING_SIZE,
-                                               rte_socket_id(),
-                                               RING_F_SP_ENQ | RING_F_SC_DEQ);
+                sk->send_buf =
+                    rte_ring_create(send_name, RING_SIZE, rte_socket_id(),
+                                    RING_F_SP_ENQ | RING_F_SC_DEQ);
                 if (sk->recv_buf == NULL || sk->send_buf == NULL) {
                         LOG_ERROR("rte_ring_create(nsock) failed");
                         if (sk->recv_buf)
@@ -951,19 +954,15 @@ void nsock_free(struct nsock *sk) {
                     IPPROTO_TCP, sk->local_ip, sk->local_port, sk->owner_lcore);
         }
 
-        if (sk->registry_flags & NSOCK_REG_TCP_BIND) {
-                struct local_key key =
-                    local_key_make(sk->local_ip, sk->local_port);
-                hash_del(registry->tcp_bind_hash, &key);
-        }
-
-        if (sk->registry_flags & NSOCK_REG_UDP_BIND) {
+        if ((sk->registry_flags & NSOCK_REG_UDP_BIND) && !sk->reuseaddr) {
                 struct local_key key =
                     local_key_make(sk->local_ip, sk->local_port);
                 hash_del(registry->udp_bind_hash, &key);
                 rx_dispatch_unregister_endpoint(
                     IPPROTO_UDP, sk->local_ip, sk->local_port, sk->owner_lcore);
         }
+        if (sk->registry_flags & (NSOCK_REG_TCP_BIND | NSOCK_REG_UDP_BIND))
+                socket_bind_remove(sk);
 
         sk->registry_flags = 0;
         if (sk->recv_buf != NULL)
@@ -987,6 +986,12 @@ struct nsock *nsock_from_ip_port(uint32_t ip, uint16_t port, uint8_t protocol) {
         if (registry == NULL)
                 return NULL;
         if (protocol == IPPROTO_UDP) {
+                struct nsock_handle handle;
+                if (socket_bind_udp_shared(port)) {
+                        if (!socket_bind_udp_select(ip, port, &handle))
+                                return NULL;
+                        return socket_owner_resolve_local(handle);
+                }
                 hash = registry->udp_bind_hash;
         } else if (protocol == IPPROTO_TCP) {
                 hash = registry->tcp_listener_hash;
@@ -1031,56 +1036,158 @@ struct nsock *nsock_from_4tuple(uint32_t remote_ip, uint32_t local_ip,
         return sk;
 }
 
-int nsocket(__attribute__((unused)) int domain, int type,
-            __attribute__((unused)) int protocol) {
-        uint8_t proto;
-        switch (type) {
-        case SOCK_DGRAM:
-                proto = IPPROTO_UDP;
-                break;
-        case SOCK_STREAM:
-                proto = IPPROTO_TCP;
-                break;
-        default:
-                LOG_ERROR("nsocket: unsupported socket type %d", type);
+static void result_cleanup(void *arg) {
+        struct sock_cmd *descriptor = arg;
+        if (descriptor->published_fd_plus_one)
+                nclose(descriptor->published_fd_plus_one - 1);
+        socket_owner_result_release(descriptor, false);
+}
+
+int nsocket(int domain, int type, int protocol) {
+        if (domain != AF_INET) {
+                errno = EAFNOSUPPORT;
                 return -1;
         }
-
-        struct sock_cmd cmd;
-        memset(&cmd, 0, sizeof(cmd));
-        cmd.type = SOCK_CMD_CREATE;
+        if (type & ~(SOCK_NONBLOCK | 0xf)) {
+                errno = EINVAL;
+                return -1;
+        }
+        int base = type & ~SOCK_NONBLOCK;
+        int proto = base == SOCK_STREAM  ? IPPROTO_TCP
+                    : base == SOCK_DGRAM ? IPPROTO_UDP
+                                         : 0;
+        if (!proto) {
+                errno = EPROTOTYPE;
+                return -1;
+        }
+        if (protocol && protocol != proto) {
+                errno = EPROTONOSUPPORT;
+                return -1;
+        }
+        struct sock_cmd cmd = {.type = SOCK_CMD_CREATE};
         cmd.handle.id = NSOCK_INVALID_ID;
         cmd.args.create.type = type;
         cmd.args.create.protocol = proto;
-
-        if (socket_owner_call(&cmd) != 0) {
-                LOG_ERROR("nsocket: owner failed to create proto=%u", proto);
-                return -1;
-        }
-
-        int fd = fd_publish(cmd.result_handle);
-        if (fd < 0) {
-                LOG_ERROR("nsocket: fd table full");
-                /*
-                 * The object already exists on the owner.  Close it through
-                 * the same command path so no raw pointer or orphan escapes.
-                 */
-                struct sock_cmd close_cmd;
-                memset(&close_cmd, 0, sizeof(close_cmd));
-                close_cmd.type = SOCK_CMD_CLOSE;
-                close_cmd.handle = cmd.result_handle;
-                (void)socket_owner_call(&close_cmd);
-                errno = EMFILE;
-                return -1;
-        }
-
-        LOG_INFO("nsocket type=%d proto=%u fd=%d", type, proto, fd);
+        int fd = -1, error = 0;
+        pthread_cleanup_push(result_cleanup, &cmd);
+        if (socket_owner_call(&cmd) == 0) {
+                fd = fd_publish(cmd.result_handle, (type & SOCK_NONBLOCK) != 0,
+                                &cmd);
+                if (fd < 0)
+                        error = errno;
+                socket_owner_result_release(&cmd, fd >= 0);
+        } else
+                error = errno;
+        pthread_cleanup_pop(0);
+        if (fd < 0)
+                errno = error;
         return fd;
+}
+
+static bool handle_equal(struct nsock_handle a, struct nsock_handle b) {
+        return a.id == b.id && a.generation == b.generation &&
+               a.owner_lcore == b.owner_lcore && a.protocol == b.protocol;
+}
+
+int socket_public_snapshot(int fd, struct nsock_handle *handle,
+                           uint32_t *events) {
+        if (fd < 0 || fd >= NSOCK_FD_MAX)
+                return -1;
+        pthread_mutex_lock(&fd_table_lock);
+        int rc = fd_table[fd].used ? 0 : -1;
+        if (!rc) {
+                *handle = fd_table[fd].handle;
+                *events = fd_table[fd].readiness;
+        }
+        pthread_mutex_unlock(&fd_table_lock);
+        return rc;
+}
+
+void socket_public_refresh(struct nsock *sk) {
+        if (!sk || sk->public_fd < 0)
+                return;
+        uint32_t mask = 0;
+        if (sk->protocol == IPPROTO_TCP) {
+                if (sk->u.tcp.status == TCP_STATUS_LISTEN) {
+                        if (sk->u.tcp.accept_queue &&
+                            !rte_ring_empty(sk->u.tcp.accept_queue))
+                                mask |= NEPOLL_READ | NEPOLL_ACCEPT;
+                } else {
+                        if (sk->u.tcp.rx_current || nsock_tcp_rx_count(sk) ||
+                            sk->u.tcp.peer_eof)
+                                mask |= NEPOLL_READ;
+                        if (sk->u.tcp.status == TCP_STATUS_ESTABLISHED ||
+                            sk->u.tcp.status == TCP_STATUS_CLOSE_WAIT) {
+                                mask |= NEPOLL_CONNECTED;
+                                if (tcp_app_snd_space(sk))
+                                        mask |= NEPOLL_WRITE;
+                        }
+                        if (sk->u.tcp.peer_eof || sk->terminal_error)
+                                mask |= NEPOLL_HUP | NEPOLL_READ;
+                }
+        } else {
+                if (sk->u.udp.rx_current || sk->u.udp.rx_queue_count ||
+                    (sk->recv_buf && !rte_ring_empty(sk->recv_buf)))
+                        mask |= NEPOLL_READ;
+                if (!sk->send_buf || !rte_ring_full(sk->send_buf))
+                        mask |= NEPOLL_WRITE;
+        }
+        if (sk->pending_error)
+                mask |= NEPOLL_ERROR;
+        if (sk->app_closed)
+                mask = NEPOLL_HUP;
+        pthread_mutex_lock(&fd_table_lock);
+        struct fd_entry *entry = &fd_table[sk->public_fd];
+        bool changed = entry->used &&
+                       handle_equal(entry->handle, socket_owner_handle(sk)) &&
+                       entry->readiness != mask;
+        if (entry->used &&
+            handle_equal(entry->handle, socket_owner_handle(sk))) {
+                entry->readiness = mask;
+                entry->nonblock = sk->nonblock;
+                entry->recv_timeout_ns = sk->recv_timeout_ns;
+                entry->send_timeout_ns = sk->send_timeout_ns;
+        }
+        pthread_mutex_unlock(&fd_table_lock);
+        if (changed)
+                socket_public_notify();
+}
+
+static int public_call(int fd, struct sock_cmd *cmd) {
+        pthread_mutex_lock(&fd_table_lock);
+        if (!fd_table[fd].used ||
+            !handle_equal(fd_table[fd].handle, cmd->handle)) {
+                pthread_mutex_unlock(&fd_table_lock);
+                errno = EBADF;
+                return -1;
+        }
+        cmd->nonblock = fd_table[fd].nonblock;
+        bool receive = cmd->type == SOCK_CMD_RECV ||
+                       cmd->type == SOCK_CMD_RECVFROM ||
+                       cmd->type == SOCK_CMD_ACCEPT;
+        if (cmd->type == SOCK_CMD_SEND || cmd->type == SOCK_CMD_RECV ||
+            cmd->type == SOCK_CMD_SENDTO || cmd->type == SOCK_CMD_RECVFROM) {
+                if (cmd->args.io.flags & ~MSG_DONTWAIT) {
+                        pthread_mutex_unlock(&fd_table_lock);
+                        errno = EOPNOTSUPP;
+                        return -1;
+                }
+                cmd->nonblock |= (cmd->args.io.flags & MSG_DONTWAIT) != 0;
+        }
+        if (!cmd->nonblock)
+                cmd->timeout_ns = receive ? fd_table[fd].recv_timeout_ns
+                                          : fd_table[fd].send_timeout_ns;
+        pthread_mutex_unlock(&fd_table_lock);
+        int rc = socket_owner_call(cmd);
+        if (rc && errno == ETIMEDOUT && cmd->type != SOCK_CMD_CONNECT)
+                errno = EAGAIN;
+        return rc;
 }
 
 int nbind(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
         struct nsock_handle handle;
-        if (addr == NULL || addrlen < sizeof(struct sockaddr_in)) {
+        if (addr == NULL || addrlen < sizeof(struct sockaddr_in) ||
+            addr->sa_family != AF_INET) {
                 errno = EINVAL;
                 return -1;
         }
@@ -1115,7 +1222,7 @@ ssize_t nsend(int sockfd, const void *buf, size_t len, int flags) {
         cmd.args.io.buf = (void *)buf;
         cmd.args.io.len = len;
         cmd.args.io.flags = flags;
-        if (socket_owner_call(&cmd) != 0)
+        if (public_call(sockfd, &cmd) != 0)
                 return -1;
         return cmd.result;
 }
@@ -1134,7 +1241,7 @@ ssize_t nrecv(int sockfd, void *buf, size_t len, int flags) {
         cmd.args.io.buf = buf;
         cmd.args.io.len = len;
         cmd.args.io.flags = flags;
-        if (socket_owner_call(&cmd) != 0)
+        if (public_call(sockfd, &cmd) != 0)
                 return -1;
         return cmd.result;
 }
@@ -1161,13 +1268,17 @@ ssize_t nsendto(int sockfd, const void *buf, size_t len, int flags,
         cmd.args.io.flags = flags;
         cmd.args.io.addrlen = addrlen;
         memcpy(&cmd.args.io.addr, dest_addr, sizeof(struct sockaddr_in));
-        if (socket_owner_call(&cmd) != 0)
+        if (public_call(sockfd, &cmd) != 0)
                 return -1;
         return cmd.result;
 }
 
 ssize_t nrecvfrom(int sockfd, void *buf, size_t len, int flags,
                   struct sockaddr *src_addr, socklen_t *addrlen) {
+        if (src_addr && !addrlen) {
+                errno = EINVAL;
+                return -1;
+        }
         struct nsock_handle handle;
         if ((buf == NULL && len != 0) || fd_resolve(sockfd, &handle) != 0) {
                 errno = buf == NULL && len != 0 ? EINVAL : EBADF;
@@ -1183,82 +1294,104 @@ ssize_t nrecvfrom(int sockfd, void *buf, size_t len, int flags,
         cmd.args.io.flags = flags;
         cmd.args.io.out_addr = src_addr;
         cmd.args.io.out_addrlen = addrlen;
-        if (socket_owner_call(&cmd) != 0)
+        if (public_call(sockfd, &cmd) != 0)
                 return -1;
         return cmd.result;
 }
 
 int nclose(int sockfd) {
         struct nsock_handle handle;
-        if (fd_take(sockfd, &handle) != 0) {
+        if (fd_resolve(sockfd, &handle)) {
                 errno = EBADF;
                 return -1;
         }
+        struct sock_cmd cmd = {.type = SOCK_CMD_CLOSE, .handle = handle};
+        int old_cancel;
+        pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &old_cancel);
+        int rc = socket_owner_call(&cmd);
+        int error = errno;
+        if (rc == 0 || error == EBADF || error == ENETDOWN) {
+                pthread_mutex_lock(&fd_table_lock);
+                if (fd_table[sockfd].used &&
+                    handle_equal(fd_table[sockfd].handle, handle))
+                        memset(&fd_table[sockfd], 0, sizeof(fd_table[sockfd]));
+                pthread_mutex_unlock(&fd_table_lock);
+                socket_public_notify();
+        }
+        pthread_setcancelstate(old_cancel, NULL);
+        errno = error;
+        return rc;
+}
 
-        struct sock_cmd cmd;
-        memset(&cmd, 0, sizeof(cmd));
-        cmd.type = SOCK_CMD_CLOSE;
-        cmd.handle = handle;
-        return socket_owner_call(&cmd);
+static socklen_t option_size(int level, int name) {
+        if (level == SOL_SOCKET) {
+                if (name == SO_LINGER)
+                        return sizeof(struct linger);
+                if (name == SO_RCVTIMEO || name == SO_SNDTIMEO)
+                        return sizeof(struct timeval);
+                if (name == SO_ERROR || name == SO_REUSEADDR)
+                        return sizeof(int);
+        }
+        if (level == IPPROTO_TCP && name == TCP_NODELAY)
+                return sizeof(int);
+        return 0;
 }
 
 int nsetsockopt(int sockfd, int level, int optname, const void *optval,
                 socklen_t optlen) {
-        struct nsock_handle handle;
-        struct linger value = {0};
-
-        if (optval == NULL) {
+        struct sock_cmd cmd = {.type = SOCK_CMD_SETSOCKOPT};
+        socklen_t size = option_size(level, optname);
+        if (!size || (level == SOL_SOCKET && optname == SO_ERROR)) {
+                errno = ENOPROTOOPT;
+                return -1;
+        }
+        if (!optval || optlen != size) {
                 errno = EINVAL;
                 return -1;
         }
-        if (level == SOL_SOCKET && optname == SO_LINGER) {
-                if (optlen != sizeof(value)) {
-                        errno = EINVAL;
-                        return -1;
-                }
-                memcpy(&value, optval, sizeof(value));
-                if (value.l_linger < 0) {
-                        errno = EINVAL;
-                        return -1;
-                }
-        }
-        if (fd_resolve(sockfd, &handle) != 0) {
+        if (fd_resolve(sockfd, &cmd.handle)) {
                 errno = EBADF;
                 return -1;
         }
-
-        struct sock_cmd cmd;
-        memset(&cmd, 0, sizeof(cmd));
-        cmd.type = SOCK_CMD_SETSOCKOPT;
-        cmd.handle = handle;
         cmd.args.sockopt.level = level;
         cmd.args.sockopt.optname = optname;
-        cmd.args.sockopt.value = value;
-        return socket_owner_call(&cmd);
+        memcpy(&cmd.args.sockopt.value, optval, size);
+        if (level == SOL_SOCKET && optname == SO_LINGER &&
+            cmd.args.sockopt.value.l_linger < 0) {
+                errno = EINVAL;
+                return -1;
+        }
+        if (level == SOL_SOCKET &&
+            (optname == SO_RCVTIMEO || optname == SO_SNDTIMEO)) {
+                struct timeval tv = cmd.args.sockopt.time;
+                if (tv.tv_sec < 0 || tv.tv_usec < 0 || tv.tv_usec >= 1000000 ||
+                    (uint64_t)tv.tv_sec >
+                        (UINT64_MAX - 999999000ULL) / 1000000000ULL) {
+                        errno = EINVAL;
+                        return -1;
+                }
+        }
+        if (socket_owner_call(&cmd))
+                return -1;
+        return 0;
 }
 
 int ngetsockopt(int sockfd, int level, int optname, void *optval,
                 socklen_t *optlen) {
-        struct nsock_handle handle;
-
-        if (optval == NULL || optlen == NULL) {
+        struct sock_cmd cmd = {.type = SOCK_CMD_GETSOCKOPT};
+        socklen_t size = option_size(level, optname);
+        if (!size) {
+                errno = ENOPROTOOPT;
+                return -1;
+        }
+        if (!optval || !optlen || *optlen < size) {
                 errno = EINVAL;
                 return -1;
         }
-        if (level == SOL_SOCKET && optname == SO_LINGER &&
-            *optlen < sizeof(struct linger)) {
-                errno = EINVAL;
-                return -1;
-        }
-        if (fd_resolve(sockfd, &handle) != 0) {
+        if (fd_resolve(sockfd, &cmd.handle)) {
                 errno = EBADF;
                 return -1;
         }
-
-        struct sock_cmd cmd;
-        memset(&cmd, 0, sizeof(cmd));
-        cmd.type = SOCK_CMD_GETSOCKOPT;
-        cmd.handle = handle;
         cmd.args.sockopt.level = level;
         cmd.args.sockopt.optname = optname;
         cmd.args.sockopt.out_value = optval;
@@ -1266,9 +1399,36 @@ int ngetsockopt(int sockfd, int level, int optname, void *optval,
         return socket_owner_call(&cmd);
 }
 
+int nfcntl(int sockfd, int command, ...) {
+        struct sock_cmd cmd = {.type = SOCK_CMD_FLAGS};
+        if (command != F_GETFL && command != F_SETFL) {
+                errno = EINVAL;
+                return -1;
+        }
+        if (fd_resolve(sockfd, &cmd.handle)) {
+                errno = EBADF;
+                return -1;
+        }
+        cmd.args.sockopt.optname = command;
+        if (command == F_SETFL) {
+                va_list args;
+                va_start(args, command);
+                cmd.args.sockopt.integer = va_arg(args, int);
+                va_end(args);
+                if (cmd.args.sockopt.integer & ~(O_NONBLOCK | O_RDWR)) {
+                        errno = EINVAL;
+                        return -1;
+                }
+        }
+        if (socket_owner_call(&cmd))
+                return -1;
+        return command == F_GETFL ? (int)cmd.result | O_RDWR : 0;
+}
+
 int nconnect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
         struct nsock_handle handle;
-        if (addr == NULL || addrlen < sizeof(struct sockaddr_in)) {
+        if (addr == NULL || addrlen < sizeof(struct sockaddr_in) ||
+            addr->sa_family != AF_INET) {
                 errno = EINVAL;
                 return -1;
         }
@@ -1283,7 +1443,7 @@ int nconnect(int sockfd, const struct sockaddr *addr, socklen_t addrlen) {
         cmd.handle = handle;
         cmd.args.address.addrlen = addrlen;
         memcpy(&cmd.args.address.addr, addr, sizeof(struct sockaddr_in));
-        return socket_owner_call(&cmd);
+        return public_call(sockfd, &cmd);
 }
 
 int nlisten(int sockfd, int backlog) {
@@ -1302,6 +1462,14 @@ int nlisten(int sockfd, int backlog) {
 }
 
 int naccept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
+        return naccept4(sockfd, addr, addrlen, 0);
+}
+
+int naccept4(int sockfd, struct sockaddr *addr, socklen_t *addrlen, int flags) {
+        if ((flags & ~SOCK_NONBLOCK) || (addr && !addrlen)) {
+                errno = EINVAL;
+                return -1;
+        }
         struct nsock_handle handle;
         if (fd_resolve(sockfd, &handle) != 0) {
                 errno = EBADF;
@@ -1311,22 +1479,22 @@ int naccept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
         struct sock_cmd cmd;
         memset(&cmd, 0, sizeof(cmd));
         cmd.type = SOCK_CMD_ACCEPT;
+        cmd.args.address.flags = flags;
         cmd.handle = handle;
         cmd.args.address.out_addr = addr;
         cmd.args.address.out_addrlen = addrlen;
-        if (socket_owner_call(&cmd) != 0)
-                return -1;
-
-        int child_fd = fd_publish(cmd.result_handle);
-        if (child_fd >= 0)
-                return child_fd;
-
-        /* fd exhaustion must not orphan the accepted owner-side child. */
-        struct sock_cmd close_cmd;
-        memset(&close_cmd, 0, sizeof(close_cmd));
-        close_cmd.type = SOCK_CMD_CLOSE;
-        close_cmd.handle = cmd.result_handle;
-        (void)socket_owner_call(&close_cmd);
-        errno = EMFILE;
-        return -1;
+        int child_fd = -1, error = 0;
+        pthread_cleanup_push(result_cleanup, &cmd);
+        if (public_call(sockfd, &cmd) == 0) {
+                child_fd = fd_publish(cmd.result_handle,
+                                      (flags & SOCK_NONBLOCK) != 0, &cmd);
+                if (child_fd < 0)
+                        error = errno;
+                socket_owner_result_release(&cmd, child_fd >= 0);
+        } else
+                error = errno;
+        pthread_cleanup_pop(0);
+        if (child_fd < 0)
+                errno = error;
+        return child_fd;
 }

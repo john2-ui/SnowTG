@@ -11,11 +11,14 @@
 #include <rte_lcore.h>
 #include <string.h>
 
+/* Owner-only listener entry point; public applications use nlisten. */
+extern int tcp_listen(struct nsock *sk, int backlog);
+
 static struct rte_mempool *mp;
 static struct rte_ring *out;
 
-static void receive(struct nsock *sk, uint32_t seq, uint8_t flags,
-                    const char *data) {
+static void receive_flags(struct nsock *sk, uint32_t seq, uint8_t flags,
+                          const char *data) {
         size_t len = strlen(data);
         struct rte_mbuf *m = rte_pktmbuf_alloc(mp);
         assert(m != NULL);
@@ -36,13 +39,19 @@ static void receive(struct nsock *sk, uint32_t seq, uint8_t flags,
         tcp->dst_port = sk->local_port;
         tcp->sent_seq = rte_cpu_to_be_32(seq);
         tcp->recv_ack = rte_cpu_to_be_32(sk->u.tcp.sent_seq +
-            ((flags & RTE_TCP_SYN_FLAG) != 0));
+            (((flags & RTE_TCP_SYN_FLAG) != 0) ||
+             sk->u.tcp.status == TCP_STATUS_SYN_RECV));
         tcp->data_off = 5 << 4;
-        tcp->tcp_flags = flags | RTE_TCP_ACK_FLAG;
+        tcp->tcp_flags = flags;
         tcp->rx_win = rte_cpu_to_be_16(65535);
         memcpy(tcp + 1, data, len);
         tcp->cksum = rte_ipv4_udptcp_cksum(ip, tcp);
         assert(tcp_ingress(m) == 0);
+}
+
+static void receive(struct nsock *sk, uint32_t seq, uint8_t flags,
+                    const char *data) {
+        receive_flags(sk, seq, flags | RTE_TCP_ACK_FLAG, data);
 }
 
 static void check_packet(uint32_t ack, size_t payload, bool fin) {
@@ -135,6 +144,97 @@ int main(int argc, char **argv) {
                 check_packet(1006, mode == 1 || mode == 4 ? 7 : 0, mode == 5);
                 cleanup(sk, handle);
         }
+        /* Nagle holds a second short write until ACK; NODELAY reopening
+         * releases it immediately. The first write never waits for an ACK. */
+        struct nsock_handle nagle_handle;
+        struct nsock *nagle = new_stream(&nagle_handle, 40);
+        receive(nagle, 1000, 0, ""); /* learn the peer MAC */
+        nagle->nodelay = false;
+        assert(owner_io_send(nagle_handle, "a", 1) == 1);
+        assert(tcp_tx_flush(nagle, mp) == SOCK_TX_FLUSH_IDLE);
+        check_packet(1000, 1, false);
+        assert(owner_io_send(nagle_handle, "b", 1) == 1);
+        assert(tcp_tx_flush(nagle, mp) == SOCK_TX_FLUSH_IDLE);
+        assert(rte_ring_empty(out));
+        receive(nagle, 1000, 0, ""); /* ACK all bytes actually sent */
+        assert(tcp_tx_flush(nagle, mp) == SOCK_TX_FLUSH_IDLE);
+        check_packet(1000, 1, false);
+        assert(owner_io_send(nagle_handle, "c", 1) == 1);
+        assert(tcp_tx_flush(nagle, mp) == SOCK_TX_FLUSH_IDLE);
+        assert(rte_ring_empty(out));
+        nagle->nodelay = true;
+        assert(tcp_tx_flush(nagle, mp) == SOCK_TX_FLUSH_IDLE);
+        check_packet(1000, 1, false);
+        /* A payload spanning multiple sndbuf chunks must make progress
+         * through successive ACKs without duplicating or losing a suffix. */
+        receive(nagle, 1000, 0, "");
+        nagle->nodelay = false;
+        char across_chunks[5000];
+        memset(across_chunks, 'z', sizeof(across_chunks));
+        assert(owner_io_send(nagle_handle, across_chunks, sizeof(across_chunks)) == sizeof(across_chunks));
+        size_t total_payload = 0;
+        for (unsigned round = 0; total_payload < sizeof(across_chunks) && round < 16; round++) {
+                assert(tcp_tx_flush(nagle, mp) == SOCK_TX_FLUSH_IDLE);
+                struct rte_mbuf *packet;
+                while (rte_ring_sc_dequeue(out, (void **)&packet) == 0) {
+                        struct rte_ipv4_hdr *ip = rte_pktmbuf_mtod_offset(packet, struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
+                        struct rte_tcp_hdr *tcp = (void *)(ip + 1);
+                        size_t len = rte_be_to_cpu_16(ip->total_length) - sizeof(*ip) - (tcp->data_off >> 4) * 4;
+                        unsigned char *data = (void *)((char *)tcp + (tcp->data_off >> 4) * 4);
+                        for (size_t j = 0; j < len; j++) assert(data[j] == 'z');
+                        total_payload += len;
+                        rte_pktmbuf_free(packet);
+                }
+                receive(nagle, 1000, 0, "");
+        }
+        assert(total_payload == sizeof(across_chunks));
+        cleanup(nagle, nagle_handle);
+
+        /* REUSEADDR permits a bind beside TIME_WAIT, never reuse of the old
+         * four-tuple. The owner and global flow indexes both retain that guard. */
+        struct nsock_handle old_handle, replacement;
+        struct nsock *old = new_stream(&old_handle, 41);
+        old->reuseaddr = true;
+        assert(nsock_bind_local(old, old->local_ip, old->local_port) == 0);
+        old->u.tcp.status = TCP_STATUS_TIME_WAIT;
+        assert(owner_io_socket_create_local(IPPROTO_TCP, &replacement) == 0);
+        struct nsock *fresh = socket_owner_resolve_local(replacement);
+        fresh->reuseaddr = true;
+        assert(nsock_bind_local(fresh, old->local_ip, old->local_port) == 0);
+        fresh->u.tcp.remote_ip = old->u.tcp.remote_ip;
+        fresh->u.tcp.remote_port = old->u.tcp.remote_port;
+        assert(nsock_tcp_conn_register(fresh) == -EADDRINUSE);
+        assert(owner_io_close(replacement) == 0);
+        cleanup(old, old_handle);
+
+        /* A wildcard listener's passive child owns the SYN destination,
+         * otherwise the final ACK misses its four-tuple and accept stalls. */
+        struct nsock_handle listening;
+        assert(owner_io_socket_create_local(IPPROTO_TCP, &listening) == 0);
+        struct nsock *listener = socket_owner_resolve_local(listening);
+        assert(nsock_bind_local(listener, 0, rte_cpu_to_be_16(21988)) == 0);
+        assert(tcp_listen(listener, 4) == 0);
+        struct nsock tuple = {0};
+        tuple.local_ip = g_net.local_ip;
+        tuple.local_port = listener->local_port;
+        tuple.u.tcp.remote_ip = rte_cpu_to_be_32(0xc0000202);
+        tuple.u.tcp.remote_port = rte_cpu_to_be_16(30001);
+        receive_flags(&tuple, 2000, RTE_TCP_SYN_FLAG, "");
+        struct nsock *child = tcp_stream_search(tuple.u.tcp.remote_ip,
+            tuple.local_ip, tuple.u.tcp.remote_port, tuple.local_port);
+        assert(child != NULL && child->local_ip == g_net.local_ip);
+        assert(child->u.tcp.status == TCP_STATUS_SYN_RECV);
+        assert(tcp_tx_flush(child, mp) == SOCK_TX_FLUSH_IDLE);
+        check_packet(2001, 0, false);
+        receive(child, 2001, 0, "ping");
+        assert(child->u.tcp.status == TCP_STATUS_ESTABLISHED);
+        assert(rte_ring_count(listener->u.tcp.accept_queue) == 1);
+        /* Closing the listener also reclaims its unaccepted child. */
+        assert(owner_io_close(listening) == 0);
+        struct rte_mbuf *leftover;
+        while (rte_ring_sc_dequeue(out, (void **)&leftover) == 0)
+                rte_pktmbuf_free(leftover);
+
         /* A final handshake ACK shares the first request, or leaves alone
          * this turn if the application has nothing to send. */
         for (unsigned int data = 0; data < 2; data++) {
