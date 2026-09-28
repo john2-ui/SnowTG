@@ -1120,13 +1120,15 @@ int main(int argc, char *argv[]) {
                 tg_reactor_init(&worker->reactor, tg_shard_tick, tg_on_event,
                                 &worker->shard);
                 worker->shard.reactor = &worker->reactor;
+                uint64_t timer_capacity = (uint64_t)socket_id_capacity + 1U +
+                    worker->shard.flow_pool.capacity +
+                    (has_workflows ? 2ULL * worker->shard.plan.max_concurrency : 0);
+                if (timer_capacity > UINT32_MAX)
+                        rte_exit(EXIT_FAILURE, "worker timer capacity overflow\n");
                 if (stack_runtime_worker_init(
                         &worker->runtime, worker->lcore_id,
                         worker->flow_queue_id,
-                        socket_id_capacity + 1U +
-                            (has_workflows
-                                 ? 2U * worker->shard.plan.max_concurrency
-                                 : 0U),
+                        (uint32_t)timer_capacity,
                         mp, worker->ring, tg_reactor_run,
                         &worker->reactor) != 0)
                         rte_exit(EXIT_FAILURE,

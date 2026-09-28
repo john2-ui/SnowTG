@@ -9,7 +9,7 @@ import tempfile
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'traffic-gen'))
-from snowtg import scenario, transaction, http_step, think, branch, check, ref, assertion
+from snowtg import scenario, transaction, http_step, dns_step, think, branch, check, ref, assertion
 # Use two owners with net_null and no huge pages: no NIC binding or peer is needed.
 # The combined 20/20 branch split checks that each owner does not restart dataset
 # selection at its own successful-admission counter.
@@ -60,3 +60,23 @@ with tempfile.TemporaryDirectory() as tmp:
     assert sum(s['start_failed'] for s in r['steps'])==6
     assert r['summary']['request_success_rps']==0
     print('PASS: missing variables and illegal/control headers fail before socket creation')
+
+    # net_null never returns DNS packets. A step deadline must replace the
+    # Flow's five-second default; an earlier business deadline must also win.
+    for name, overall, step in [('step-timeout',1000,20), ('overall-timeout',20,1000)]:
+        timeout_plan=scenario(name,duration=1,cps=4,concurrency=4,
+            classes=[transaction('business',timeout_ms=overall,steps=[
+                dns_step('resolve','198.18.0.2','snowtg.test',timeout_ms=step)])],
+            assertions=[assertion('error_rate','==',1),
+                assertion('latency_ms','<',100,quantile=.99,latency_metric='complete_failure'),
+                assertion('drained_live_sockets','==',0)])
+        path.write_text(json.dumps(timeout_plan))
+        cmd[cmd.index('--output')+1]=str(out/name)
+        done=subprocess.run(cmd,text=True,capture_output=True,timeout=30)
+        assert done.returncode==0,(name,done.stdout,done.stderr)
+        r=json.loads((out/name/'result.json').read_text())
+        assert r['summary']['failed']==4 and r['summary']['start_failed']==0
+        assert r['error_reasons']['error_response_timeout']==4
+        assert sum(r['error_reasons'].values())==4
+        assert r['summary']['drained_live_sockets']==0
+        print('PASS:',name,'four DNS waits expire within 100 ms and drain cleanly')

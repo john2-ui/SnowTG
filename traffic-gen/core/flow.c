@@ -55,11 +55,6 @@ int tg_flow_map_init_with_capacity(struct tg_flow_map *map,
 
         map->capacity = capacity;
         map->owner_lcore = owner_lcore;
-        uint64_t timer_hz = rte_get_timer_hz();
-        map->expire_interval_cycles = timer_hz / 1000U +
-                                       (timer_hz % 1000U != 0);
-        if (map->expire_interval_cycles == 0)
-                map->expire_interval_cycles = 1;
         return 0;
 }
 
@@ -78,15 +73,58 @@ void tg_flow_map_fini(struct tg_flow_map *map) {
         memset(map, 0, sizeof(*map));
 }
 
+/* Remove both scheduled and already delivered expiration before storage reuse. */
+static void tg_flow_timeout_unqueue(struct tg_flow *flow) {
+        if (!flow->expire_queued)
+                return;
+        if (flow->expire_prev != NULL)
+                flow->expire_prev->expire_next = flow->expire_next;
+        else
+                flow->map->expired_head = flow->expire_next;
+        if (flow->expire_next != NULL)
+                flow->expire_next->expire_prev = flow->expire_prev;
+        flow->expire_prev = flow->expire_next = NULL;
+        flow->expire_queued = false;
+}
+
+static void tg_flow_timeout_cancel(struct tg_flow *flow) {
+        if (owner_timer_is_armed(&flow->timer))
+                (void)owner_timer_cancel(&flow->timer);
+        tg_flow_timeout_unqueue(flow);
+}
+
+static void tg_flow_timeout_cb(struct owner_timer *timer, void *arg,
+                               uint64_t now_cycles) {
+        struct tg_flow *flow = arg;
+        (void)timer;
+        (void)now_cycles;
+        if (!flow->mapped || flow->expire_queued)
+                return;
+        flow->expire_next = flow->map->expired_head;
+        if (flow->expire_next != NULL)
+                flow->expire_next->expire_prev = flow;
+        flow->map->expired_head = flow;
+        flow->expire_queued = true;
+}
+
+static int tg_flow_timeout_arm(struct tg_flow *flow, uint64_t deadline) {
+        int rc = owner_timer_arm_at(&flow->timer, deadline);
+        if (rc == 0)
+                tg_flow_timeout_unqueue(flow);
+        return rc;
+}
+
 /** @copydoc tg_flow_reset */
 void tg_flow_reset(struct tg_flow *flow) {
         if (flow == NULL)
                 return;
 
+        tg_flow_timeout_cancel(flow);
         tg_txn_reset(&flow->txn);
         memset(flow, 0, sizeof(*flow));
         flow->handle.id = NSOCK_INVALID_ID;
         flow->state = TG_FLOW_NEW;
+        owner_timer_init(&flow->timer, tg_flow_timeout_cb, flow);
 }
 
 /** @copydoc tg_flow_map_insert */
@@ -106,6 +144,7 @@ int tg_flow_map_insert(struct tg_flow_map *map, struct tg_flow *flow,
         }
 
         flow->handle = handle;
+        flow->map = map;
         flow->mapped = true;
         map->by_socket_id[handle.id] = flow;
         return 0;
@@ -139,6 +178,8 @@ int tg_flow_map_remove(struct tg_flow_map *map, struct tg_flow *flow) {
                 return -1;
         }
 
+        tg_flow_timeout_cancel(flow);
+        flow->map = NULL;
         map->by_socket_id[flow->handle.id] = NULL;
         flow->mapped = false;
         flow->handle.id = NSOCK_INVALID_ID;
@@ -167,22 +208,10 @@ static void tg_flow_start_cleanup(struct tg_flow_map *map,
         errno = saved_errno;
 }
 
-/** @brief Converts the fixed UDP response timeout into owner timer cycles. */
-static uint64_t tg_flow_udp_deadline(uint64_t start_cycles) {
-        uint64_t timer_hz = rte_get_timer_hz();
-
-        if (timer_hz == 0)
-                return start_cycles;
-        return start_cycles + timer_hz * TG_FLOW_RESPONSE_TIMEOUT_MS / 1000U;
-}
-
-/** @brief Converts a millisecond timeout into owner timer cycles. */
+/** @brief Converts a millisecond timeout to a saturating absolute deadline. */
 static uint64_t tg_flow_deadline(uint64_t start_cycles, uint32_t timeout_ms) {
-        uint64_t timer_hz = rte_get_timer_hz();
-
-        if (timer_hz == 0)
-                return start_cycles;
-        return start_cycles + timer_hz * timeout_ms / 1000U;
+        uint64_t delay = owner_timer_ms_to_cycles(timeout_ms);
+        return delay > UINT64_MAX - start_cycles ? UINT64_MAX : start_cycles + delay;
 }
 
 static int tg_flow_send_pending(struct tg_flow *flow);
@@ -253,6 +282,10 @@ int tg_flow_start_tcp(
                 return -1;
         }
 
+        if (tg_flow_timeout_arm(flow, flow->deadline_cycles) != 0) {
+                tg_flow_start_cleanup(map, pool, flow, true);
+                return -1;
+        }
         flow->state = TG_FLOW_CONNECTING;
         if (owner_io_connect(flow->handle, peer, peer_len) == 0) {
                 flow->connected_cycles = rte_get_timer_cycles();
@@ -332,12 +365,17 @@ int tg_flow_start_udp(struct tg_flow_map *map, struct tg_flow_pool *pool,
         }
 
         memcpy(&flow->peer, peer_in, sizeof(flow->peer));
-        flow->deadline_cycles = tg_flow_udp_deadline(flow->start_cycles);
+        flow->deadline_cycles = tg_flow_deadline(
+            flow->start_cycles, TG_FLOW_RESPONSE_TIMEOUT_MS);
         if (tg_flow_map_insert(map, flow, handle) != 0) {
                 tg_flow_start_cleanup(map, pool, flow, true);
                 return -1;
         }
 
+        if (tg_flow_timeout_arm(flow, flow->deadline_cycles) != 0) {
+                tg_flow_start_cleanup(map, pool, flow, true);
+                return -1;
+        }
         flow->state = TG_FLOW_SENDING;
         sent = owner_io_sendto(handle, request, request_len,
                                (const struct sockaddr *)&flow->peer,
@@ -417,6 +455,8 @@ int tg_flow_rearm_tcp(struct tg_flow *flow, const struct tg_proto_ops *proto,
         flow->first_rx_cycles = 0;
         flow->deadline_cycles = tg_flow_deadline(
             flow->start_cycles, TG_FLOW_TCP_RESPONSE_TIMEOUT_MS);
+        if (tg_flow_timeout_arm(flow, flow->deadline_cycles) != 0)
+                return -1;
         flow->idle_since_cycles = 0;
         flow->response_prefix_len = 0;
         flow->completion_notified = false;
@@ -559,7 +599,9 @@ static void tg_flow_finish_transaction(struct tg_flow_map *map,
         flow->idle_since_cycles = rte_get_timer_cycles();
         flow->response_prefix_len = 0;
         flow->completion_notified = false;
-        if (tg_conn_pool_put_idle(flow->conn_pool, flow) != 0)
+        if (tg_flow_timeout_arm(flow, tg_flow_deadline(flow->idle_since_cycles,
+                                  TG_FLOW_TCP_IDLE_TIMEOUT_MS)) != 0 ||
+            tg_conn_pool_put_idle(flow->conn_pool, flow) != 0)
                 tg_flow_close_connection(map, pool, flow, false, result);
 }
 
@@ -818,15 +860,11 @@ void tg_flow_expire(struct tg_flow_map *map, struct tg_flow_pool *pool,
                     uint64_t now_cycles) {
         if (map == NULL || pool == NULL || map->by_socket_id == NULL)
                 return;
-        if (now_cycles < map->next_expire_cycles)
-                return;
-        /* Schedule from this scan, without catch-up scans after a busy turn. */
-        map->next_expire_cycles = now_cycles + map->expire_interval_cycles;
+        while (map->expired_head != NULL) {
+                struct tg_flow *flow = map->expired_head;
+                tg_flow_timeout_unqueue(flow);
 
-        for (uint32_t socket_id = 0; socket_id < map->capacity; socket_id++) {
-                struct tg_flow *flow = map->by_socket_id[socket_id];
-
-                if (flow == NULL || !flow->mapped)
+                if (!flow->mapped)
                         continue;
                 if (flow->handle.protocol == IPPROTO_UDP) {
                         if (flow->deadline_cycles == 0 ||

@@ -655,9 +655,18 @@ static int network(struct tg_business *b) {
         }
         if (s->kind == TG_STEP_HTTP)
                 strcpy(flow->reuse_host, b->http.host);
-        flow->deadline_cycles =
-            b->step_start +
-            (uint64_t)s->timeout_ms * e->scheduler->cycles_per_second / 1000;
+        uint64_t delay = owner_timer_ms_to_cycles(s->timeout_ms);
+        flow->deadline_cycles = delay > UINT64_MAX - b->step_start
+                                    ? UINT64_MAX : b->step_start + delay;
+        /* Step deadlines replace the Flow default, including on reuse. Merely
+         * changing the metadata no longer reschedules expiration. */
+        if (owner_timer_arm_at(&flow->timer, flow->deadline_cycles) != 0) {
+                int saved_errno = errno;
+                tg_flow_close_connection(e->map, e->flows, flow, false,
+                                         TG_FLOW_RESULT_IO_FAILURE);
+                errno = saved_errno;
+                return -1;
+        }
         b->handle = flow->handle;
         b->waiting = true;
         return 0;

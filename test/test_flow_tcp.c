@@ -61,6 +61,7 @@ static void finish(void *ctx, const struct tg_flow *flow,
 }
 
 struct fixture {
+        struct owner_timer_engine timers;
         struct tg_flow_map map;
         struct tg_flow_pool pool;
         struct tg_conn_pool connections;
@@ -70,6 +71,7 @@ struct fixture {
 };
 static void init(struct fixture *f) {
         memset(f, 0, sizeof(*f));
+        assert(owner_timer_engine_init(&f->timers, rte_lcore_id(), 8) == 0);
         input = NULL;
         recv_error = 0;
         eof = false;
@@ -91,12 +93,16 @@ static void init(struct fixture *f) {
         f->flow->state = TG_FLOW_RECEIVING;
         f->flow->requests_started = 1;
         f->flow->on_finish = finish;
+        f->flow->deadline_cycles = owner_timer_now() + owner_timer_ms_to_cycles(5000);
+        assert(owner_timer_arm_at(&f->flow->timer, f->flow->deadline_cycles) == 0);
 }
 static void fini(struct fixture *f) {
         if (f->flow->mapped)
                 tg_flow_close_connection(&f->map, &f->pool, f->flow, false,
                                            TG_FLOW_RESULT_SUCCESS);
         assert(f->pool.free_count == 1 && f->connections.connections == 0);
+        assert(f->timers.active == 0);
+        owner_timer_engine_fini(&f->timers);
         tg_conn_pool_fini(&f->connections);
         tg_flow_pool_fini(&f->pool);
         tg_flow_map_fini(&f->map);
@@ -109,6 +115,7 @@ static void receive(struct fixture *f, const char *bytes, bool end) {
 }
 int main(int argc, char **argv) {
         assert(rte_eal_init(argc, argv) >= 0);
+        assert(owner_timer_global_init() == 0);
         struct fixture f;
         init(&f);
         for (unsigned i = 0; i < 1000; i++) {
@@ -119,6 +126,30 @@ int main(int argc, char **argv) {
                 assert(tg_flow_rearm_tcp(f.flow, &tg_http_proto_ops, &f.http,
                                            request, sizeof(request)-1) == 0);
         }
+        fini(&f);
+
+        /* A queued expiry loses to this turn's ready response. Reuse must
+         * remove the queue membership and install the new transaction timer. */
+        init(&f);
+        assert(owner_timer_arm_at(&f.flow->timer, owner_timer_now()) == 0);
+        assert(owner_timer_poll(&f.timers) == 0);
+        assert(f.map.expired_head == f.flow);
+        receive(&f, response, false);
+        assert(f.map.expired_head == NULL);
+        assert(tg_conn_pool_take_idle(&f.connections, &f.cls) == f.flow);
+        assert(tg_flow_rearm_tcp(f.flow, &tg_http_proto_ops, &f.http,
+                                 request, sizeof(request)-1) == 0);
+        tg_flow_expire(&f.map, &f.pool, UINT64_MAX);
+        assert(completed == 1 && closed == 0);
+        fini(&f);
+
+        /* Idle expiry closes the socket without reporting a second result. */
+        init(&f);
+        receive(&f, response, false);
+        assert(owner_timer_arm_at(&f.flow->timer, owner_timer_now()) == 0);
+        assert(owner_timer_poll(&f.timers) == 0);
+        tg_flow_expire(&f.map, &f.pool, UINT64_MAX);
+        assert(completed == 1 && closed == 1);
         fini(&f);
 
         /* FIN can be visible to recv while HUP is still queued behind the
@@ -200,6 +231,8 @@ int main(int argc, char **argv) {
         f.http.connection_close = true;
         f.flow->deadline_cycles = rte_get_timer_cycles() + rte_get_timer_hz();
         receive(&f, response, false);
+        assert(owner_timer_arm_at(&f.flow->timer, owner_timer_now()) == 0);
+        assert(owner_timer_poll(&f.timers) == 0);
         tg_flow_expire(&f.map, &f.pool, f.flow->deadline_cycles);
         assert(closed == 1 && completed == 1);
         fini(&f);
@@ -233,12 +266,16 @@ int main(int argc, char **argv) {
         fini(&f);
         init(&f);
         f.flow->deadline_cycles = rte_get_timer_cycles();
+        assert(owner_timer_arm_at(&f.flow->timer, owner_timer_now()) == 0);
+        assert(owner_timer_poll(&f.timers) == 0);
         tg_flow_expire(&f.map, &f.pool, f.flow->deadline_cycles);
         assert(completed == 1 && last_reason == TG_ERROR_RESPONSE_TIMEOUT);
         fini(&f);
         init(&f);
         f.flow->state = TG_FLOW_CONNECTING;
         f.flow->deadline_cycles = rte_get_timer_cycles();
+        assert(owner_timer_arm_at(&f.flow->timer, owner_timer_now()) == 0);
+        assert(owner_timer_poll(&f.timers) == 0);
         tg_flow_expire(&f.map, &f.pool, f.flow->deadline_cycles);
         assert(completed == 1 && last_reason == TG_ERROR_CONNECT_TIMEOUT);
         fini(&f);

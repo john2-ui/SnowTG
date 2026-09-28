@@ -92,8 +92,7 @@ struct tg_flow_map {
         struct tg_flow **by_socket_id;
         uint32_t capacity;
         uint16_t owner_lcore;
-        uint64_t expire_interval_cycles; /**< Cached one-millisecond interval. */
-        uint64_t next_expire_cycles; /**< Earliest next full timeout scan. */
+        struct tg_flow *expired_head; /**< Owner-local queue of due flows. */
 };
 
 /**
@@ -104,6 +103,10 @@ struct tg_flow_map {
  * after their callback returns.
  */
 struct tg_flow {
+        struct owner_timer timer;
+        struct tg_flow_map *map;
+        struct tg_flow *expire_prev, *expire_next;
+        bool expire_queued;
         struct nsock_handle handle;
         enum tg_flow_state state;
         struct tg_txn txn;
@@ -258,9 +261,9 @@ void tg_flow_close_connection(struct tg_flow_map *map,
                               bool finish_transaction,
                               enum tg_flow_result result);
 
-/** Reclaims expired UDP/TCP flows, scanning at most once per millisecond.
- * The first call scans immediately. Detection may lag by one scan interval
- * plus worker scheduling delay; packet processing remains unthrottled.
+/** Consume this map's due queue after ready events. The owner timer engine
+ * must be polled first; no socket-map scan is performed. now_cycles is the
+ * current monotonic owner time, not a mechanism for advancing the scheduler.
  */
 void tg_flow_expire(struct tg_flow_map *map, struct tg_flow_pool *pool,
                     uint64_t now_cycles);

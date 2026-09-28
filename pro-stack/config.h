@@ -109,7 +109,7 @@
  * Actual cycle threshold is computed at runtime:
  *   rte_get_timer_hz() * TIMER_MANAGE_INTERVAL_MS / 1000
  */
-#define TIMER_MANAGE_INTERVAL_MS 10
+#define TIMER_MANAGE_INTERVAL_MS 1
 
 /**
  * Maximum application bytes retained per TCP stream before backpressure.

@@ -286,9 +286,9 @@ $(STATS_CSV_TEST): test_stats_csv.c ../traffic-gen/core/stats_csv.c \
 		test_stats_csv.c ../traffic-gen/core/stats_csv.c -o $@ $(DPDK_LIBS)
 
 $(CONN_POOL_TEST): test_conn_pool.c ../traffic-gen/core/conn_pool.c \
-		../traffic-gen/core/conn_pool.h ../traffic-gen/core/flow.h | \
+		../traffic-gen/core/conn_pool.h ../traffic-gen/core/flow.h Makefile | \
 		$(BUILD_DIR)
-	$(CC) $(TEST_CFLAGS) -I../pro-stack -I../traffic-gen/core \
+	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) -I../pro-stack -I../traffic-gen/core \
 		-I../traffic-gen/proto test_conn_pool.c \
 		../traffic-gen/core/conn_pool.c -o $@
 
@@ -325,8 +325,8 @@ $(BUILD_DIR)/test_scenario_scheduler.o: test_scenario_scheduler.c \
 		../traffic-gen/core/socket_capacity.h \
 		../traffic-gen/core/stats.h \
 		../traffic-gen/proto/http/http_client.h \
-		../traffic-gen/proto/dns/dns_client.h | $(BUILD_DIR)
-	$(CC) $(HTTP_CLIENT_CFLAGS) -c $< -o $@
+		../traffic-gen/proto/dns/dns_client.h Makefile | $(BUILD_DIR)
+	$(CC) $(HTTP_CLIENT_CFLAGS) $(DPDK_CFLAGS) -D_GNU_SOURCE -c $< -o $@
 
 $(BUILD_DIR)/tg_scenario.o: ../traffic-gen/core/scenario.c \
 		../traffic-gen/core/scenario.h ../traffic-gen/core/scenario_json.h \
@@ -509,3 +509,12 @@ $(BUILD_DIR)/test_tcp_echo: test_tcp_echo.c ../apps/tcp-echo/tcp_echo.c \
 		test_tcp_echo.c ../apps/tcp-echo/tcp_echo.c -o $@ \
 		-Wl,--gc-sections $(foreach api,$(TCP_ECHO_WRAPS),-Wl,--wrap=$(api)) \
 		$(DPDK_LIBS) $(SANITIZER_LDFLAGS)
+
+# Runtime workflow timers need the native executable; keep this integration
+# check explicit, like the existing net_null lcore-layout check.
+.PHONY: test-workflow-cli
+test-workflow-cli:
+	$(MAKE) -C ../traffic-gen BUILD_DIR=$(BUILD_DIR) \
+		STACK_BUILD_DIR=$(STACK_BUILD_DIR) SANITIZERS=$(SANITIZERS)
+	SNOWTG_TEST_BINARY=$(abspath ../traffic-gen/$(BUILD_DIR)/traffic-gen) \
+		python3 test_workflow_cli.py

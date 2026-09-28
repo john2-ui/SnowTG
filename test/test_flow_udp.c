@@ -515,7 +515,9 @@ int main(int argc, char **argv) {
         static const uint8_t response[] = {0xaa, 0xbb};
 
         assert(rte_eal_init(argc, argv) >= 0);
-        rte_timer_subsystem_init();
+        struct owner_timer_engine timers;
+        assert(owner_timer_global_init() == 0);
+        assert(owner_timer_engine_init(&timers, rte_lcore_id(), 64) == 0);
         assert(socket_registry_init_owner_with_capacity(rte_lcore_id(), 16) ==
                0);
         assert(socket_owner_init_with_capacity(rte_lcore_id(), 16) == 0);
@@ -586,8 +588,10 @@ int main(int argc, char **argv) {
         flow = start_udp_flow(&map, &pool, &peer, &finish);
         assert(flow != NULL);
         old_handle = flow->handle;
-        flow->deadline_cycles = 1;
-        tg_flow_expire(&map, &pool, 2);
+        flow->deadline_cycles = owner_timer_now();
+        assert(owner_timer_arm_at(&flow->timer, flow->deadline_cycles) == 0);
+        assert(owner_timer_poll(&timers) == 0);
+        tg_flow_expire(&map, &pool, owner_timer_now());
         assert(finish.calls == 3);
         assert(finish.result == TG_FLOW_RESULT_IO_FAILURE);
         assert(finish.reason == TG_ERROR_RESPONSE_TIMEOUT);
@@ -596,50 +600,50 @@ int main(int argc, char **argv) {
         flow = start_udp_flow(&map, &pool, &peer, &finish);
         assert(flow != NULL);
         assert(tg_flow_map_lookup(&map, old_handle) == NULL);
-        flow->deadline_cycles = 1;
-        tg_flow_expire(&map, &pool, 2);
-        assert(finish.calls == 3);
-        assert(only_flow(&map) == flow);
-
-        uint64_t scan_interval = rte_get_timer_hz() / 1000U +
-                                 (rte_get_timer_hz() % 1000U != 0);
-        assert(scan_interval > 1);
-        tg_flow_expire(&map, &pool, 2 + scan_interval - 1);
-        assert(finish.calls == 3);
-        assert(only_flow(&map) == flow);
-
-        /* A second map on this owner must not inherit the first map's gate. */
+        flow->deadline_cycles = owner_timer_now();
+        assert(owner_timer_arm_at(&flow->timer, flow->deadline_cycles) == 0);
         struct tg_flow_map other_map;
         struct finish_context other_finish = {0};
         assert(tg_flow_map_init_with_capacity(&other_map, rte_lcore_id(), 16) == 0);
-        struct tg_flow *other_flow =
-            start_udp_flow(&other_map, &pool, &peer, &other_finish);
+        struct tg_flow *other_flow = start_udp_flow(&other_map, &pool, &peer,
+                                                    &other_finish);
         assert(other_flow != NULL);
-        other_flow->deadline_cycles = 1;
-        tg_flow_expire(&other_map, &pool, 2);
-        assert(other_finish.calls == 1);
-        assert(other_finish.result == TG_FLOW_RESULT_IO_FAILURE);
-        assert(only_flow(&other_map) == NULL);
+        other_flow->deadline_cycles = owner_timer_now();
+        assert(owner_timer_arm_at(&other_flow->timer, other_flow->deadline_cycles) == 0);
+        assert(owner_timer_poll(&timers) == 0);
+        tg_flow_expire(&other_map, &pool, owner_timer_now());
+        assert(other_finish.calls == 1 && finish.calls == 3);
+        assert(other_map.expired_head == NULL && map.expired_head == flow);
         tg_flow_map_fini(&other_map);
+        tg_flow_expire(&map, &pool, owner_timer_now());
+        assert(finish.calls == 4 && only_flow(&map) == NULL);
 
-        tg_flow_expire(&map, &pool, 2 + scan_interval);
-        assert(finish.calls == 4);
-        assert(finish.result == TG_FLOW_RESULT_IO_FAILURE);
-        assert(only_flow(&map) == NULL);
-
-        /* Delayed turns scan once, and unexpired flows remain alive. */
-        uint64_t delayed_scan = 2 + 10 * scan_interval;
+        /* Early polling never queues an unexpired flow. Ready completion
+         * removes an already queued expiry before its storage is recycled. */
         flow = start_udp_flow(&map, &pool, &peer, &finish);
-        assert(flow != NULL);
-        flow->deadline_cycles = delayed_scan + 1;
-        tg_flow_expire(&map, &pool, delayed_scan);
-        tg_flow_expire(&map, &pool, delayed_scan + 1);
-        assert(finish.calls == 4);
-        assert(only_flow(&map) == flow);
-        tg_flow_expire(&map, &pool, delayed_scan + scan_interval);
-        assert(finish.calls == 5);
-        assert(only_flow(&map) == NULL);
+        assert(owner_timer_poll(&timers) == 0);
+        tg_flow_expire(&map, &pool, owner_timer_now());
+        assert(finish.calls == 4 && only_flow(&map) == flow);
+        assert(owner_timer_arm_at(&flow->timer, owner_timer_now()) == 0);
+        assert(owner_timer_poll(&timers) == 0);
+        enqueue_response(flow->handle, peer_ip, peer_port, response, sizeof(response));
+        tg_flow_on_event(&map, &pool, flow, OWNER_IO_EV_READ);
+        tg_flow_expire(&map, &pool, UINT64_MAX);
+        assert(finish.calls == 5 && finish.result == TG_FLOW_RESULT_SUCCESS);
+        assert(map.expired_head == NULL && timers.active == 0);
         assert(pool.free_count == pool.capacity);
+
+        /* Exhaustion must reject admission and fully undo mapping/socket/pool
+         * state, without reporting an unadmitted transaction as completed. */
+        uint32_t old_capacity = timers.capacity;
+        timers.capacity = 0;
+        assert(tg_flow_start_udp(&map, &pool, (const struct sockaddr *)&peer,
+            sizeof(peer), &test_proto, NULL, response, sizeof(response),
+            test_on_finish, &finish, NULL, NULL, NULL, NULL) == -1);
+        assert(errno == ENOSPC);
+        assert(pool.free_count == pool.capacity && only_flow(&map) == NULL);
+        assert(finish.calls == 5 && timers.active == 0);
+        timers.capacity = old_capacity;
 
         drain_output_ring();
         drain_ready_events();
@@ -660,6 +664,8 @@ int main(int argc, char **argv) {
         test_ring_udp_atomic_batch(local_ip, peer_ip, peer_port);
         drain_ready_events();
 
+        assert(timers.active == 0);
+        owner_timer_engine_fini(&timers);
         tg_flow_pool_fini(&pool);
         tg_flow_map_fini(&map);
         drain_output_ring();
