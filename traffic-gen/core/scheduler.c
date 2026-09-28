@@ -206,6 +206,8 @@ unsigned int tg_scheduler_tick(struct tg_scheduler *s, uint64_t now,
                 pending--;
         }
         s->token_numerator = pending * s->cycles_per_second;
+        if (pending && s->active >= s->plan->max_concurrency)
+                s->concurrency_blocked_turns++;
         return attempts;
 }
 

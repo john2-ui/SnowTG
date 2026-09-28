@@ -59,6 +59,7 @@ struct tg_stats_snapshot {
         /** Cumulative arrivals across phases; skipped includes backlog loss. */
         uint64_t arrivals_planned;
         uint64_t arrivals_skipped;
+        uint64_t concurrency_blocked_turns;
 
         /** Cumulative transaction counters. */
         uint64_t txns_started;

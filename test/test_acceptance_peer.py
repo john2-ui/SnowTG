@@ -86,4 +86,11 @@ with tempfile.TemporaryDirectory() as directory:
             except subprocess.TimeoutExpired:
                 peer.kill()
                 peer.wait()
+        if pressure:
+            rows = [json.loads(line) for line in (root / 'peer.log').read_text().splitlines() if line.startswith('{')]
+            for protocol in ('http', 'dns'):
+                completed = [r for r in rows if r['protocol'] == protocol and r.get('event') == 'complete']
+                assert any(r['mode'] == 'slow' and r['duration_ns'] >= 90_000_000 for r in completed)
+            assert len([r for r in rows if r.get('event') == 'arrival']) == 12
+            assert not any(r.get('event') == 'complete' and r['mode'] == 'drop' for r in rows)
 print('PASS: HTTP reset/truncate/malformed/503/close/delay and DNS timeout/error/malformed/delay')

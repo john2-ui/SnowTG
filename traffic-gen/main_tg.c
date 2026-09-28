@@ -50,12 +50,29 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 
 /** Last-resort bound after admissions and active transactions have stopped. */
 #define TG_DRAIN_TIMEOUT_SEC 120U
 
 /** Main-owned counters; never read or modified by workers. */
 static struct tg_dataplane_stats g_dataplane;
+
+/** Startup/shutdown only: bracket wall/monotonic reads with the native clock. */
+static void tg_clock_anchor(void) {
+        struct timespec wall, mono;
+        uint64_t before = rte_get_timer_cycles();
+        if (clock_gettime(CLOCK_REALTIME, &wall) || clock_gettime(CLOCK_MONOTONIC, &mono))
+                return;
+        uint64_t after = rte_get_timer_cycles();
+        fprintf(stderr, "clock_anchor cycles=%" PRIu64 " wall_time_ns=%" PRIu64
+                " monotonic_ns=%" PRIu64 " uncertainty_ns=%" PRIu64 "\n",
+                before + (after - before) / 2,
+                (uint64_t)wall.tv_sec * UINT64_C(1000000000) + (uint64_t)wall.tv_nsec,
+                (uint64_t)mono.tv_sec * UINT64_C(1000000000) + (uint64_t)mono.tv_nsec,
+                (uint64_t)((__uint128_t)(after - before) * UINT64_C(1000000000) /
+                           rte_get_timer_hz()) + 1);
+}
 
 /**
  * Per-packet-worker traffic-generator state.
@@ -212,6 +229,7 @@ static void tg_capture_stats_snapshot(struct tg_shard *shard,
         snapshot.load_phase_index = shard->scheduler.phase_index;
         snapshot.arrivals_planned = shard->scheduler.planned_total;
         snapshot.arrivals_skipped = shard->scheduler.skipped_total;
+        snapshot.concurrency_blocked_turns = shard->scheduler.concurrency_blocked_turns;
         snapshot.tcp_drain_residual = shard->tcp_drain_residual;
         snapshot.tcp_forced_cleanup = shard->tcp_forced_cleanup;
         snapshot.tcp_pool_objects_in_use =
@@ -1224,13 +1242,15 @@ int main(int argc, char *argv[]) {
 
         /* One epoch for all shards; launch skew must not shift phase windows. */
         uint64_t epoch = rte_get_timer_cycles() + rte_get_timer_hz() / 10;
+        tg_clock_anchor();
         if (g_dataplane.file != NULL) {
                 char device[RTE_ETH_NAME_MAX_LEN] = {0};
                 (void)rte_eth_dev_get_name_by_port(g_net.port_id, device);
                 fprintf(stderr, "run_metadata device=%s numa=%d epoch_cycles=%" PRIu64
-                        " timer_hz=%" PRIu64 " direct_rx=%u direct_tx=%u\n",
+                        " timer_hz=%" PRIu64 " dataplane_start_cycles=%" PRIu64
+                        " direct_rx=%u direct_tx=%u\n",
                         device, rte_eth_dev_socket_id(g_net.port_id), epoch,
-                        rte_get_timer_hz(), direct_rx, direct_tx);
+                        rte_get_timer_hz(), g_dataplane.start_cycles, direct_rx, direct_tx);
         }
         for (unsigned int index = 0; index < active_shards; index++)
                 tg_scheduler_start_at(&workers[index].shard.scheduler, epoch);
@@ -1390,5 +1410,6 @@ int main(int argc, char *argv[]) {
         socket_registry_fini();
         tg_plan_fini(&plan);
         free(workers);
+        tg_clock_anchor();
         return exit_status;
 }

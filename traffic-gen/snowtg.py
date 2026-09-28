@@ -225,7 +225,10 @@ def load_lua(path):
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv[:1] in (["compare"], ["report"]):
+    if argv[:1] == ["monitor"]:
+        from snowtg_monitor import main as monitor
+        return monitor(argv[1:])
+    if argv[:1] in (["compare"], ["report"], ["correlate"]):
         from snowtg_results import cli
         try:
             return cli(argv)
@@ -250,6 +253,7 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, help="new managed-run directory (CSV, result.json, report.html)")
     parser.add_argument("--baseline", type=Path, help="baseline result.json for the report")
     parser.add_argument("--timeout", type=float, help="managed run wall-clock limit in seconds")
+    parser.add_argument("--evidence", type=Path, help="cross-host evidence manifest (managed run)")
     parser.add_argument("--binary", type=Path,
                         default=Path(__file__).resolve().parent / "build/traffic-gen",
                         help="native executable (default: adjacent build/traffic-gen)")
@@ -259,8 +263,8 @@ def main(argv=None):
     options = parser.parse_args(argv)
     try:
         if capacity:
-            if options.emit_json:
-                raise ValueError("capacity does not accept --emit-json")
+            if options.emit_json or options.evidence:
+                raise ValueError("capacity does not accept --emit-json or --evidence")
             from snowtg_capacity import validate_options
             validate_options(options.minimum, options.maximum, options.precision,
                              options.repeats, options.max_capacity_drop_percent, options.timeout)
@@ -277,7 +281,7 @@ def main(argv=None):
         if expand_datasets(plan, path.parent):
             text = json.dumps(plan, ensure_ascii=False, allow_nan=False, indent=2) + "\n"
         if options.emit_json:
-            if managed or options.output or options.baseline or options.timeout is not None:
+            if managed or options.output or options.baseline or options.timeout is not None or options.evidence:
                 raise ValueError("--emit-json cannot be combined with managed-run options")
             if options.args:
                 raise ValueError("--emit-json does not accept runtime arguments")
@@ -294,12 +298,12 @@ def main(argv=None):
                 minimum=options.minimum, maximum=options.maximum, precision=options.precision,
                 repeats=options.repeats, timeout=options.timeout, baseline=options.baseline,
                 max_drop_percent=options.max_capacity_drop_percent)
-        if managed or options.output or options.baseline or options.timeout is not None or any(
+        if managed or options.output or options.baseline or options.timeout is not None or options.evidence or any(
                 key in plan for key in ("assertions", "purpose", "service", "dataset_sources")):
             # Managed mode waits for the native child and evaluates final CSVs;
             # scripts still execute only at startup, never in the packet path.
             from snowtg_results import run
-            return run(plan, options.binary, options.args, options.output, options.timeout, options.baseline)
+            return run(plan, options.binary, options.args, options.output, options.timeout, options.baseline, options.evidence)
         args = options.args
         if args[:1] == ["--"]:
             args = args[1:]

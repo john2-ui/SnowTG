@@ -78,7 +78,7 @@ int tg_stats_csv_open(struct tg_stats_csv *csv, const char *path,
 #define TG_ERROR_HEADER(symbol, name) ",error_" #name
                 TG_ERROR_REASONS(TG_ERROR_HEADER)
 #undef TG_ERROR_HEADER
-                ",resources_version,resources_complete,resource_forced") < 0)
+                ",concurrency_blocked_turns,resources_version,resources_complete,resource_forced") < 0)
                 goto fail;
         static const char *const names[] = {
 #define TG_RESOURCE_NAME(name) #name,
@@ -213,7 +213,8 @@ int tg_stats_csv_write(struct tg_stats_csv *csv,
 #undef TG_ERROR_VALUE
             );
         if (result >= 0)
-                result = fprintf(csv->file, ",%" PRIu64 ",%" PRIu64 ",%" PRIu64,
+                result = fprintf(csv->file, ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64,
+                    snapshot->concurrency_blocked_turns,
                     snapshot->resources.version, snapshot->resources.complete,
                     snapshot->resources.forced);
         for (unsigned i = 0; i < TG_RESOURCE_COUNT && result >= 0; i++) {

@@ -22,6 +22,7 @@ import signal
 import subprocess
 import time
 import uuid
+import snowtg_evidence
 
 # Version 2 adds step groups and explicit TPS/RPS units; the loader still accepts v1.
 SCHEMA = 2
@@ -511,6 +512,7 @@ def collect(result, output):
     result["workflow_memory"] = [dict(worker=int(w), reserved_bytes=int(n), capacity=int(c))
         for w,n,c in re.findall(r"workflow_memory worker=(\d+) bytes=(\d+) capacity=(\d+)", log)]
     result["environment"]["dataplane"] = meta
+    result["clock_alignment"] = snowtg_evidence.native_clock(log, meta)
     result["environment"]["worker_lcores"] = sorted(int(r["lcore"]) for r in stats
         if r["scope"] == "worker" and r["phase"] == "final")
     epoch = int(meta.get("epoch_cycles", 0)) / int(meta.get("timer_hz", 1)) * 1e6
@@ -532,7 +534,17 @@ def collect(result, output):
             invalid.append("non-monotonic worker counters")
         if dt > 0:
             timeline.append(dict(worker=r["worker"], time_sec=(r["timestamp_us"] - epoch) / 1e6,
+                interval_start_sec=(old["timestamp_us"] - epoch) / 1e6,
                 interval_sec=dt, success_rps=ds / dt, completed_error_rate=df / dd if dd else None,
+                failed_delta=df, memory_paused=r.get("memory_paused"),
+                resource_current={n: r["res_" + n + "_current"] for n in RESOURCE_NAMES
+                                  if "res_" + n + "_current" in r},
+                resource_failures_delta={k: r[k] - old.get(k, 0) for n in RESOURCE_NAMES for f in RESOURCE_FAILURES
+                                         for k in ["res_" + n + "_" + f] if k in r},
+                **{name: r[field] - old.get(field, 0) if field in r else None for name, field in (
+                    ("skipped_delta", "arrivals_skipped"),
+                    ("concurrency_blocked_turns_delta", "concurrency_blocked_turns"),
+                    ("deferred_resource_delta", "deferred_resource"))},
                 complete_mean_us=dc * 1e6 / hz / ns if ns else None,
                 active=r["active"], live_sockets=r["live_sockets"], tx_peak=r["tx_peak"],
                 payload_peak=r["payload_peak"], load_phase_index=r["load_phase_index"]))
@@ -577,7 +589,7 @@ def collect(result, output):
                 latency={m: distribution(histogram([g["latency"][m] for g in subset])) for m in sorted(LATENCIES)}))
 
 
-def run(plan, binary, args, output=None, timeout=None, baseline=None):
+def run(plan, binary, args, output=None, timeout=None, baseline=None, evidence=None):
     """Run once in a fresh artifact directory: 0 passed, 2 critical SLO, 1 invalid.
 
     The native child owns packet work. Timeout/interrupt terminates its process
@@ -585,6 +597,7 @@ def run(plan, binary, args, output=None, timeout=None, baseline=None):
     to the report; it does not change this run's SLO-based exit code.
     """
     validate_assertions(plan)
+    evidence_manifest = snowtg_evidence.load_manifest(evidence) if evidence else None
     baseline_data = load_result(baseline) if baseline else None
     output = Path(output or ("debug/snowtg-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:6])).resolve()
     if args[:1] == ["--"]:
@@ -613,7 +626,7 @@ def run(plan, binary, args, output=None, timeout=None, baseline=None):
                   build={}, invalid_reasons=[], limitations=LIMITS[:], summary={}, groups=[],
                   assertions=[], valid=False, exit_code=1,
                   controller_sha256=digest({p.name: hashlib.sha256(p.read_bytes()).hexdigest()
-                      for p in (Path(__file__), Path(__file__).with_name("snowtg.py"), Path(__file__).with_name("snowtg.lua"), Path(__file__).with_name("snowtg_datasets.py"))}))
+                      for p in (Path(__file__), Path(__file__).with_name("snowtg.py"), Path(__file__).with_name("snowtg.lua"), Path(__file__).with_name("snowtg_datasets.py"), Path(snowtg_evidence.__file__))}))
     # Stopping offered load does not stop admitted businesses. Match the native
     # default deadline, then retain time for socket drain before killing the child.
     business_timeout = max((c["transaction"].get("timeout_ms", sum(
@@ -656,6 +669,7 @@ def run(plan, binary, args, output=None, timeout=None, baseline=None):
     failed = any(not a["passed"] and a.get("critical", True) for a in result["assertions"])
     result["exit_code"] = 1 if not result["valid"] else 2 if failed else 0
     result["status"] = "invalid" if not result["valid"] else "failed" if failed else "passed"
+    snowtg_evidence.attach(result, evidence_manifest, output)
     if baseline_data:
         result["comparison"] = compare(baseline_data, result)
     write_json(output / "result.json", result)
@@ -846,6 +860,7 @@ def report(result):
             parts.append(f"<polyline fill='none' stroke='{color}' stroke-width='2' points='{coords}'><title>worker {worker}</title></polyline>")
         parts.append("</svg>")
     parts.append(resource_report(result, esc, table, pre))
+    parts.append(snowtg_evidence.render(result, table, pre))
     parts.extend(["<h2>有效性与限制</h2>", pre(result.get("invalid_reasons", [])), pre(result.get("limitations", LIMITS)),
                   "<h2>结论</h2><p>" + esc(result.get("comparison", {}).get("recommendation", result.get("status", "invalid"))) +
                   "；结论只覆盖本次负载、持续时间与环境。</p></html>"])
@@ -866,6 +881,10 @@ def cli(argv):
     rep.add_argument("result", type=Path)
     rep.add_argument("--baseline", type=Path)
     rep.add_argument("--output", type=Path, required=True)
+    corr = sub.add_parser("correlate", help="attach evidence to a saved result in a new directory")
+    corr.add_argument("result", type=Path)
+    corr.add_argument("--evidence", type=Path, required=True)
+    corr.add_argument("--output", type=Path, required=True)
     opts = parser.parse_args(argv)
     if opts.command == "compare":
         if not math.isfinite(opts.tolerance_percent) or opts.tolerance_percent < 0:
@@ -886,6 +905,18 @@ def cli(argv):
             return data["exit_code"]
         return 0 if data["recommendation"] == "accept_within_tested_scope" else 2
     data = load_result(opts.result)
+    if opts.command == "correlate":
+        if data.get('kind') == 'capacity':
+            raise ValueError('correlate requires an individual run result, not a capacity search')
+        manifest = snowtg_evidence.load_manifest(opts.evidence)
+        opts.output.mkdir(parents=True, exist_ok=False)
+        data['correlation_origin'] = dict(path=str(opts.result.resolve()),
+            sha256=hashlib.sha256(opts.result.read_bytes()).hexdigest())
+        snowtg_evidence.attach(data, manifest, opts.output)
+        write_json(opts.output / 'result.json', data)
+        (opts.output / 'report.html').write_text(report(data), encoding='utf-8')
+        print('correlation ' + data['correlation']['status'] + ': ' + str(opts.output / 'report.html'))
+        return 0
     if opts.baseline:
         data["comparison"] = compare(load_result(opts.baseline), data)
     if opts.output.resolve() in [p.resolve() for p in (opts.result, opts.baseline) if p]:

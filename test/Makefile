@@ -553,6 +553,15 @@ test-redis-scripts:
 	python3 test_redis_peer.py
 test: test-redis-client test-redis-scripts
 
+.PHONY: test-evidence
+test-evidence:
+	python3 test_evidence.py
+test: test-evidence
+
+.PHONY: test-evidence-cli
+test-evidence-cli:
+	$(MAKE) -C ../traffic-gen BUILD_DIR=$(BUILD_DIR) STACK_BUILD_DIR=$(STACK_BUILD_DIR) SANITIZERS=$(SANITIZERS)
+	SNOWTG_TEST_BINARY=$(abspath ../traffic-gen/$(BUILD_DIR)/traffic-gen) python3 test_evidence_cli.py
 test-redis-cli:
 	$(MAKE) -C ../traffic-gen BUILD_DIR=$(BUILD_DIR) STACK_BUILD_DIR=$(STACK_BUILD_DIR) SANITIZERS=$(SANITIZERS)
 	SNOWTG_TEST_BINARY=$(abspath ../traffic-gen/$(BUILD_DIR)/traffic-gen) python3 test_redis_cli.py

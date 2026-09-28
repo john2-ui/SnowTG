@@ -426,6 +426,19 @@ python3 traffic-gen/snowtg.py run --output debug/mixed-soak-6h \
 该测试专用二进制通过链接包装模拟 TCP 关闭停滞及池对象残留，并缩短 drain guard；
 生产二进制没有这些故障开关。keep-alive、部分 ACK、重传和 OFO 使用现有 C 回归验证。
 
+### 客户端、网络与服务端证据关联
+
+`snowtg.py monitor` 在两端本机采集主机和进程计数；`run --evidence manifest.json` 将主机计数、故障时间窗、对端请求日志与时钟偏差自动关联到 JSON/HTML 报告。已有结果可离线处理：
+
+```bash
+python3 traffic-gen/snowtg.py correlate debug/run1/result.json \
+  --evidence debug/evidence/manifest.json --output debug/run1-correlated
+```
+
+报告复用 worker/owner 资源趋势及 NIC 区间计数，区分直接观测到的并发保护、客户端资源压力、同期网络异常候选与服务端处理耗时，并明确未知贡献。保存原始证据与哈希，不改变 SLO 或原始退出码；无可靠时钟、仅有到达日志等情况显示证据缺口。新版双 worker 本地检查与历史日志导入通过，真实双机新版采集复验待执行。
+
+manifest、时钟约定、日志格式、采集命令和判读边界见 [证据关联使用说明](docs/EVIDENCE.md)。
+
 ### 添加应用层协议插件
 
 当前插件机制是源码接入和编译期静态注册，不会在运行时加载 `.so`。一个应用层插件由

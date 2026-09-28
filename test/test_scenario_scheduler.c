@@ -390,6 +390,7 @@ static int test_weight_token_and_concurrency_bounds(void) {
             tg_scheduler_tick(&scheduler, 10, 3, record_start, &recorder) == 3);
         ASSERT_TRUE(recorder.count == 3);
         ASSERT_TRUE(scheduler.skipped_total == 7);
+        ASSERT_TRUE(scheduler.concurrency_blocked_turns == 0);
         ASSERT_TRUE(memcmp(recorder.selected, "ABA", 3) == 0);
         ASSERT_TRUE(scheduler.active == 3);
 
@@ -404,6 +405,7 @@ static int test_weight_token_and_concurrency_bounds(void) {
             tg_scheduler_tick(&scheduler, 12, 3, record_start, &recorder) == 0);
         ASSERT_TRUE(scheduler.resource_paused);
         ASSERT_TRUE(scheduler.resource_pauses == 1);
+        ASSERT_TRUE(scheduler.concurrency_blocked_turns == 1);
         tg_scheduler_set_resource_available(&scheduler, true);
         tg_scheduler_on_flow_finished(&scheduler);
         ASSERT_TRUE(

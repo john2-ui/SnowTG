@@ -14,8 +14,12 @@ import struct
 import time
 
 
-def event(protocol, mode):
-    print(json.dumps(dict(time_ns=time.time_ns(), protocol=protocol, mode=mode)), flush=True)
+def event(protocol, mode, duration_ns=None):
+    row = dict(time_ns=time.time_ns(), protocol=protocol, mode=mode,
+               event='arrival' if duration_ns is None else 'complete')
+    if duration_ns is not None:
+        row['duration_ns'] = duration_ns
+    print(json.dumps(row), flush=True)
 
 
 async def serve(args):
@@ -43,25 +47,29 @@ async def serve(args):
                 current = config
                 mode = current.get('http', 'normal')
                 event('http', mode)
-                if mode == 'reset':
-                    writer.get_extra_info('socket').setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
-                    writer.transport.abort()
-                    return
-                if mode == 'slow':
-                    await asyncio.sleep(current.get('delay_ms', 200) / 1000)
-                if mode == 'malformed':
-                    writer.write(b'NOT-HTTP\r\n\r\n')
+                started = time.monotonic_ns()
+                try:
+                    if mode == 'reset':
+                        writer.get_extra_info('socket').setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
+                        writer.transport.abort()
+                        return
+                    if mode == 'slow':
+                        await asyncio.sleep(current.get('delay_ms', 200) / 1000)
+                    if mode == 'malformed':
+                        writer.write(b'NOT-HTTP\r\n\r\n')
+                        await writer.drain()
+                        return
+                    body = b'x' * current.get('body_bytes', 1024)
+                    close = mode in ('truncate', 'close') or b'connection: close' in headers.lower()
+                    status = b'503 Unavailable' if mode == 'unavailable' else b'200 OK'
+                    length = len(body) + (20 if mode == 'truncate' else 0)
+                    writer.write(b'HTTP/1.1 ' + status + b'\r\nContent-Length: ' + str(length).encode() +
+                                 b'\r\nConnection: ' + (b'close' if close else b'keep-alive') + b'\r\n\r\n' + body)
                     await writer.drain()
-                    return
-                body = b'x' * current.get('body_bytes', 1024)
-                close = mode in ('truncate', 'close') or b'connection: close' in headers.lower()
-                status = b'503 Unavailable' if mode == 'unavailable' else b'200 OK'
-                length = len(body) + (20 if mode == 'truncate' else 0)
-                writer.write(b'HTTP/1.1 ' + status + b'\r\nContent-Length: ' + str(length).encode() +
-                             b'\r\nConnection: ' + (b'close' if close else b'keep-alive') + b'\r\n\r\n' + body)
-                await writer.drain()
-                if close:
-                    return
+                    if close:
+                        return
+                finally:
+                    event('http', mode, time.monotonic_ns() - started)
         except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, ConnectionError):
             pass
         finally:
@@ -79,6 +87,7 @@ async def serve(args):
                 return
             current = config
             mode = current.get('dns', 'normal')
+            started = time.monotonic_ns()
             event('dns', mode)
             if mode == 'drop':
                 return
@@ -89,10 +98,14 @@ async def serve(args):
                 response = packet[:2] + struct.pack('!HHHHH', 0x8182 if error else 0x8180, 1, 0 if error else 1, 0, 0) + packet[12:end]
                 if not error:
                     response += b'\xc0\x0c' + struct.pack('!HHIH', 1, 1, 0, 4) + socket.inet_aton(args.ip)
-            if mode == 'slow':
-                asyncio.get_running_loop().call_later(current.get('delay_ms', 200) / 1000, self.transport.sendto, response, address)
-            else:
+            def send_response():
                 self.transport.sendto(response, address)
+                event('dns', mode, time.monotonic_ns() - started)
+
+            if mode == 'slow':
+                asyncio.get_running_loop().call_later(current.get('delay_ms', 200) / 1000, send_response)
+            else:
+                send_response()
 
     server = await asyncio.start_server(http, args.ip, args.http_port, backlog=4096)
     transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(DNS, local_addr=(args.ip, args.dns_port))

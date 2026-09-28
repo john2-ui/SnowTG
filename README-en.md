@@ -35,6 +35,8 @@ See [`docs/TODO.md`](docs/TODO.md) for the architecture and planned work, and [`
 
 ## Usage
 
+Client/network/server evidence can be attached with `snowtg.py run --evidence manifest.json` or added offline with `snowtg.py correlate result.json --evidence manifest.json --output NEWDIR`. `snowtg.py monitor` collects local host/process counters. Reports retain raw snapshots, hashes, clock uncertainty, concurrency protection, owner/NIC pressure, network candidates, server durations and unattributed contributions without changing SLO results. See [evidence formats and limitations (中文)](docs/EVIDENCE.md). Local and historical replay checks pass; the new collection path still needs a live two-host acceptance run.
+
 ### Build
 
 Install DPDK and the project dependencies, then configure huge pages and a DPDK-compatible NIC. Each target can be built independently:

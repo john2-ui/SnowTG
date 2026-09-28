@@ -311,6 +311,7 @@ void tg_stats_snapshot_add(struct tg_stats_snapshot *aggregate,
                 aggregate->load_phase_index = sample->load_phase_index;
         aggregate->arrivals_planned += sample->arrivals_planned;
         aggregate->arrivals_skipped += sample->arrivals_skipped;
+        aggregate->concurrency_blocked_turns += sample->concurrency_blocked_turns;
         aggregate->txns_done += sample->txns_done;
         aggregate->txns_success += sample->txns_success;
         aggregate->txns_fail += sample->txns_fail;

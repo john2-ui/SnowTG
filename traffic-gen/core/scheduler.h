@@ -59,6 +59,8 @@ struct tg_scheduler {
         uint64_t phase_seen;
         uint64_t planned_total;
         uint64_t skipped_total;
+        /** Turns with pending arrivals blocked by the active-concurrency cap. */
+        uint64_t concurrency_blocked_turns;
         uint64_t dispatch_planned_cycles; /* Selected deadline, valid in start callback. */
         uint64_t stop_cycles;
         uint32_t phase_index;
