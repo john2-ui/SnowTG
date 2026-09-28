@@ -5,7 +5,7 @@
 | 目录 | 用途 |
 | --- | --- |
 | `stack-demo/` | 原有启动入口：Main 桥接 NIC/ring，独立 worker 处理协议，应用运行在额外 EAL lcore。 |
-| `tcp-echo/` | 阻塞 TCP 服务端/客户端，顺序处理连接，示范循环处理短读短写。由 stack-demo 编译。 |
+| `tcp-echo/` | 非阻塞并发 TCP echo 服务端与阻塞客户端，处理短读短写。由 stack-demo 编译。 |
 | `udp-echo/` | 阻塞 UDP echo，使用完整数据报缓冲区。由 stack-demo 编译。 |
 | `socket-demo/` | 单 owner + 普通 pthread，公开非阻塞 API、水平触发 `nepoll`、并发 TCP echo、UDP echo、异步 connect。 |
 
@@ -62,12 +62,22 @@ python3 apps/socket-demo/check_peer.py udp-echo 192.168.10.200 9001
 python3 apps/socket-demo/check_peer.py client-peer 192.168.10.234 9000
 ```
 
-TCP 检查包含 8 个并发客户端、每连接 128 KiB+17 字节、小块读取和半关闭；UDP 检查包含空包及 1280 字节报文。它们是功能检查，不是吞吐基准。
+TCP 检查先确认一个连接完成 echo，再保持它空闲，同时让另外 8 个并发客户端各回送 128 KiB+17 字节，覆盖小块读取和半关闭；UDP 检查包含空包及 1280 字节报文。它们是功能检查，不是吞吐基准。
 
 没有可用网卡时，可用 `--no-huge --no-pci -m 256 --vdev net_null0` 替换 PCI 参数，检查服务端启动和信号退出；null PMD 不会回送应用报文，不能用于回显验证。
 
-## 原有阻塞示例
+## 桥接架构示例
 
 `stack-demo` 默认启用 TCP 服务端，地址为 `192.168.21.2`，端口为 8888；至少需要 3 个 EAL lcore（Main、owner、TCP 应用）。UDP/客户端开关和 TCP 端口位于 `pro-stack/config.h`，启用额外应用须再提供一个 lcore。UDP 默认端口为 8889。
 
-阻塞调用也可能短写，TCP 示例已改为循环发送。UDP 接收缓冲区覆盖最大 IPv4 UDP payload，避免本栈的短读续取语义把一份数据报拆成多次 echo。原入口仍用于演示桥接架构；需要可配置地址、就绪通知或信号退出时使用 `socket-demo`。
+TCP 服务端使用公开非阻塞 API 与水平触发 `nepoll`，单个应用 lcore 最多服务 32 个活动连接，监听 backlog 为 16。每连接保留 1280 字节回送缓冲；有待发送数据时暂停读取，短写或 `EAGAIN` 后等待写就绪，不阻塞其他连接。每轮最多接受 32 个连接，每个连接事件最多读、写各一次；容量满时关闭新接入连接，没有空闲超时。对端 FIN 后先读完并回送剩余数据，再关闭连接。
+
+TCP 客户端仍使用阻塞调用并循环处理短写。UDP 接收缓冲区覆盖最大 IPv4 UDP payload，避免本栈的短读续取语义把一份数据报拆成多次 echo。原入口继续演示桥接架构；需要可配置地址或信号退出时使用 `socket-demo`。
+
+对端可用同一检查脚本验证原入口的并发 TCP 服务端：
+
+```sh
+python3 apps/socket-demo/check_peer.py tcp-echo 192.168.21.2 8888
+```
+
+无网卡的确定性回归测试运行实际服务端源码，模拟公开 API 的就绪、短写、背压、EOF、RST、连接复用和失败清理：`make -C test test-tcp-echo`。此测试也包含在默认 `make -C test` 中；真实链路回显需要另行运行上述对端检查。

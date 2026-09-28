@@ -473,3 +473,20 @@ $(BUILD_DIR)/test_socket_public: test_socket_public.c $(STACK_LIB) | $(BUILD_DIR
 # Opt-in hardware acceptance; no NIC preparation or remote changes in `test`.
 $(BUILD_DIR)/test_socket_live: test_socket_live.c $(STACK_LIB) | $(BUILD_DIR)
 	$(CC) $(CFLAGS) $(DPDK_CFLAGS) -I../pro-stack $< $(STACK_LIB) -o $@ $(DPDK_LIBS) -pthread $(SANITIZER_LDFLAGS)
+
+# Run the real TCP example with deterministic public-API responses, no NIC/EAL.
+TCP_ECHO_WRAPS := nsocket nbind nlisten naccept4 nrecv nsend nclose \
+	nepoll_create nepoll_ctl nepoll_wait nepoll_close
+.PHONY: test-tcp-echo
+test: test-tcp-echo
+test-tcp-echo: $(BUILD_DIR)/test_tcp_echo
+	$<
+
+$(BUILD_DIR)/test_tcp_echo: test_tcp_echo.c ../apps/tcp-echo/tcp_echo.c \
+		../apps/tcp-echo/tcp_echo.h ../pro-stack/nepoll.h \
+		../pro-stack/socket.h ../pro-stack/config.h Makefile | $(BUILD_DIR)
+	$(CC) $(CFLAGS) -std=gnu11 -Wall -Wextra -Werror -D_GNU_SOURCE \
+		-DLOG_LEVEL=LOG_LVL_ERROR $(DPDK_CFLAGS) -ffunction-sections \
+		test_tcp_echo.c ../apps/tcp-echo/tcp_echo.c -o $@ \
+		-Wl,--gc-sections $(foreach api,$(TCP_ECHO_WRAPS),-Wl,--wrap=$(api)) \
+		$(DPDK_LIBS) $(SANITIZER_LDFLAGS)

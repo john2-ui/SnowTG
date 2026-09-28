@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run on a peer host to check socket-demo; no network configuration is changed."""
+"""Check socket-demo or stack-demo from a peer; no network configuration changes."""
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import socket
@@ -20,9 +20,21 @@ def tcp_echo(host, port):
                 reply.extend(block)
             assert reply == payload, (index, len(reply), len(payload))
 
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        list(pool.map(exchange, range(8)))
-    print("PASS: 8 TCP clients, 128 KiB+17 each, short reads and half-close")
+    with socket.create_connection((host, port), timeout=10) as idle:
+        # Prove this connection was accepted before opening the other clients.
+        probe = b"idle connection probe"
+        idle.sendall(probe)
+        reply = bytearray()
+        while len(reply) < len(probe):
+            block = idle.recv(len(probe) - len(reply))
+            assert block, "idle connection closed before probe echo"
+            reply.extend(block)
+        assert reply == probe
+        # A sequential server will now stall in recv on this live connection.
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(pool.map(exchange, range(8)))
+    print("PASS: idle connection plus 8 TCP clients, 128 KiB+17 each, "
+          "short reads and half-close")
 
 
 def udp_echo(host, port):
