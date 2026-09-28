@@ -5,7 +5,7 @@
  * @file conn_pool.h
  * @brief Owner-local pool of reusable TCP traffic-generator connections.
  *
- * HTTP/1.1 keep-alive uses one in-flight transaction per connection. The
+ * HTTP/1.1 and Redis use one in-flight transaction per connection. The
  * pool only selects idle connections; transport ownership and readiness stay
  * in core/flow.c.
  */

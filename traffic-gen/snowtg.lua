@@ -41,6 +41,14 @@ function M.dns(name, ip, qname, port, options)
         peer={ip=ip, port=default(port, 53)}, dns={qname=qname, qtype=default(options.qtype, "A")}}
 end
 
+function M.redis(name, ip, port, options)
+    options = checked(options, "command key value weight keepalive")
+    return {name=name, weight=default(options.weight, 1), transport="tcp",
+        peer={ip=ip, port=default(port, 6379)},
+        redis={command=options.command, key=options.key, value=options.value,
+               keepalive=default(options.keepalive, true)}}
+end
+
 -- Concurrency is global. Use phases OR duration/cps; native validation checks
 -- protocol/rate limits after the launcher removes managed-run metadata.
 function M.scenario(name, options)

@@ -8,7 +8,7 @@
     python3 traffic-gen/snowtg.py compare baseline/result.json candidate/result.json
     python3 traffic-gen/snowtg.py report run/result.json --output report.html
 
-Scripts may import scenario, phase, http and dns from snowtg. Helpers produce
+Scripts may import scenario, phase, http, dns and redis from snowtg. Helpers produce
 ordinary dictionaries; Lua scripts use require("snowtg") and may return a plan.
 Lua requires lua, lua5.4 or lua5.3 on PATH (or SNOWTG_LUA pointing to it).
 The existing C compiler validates the schema at startup.
@@ -49,6 +49,18 @@ def dns(name, ip, qname, port=53, *, weight=1, qtype="A"):
     """One UDP DNS traffic class (A or AAAA query)."""
     return dict(name=name, weight=weight, transport="udp",
                 peer=dict(ip=ip, port=port), dns=dict(qname=qname, qtype=qtype))
+
+
+def redis(name, ip, port=6379, *, command, key=None, value=None, weight=1,
+          keepalive=True):
+    """One RESP2 PING/GET/SET class; each connection has one request in flight."""
+    config = dict(command=command, keepalive=keepalive)
+    if key is not None:
+        config["key"] = key
+    if value is not None:
+        config["value"] = value
+    return dict(name=name, weight=weight, transport="tcp",
+                peer=dict(ip=ip, port=port), redis=config)
 
 
 def ref(name):

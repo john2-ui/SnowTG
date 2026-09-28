@@ -8,11 +8,11 @@
 [![Docker: supported](https://img.shields.io/badge/Docker-supported-2496ED?style=flat-square&logo=docker&logoColor=white)](#docker-一键构建与自检)
 [![Checks: ASan / UBSan](https://img.shields.io/badge/Checks-ASan%20%2F%20UBSan-6C5CE7?style=flat-square)](run-sanitizers.sh)
 
-**基于 DPDK 的用户态 TCP/IP 协议栈与 HTTP/DNS 混合流量发生器。** 从收发包、TCP 状态机到应用层事务调度均在仓库内实现；核心设计是单 owner、per-core reactor 和无锁热路径。
+**基于 DPDK 的用户态 TCP/IP 协议栈与 HTTP/DNS/Redis 混合流量发生器。** 从收发包、TCP 状态机到应用层事务调度均在仓库内实现；核心设计是单 owner、per-core reactor 和无锁热路径。
 
 [English](README-en.md) · [使用指南](#使用指南) · [测评与复现条件](docs/BENCHMARK.md) · [架构与路线图](docs/TODO.md)
 
-- **完整数据路径**：Ethernet / ARP / IPv4 / ICMP / TCP / UDP，BSD 风格 API 与 owner-local 非阻塞接口；HTTP/1.1、DNS 剧本支持混合权重、到达率、并发水位和连接复用。
+- **完整数据路径**：Ethernet / ARP / IPv4 / ICMP / TCP / UDP，BSD 风格 API 与 owner-local 非阻塞接口；HTTP/1.1、DNS、Redis 剧本支持混合权重、到达率、并发水位和连接复用。
 - **可核验的性能**：NUC → HP 千兆环境下，KA 双 worker 三轮均值 **393,900 RPS**，与 dperf、wrk 相近；提供长短连接对照图、逐轮数据与复现条件。
 - **业务压测与验收**：支持多步骤事务、响应变量提取、数据集参数化和步骤断言；通过 JSON/Python/Lua 编写剧本，配置分阶段加压、SLO 验收与基线报告对比。
 
@@ -223,7 +223,7 @@ Lua 剧本另需 Lua 5.3/5.4（可用 `SNOWTG_LUA` 指定解释器）。脚本�
 直接修改 [Python 示例](traffic-gen/scenarios/test/acceptance-http-dns.py) 或
 [Lua 示例](traffic-gen/scenarios/test/acceptance-http-dns.lua) 即可：
 
-- `scenario` 配置全局并发，`http` / `dns` 定义带权重的流量类别。
+- `scenario` 配置全局并发，`http` / `dns` / `redis` 定义带权重的流量类别。
 - `phase` 组合预热、爬坡、稳态、突发和降载；提供 `start` 时线性变速。当前支持开放到达模型。
 - `assertion` 设置成功率、延迟分位数、分配失败数和排空等 SLO，可按阶段、类别筛选。
   `success_rate` 分母为计划请求数；`latency_ms` 默认统计成功事务的完成延迟。
@@ -249,9 +249,77 @@ python3 traffic-gen/snowtg.py report debug/run2/result.json \
 `run` 自动保存 CSV 和日志；`result.json` 记录配置、环境/构建信息与验收结果，`report.html` 展示报告。
 输出目录必须是新目录，无需另传 CSV 路径。返回码：`0` 验收通过、`2` 关键 SLO 未达标、`1` 运行无效。
 
-错误原因分别记录在 CSV 的 `error_*` 列、`result.json.error_reasons` 和 HTML 中，包括建连/响应超时、RST、提前 EOF、HTTP 状态拒绝、DNS RCODE 和解析失败。可用 `assertion("error_reset", "==", 0)` 设置整次运行的门禁；原因计数不接受阶段/协议筛选，未记录细分原因的旧结果不会补成零。
+错误原因分别记录在 CSV 的 `error_*` 列、`result.json.error_reasons` 和 HTML 中，包括建连/响应超时、RST、提前 EOF、HTTP 状态拒绝、DNS RCODE、Redis 错误响应和解析失败。可用 `assertion("error_reset", "==", 0)` 设置整次运行的门禁；原因计数不接受阶段/协议筛选，未记录细分原因的旧结果不会补成零。
 运行时也可在剧本路径前加 `--baseline PATH`；仅导出配置用 `--emit-json PATH`（不带 `run`）。
 比较会检查负载及环境是否可比；最大可持续负载仍标为未测定。`debug/` 下的结果不进入 Git。
+
+### Redis 基础读写长连接
+
+Redis 使用 RESP2，支持普通 class 的 `PING`、`GET`、`SET`。每个连接只有一个在途请求，
+默认复用连接；同一 worker/class 内复用，不同 class 不共享连接。JSON 示例：
+
+```json
+{
+  "name": "redis-set", "weight": 1, "transport": "tcp",
+  "peer": {"ip": "198.18.0.2", "port": 6379},
+  "redis": {"command": "SET", "key": "snowtg:key", "value": "hello", "keepalive": true}
+}
+```
+
+`command` 必填且大小写不敏感。PING 不接受 key/value；GET 必须有 key，不能有 value；
+SET 必须有 key/value。键和值支持空字符串、UTF-8 和 JSON 转义，拒绝内嵌 NUL。
+编码后的完整请求最多 1024 字节，超限在启动时拒绝。GET 按长度流式消费响应，支持二进制值，
+上限 512 MiB；RESP 头行正文最多 1024 字节。GET 的空值、null（键不存在）均计成功，
+不做值断言；PING 必须收到 PONG，SET 必须收到 OK。Redis `-ERR`、`-WRONGTYPE` 等响应
+计入 `error_redis_error`，帧格式错误计入 `error_parse`，截断/超时/RST 使用现有原因。
+
+Python：`redis("get", "198.18.0.2", command="GET", key="snowtg:key")`；
+Lua：`tg.redis("get", "198.18.0.2", nil, {command="GET", key="snowtg:key"})`。
+helper 默认端口 6379，原生 JSON 的 `peer.port` 仍必填。
+[JSON](traffic-gen/scenarios/test/redis-mixed.json)、
+[Python](traffic-gen/scenarios/test/redis-mixed.py)、
+[Lua](traffic-gen/scenarios/test/redis-mixed.lua) 示例包含 Redis/HTTP/DNS 混合负载，运行前修改目标地址。
+各 class 独立调度，示例不保证 SET 先于 GET；键预置及内容验证由测试准备阶段完成。
+
+每次命令消耗一次计划到达，复用现有成功 RPS、字节数、连接创建/复用和延迟直方图，
+支持 `assertion("success_rate", ">=", 0.99, protocol="redis")`。
+完成延迟是客户端准入至完整响应的时间；新连接包含建连，复用连接没有建连样本；
+`scheduled_complete` 另包含调度等待。GET null 计入成功吞吐，这不是缓存命中率。
+
+请求超时沿用 5 秒，空闲超时 30 秒，并遵守现有每连接请求数上限。`keepalive=false`
+时完整响应后由客户端关闭。断线结束当前请求，后续到达重新建连；只有发送前确认失效的
+空闲连接可安全替换，已经发送的请求不会自动重放。PING 是普通受调度命令，不是后台心跳。
+本版本不支持 AUTH、SELECT、RESP3、pipeline、工作流步骤、集群重定向、TLS 或 Pub/Sub。
+
+本地回归：
+
+```bash
+make -C test test-redis-client test-redis-scripts test-flow-tcp
+make -C test test-redis-cli
+make -C test test-redis-client BUILD_DIR=build/redis-sanitizers SANITIZERS=address,undefined
+make -C test test-flow-tcp BUILD_DIR=build/redis-wheel OWNER_TIMER_BACKEND=wheel
+```
+
+真实联调脚本验证 PING、SET 后 GET、GET miss、短连接、连接复用、报告及资源归零。
+它使用唯一测试键并在正常用例结束后删除该键；需要可从控制主机和发压网口访问的无认证 Redis。
+可选故障对端验证错误响应、畸形帧、截断、RST、超时和前四次断线后的恢复，检查请求数以排除重放。
+在被测主机上启动故障对端：
+
+```bash
+python3 test/redis_peer.py --bind 198.18.0.2 --port 6380
+```
+
+在发压主机上使用已准备好的 AF_PACKET 接口（替换 CPU、地址和 `TEST_IFACE`）：
+
+```bash
+python3 test/test_redis_live.py --peer 198.18.0.2 --port 6379 --fault-port 6380 \
+  debug/redis-live -- -l 0,1,2 --main-lcore 2 -m 256 --no-huge --no-pci \
+  --vdev=net_af_packet0,iface=TEST_IFACE -- --workers 2 --local-ip 198.18.0.1
+```
+
+`redis_peer.py` 是可控测试对端，不替代 Redis；恢复用例模拟断线后的服务恢复，不重启真实服务。
+目前已通过本地协议、flow、脚本/报告及双 worker `net_null` 回归；真实 Redis 与网络故障联调仍待验收。
+旧 HTTP/DNS 报告缺少新增错误列时仍可读取；新旧结果错误原因覆盖不一致时，基线比较保留“不可比”判定。
 
 ### 资源趋势与归零验收
 
@@ -311,9 +379,10 @@ python3 traffic-gen/snowtg.py run --output debug/mixed-soak-6h \
 当前插件机制是源码接入和编译期静态注册，不会在运行时加载 `.so`。一个应用层插件由
 两部分组成：[`tg_proto_ops`](traffic-gen/proto/proto.h) 处理请求/响应字节，
 [`tg_proto_scenario`](traffic-gen/proto/registry.h) 把 scenario 中的协议对象编译成
-不可变配置。HTTP 和 DNS 实现分别位于
-[`traffic-gen/proto/http/`](traffic-gen/proto/http/) 和
-[`traffic-gen/proto/dns/`](traffic-gen/proto/dns/)，可以直接作为模板。
+不可变配置。HTTP、DNS 和 Redis 实现分别位于
+[`traffic-gen/proto/http/`](traffic-gen/proto/http/)、
+[`traffic-gen/proto/dns/`](traffic-gen/proto/dns/) 和
+[`traffic-gen/proto/redis/`](traffic-gen/proto/redis/)，可以直接作为模板。
 
 以新增协议 `myproto` 为例，建议创建以下文件：
 
@@ -465,7 +534,7 @@ make -C pro-stack LOG_LEVEL=LOG_LVL_TRACE \
 | --- | --- |
 | [pro-stack/](pro-stack/) | 协议栈、TCP 状态机、owner 生命周期和收发运行时 |
 | [traffic-gen/core/](traffic-gen/core/) | 事务 / flow 生命周期、连接池、调度与统计 |
-| [traffic-gen/proto/](traffic-gen/proto/) | HTTP、DNS 应用协议实现 |
+| [traffic-gen/proto/](traffic-gen/proto/) | HTTP、DNS、Redis 应用协议实现 |
 | [test/](test/) | 协议、调度、参数与运行时回归 |
 | [apps/](apps/README.md) | 阻塞/非阻塞 TCP/UDP echo、nepoll 与异步 connect 示例 |
 

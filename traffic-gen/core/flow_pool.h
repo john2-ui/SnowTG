@@ -7,7 +7,7 @@
  *
  * The pool preallocates exactly the number of flow objects permitted by the
  * scenario's concurrency limit. A flow represents one physical connection;
- * an HTTP keep-alive flow can carry multiple sequential transactions.
+ * an HTTP/Redis keep-alive flow can carry multiple sequential transactions.
  * This prevents allocator activity in the admission hot path.
  */
 

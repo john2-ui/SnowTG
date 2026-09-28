@@ -9,8 +9,16 @@
 #include "dns/dns_scenario.h"
 #include "http/http_client.h"
 #include "http/http_scenario.h"
+#include "redis/redis_client.h"
+#include "redis/redis_scenario.h"
 
 static const struct tg_proto_scenario tg_proto_scenarios[] = {
+    {
+        .schema_key = "redis",
+        .ops = &tg_redis_proto_ops,
+        .transport = TG_TRANSPORT_TCP,
+        .compile = tg_redis_scenario_compile,
+    },
     {
         .schema_key = "http",
         .ops = &tg_http_proto_ops,

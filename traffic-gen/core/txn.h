@@ -38,7 +38,8 @@ struct resource_metric tg_txn_resource_snapshot(void);
         X(CONNECT, connect) \
         X(IO, io) \
         X(START, start) \
-        X(WORKFLOW, workflow)
+        X(WORKFLOW, workflow) \
+        X(REDIS_ERROR, redis_error)
 
 enum tg_error_reason {
         TG_ERROR_NONE = 0,

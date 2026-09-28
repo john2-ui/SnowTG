@@ -1,0 +1,79 @@
+{
+  "name": "redis-mixed",
+  "load_model": "open",
+  "max_concurrency": 32,
+  "report_interval_sec": 1,
+  "classes": [
+    {
+      "name": "ping",
+      "weight": 1,
+      "transport": "tcp",
+      "peer": {
+        "ip": "198.18.0.2",
+        "port": 6379
+      },
+      "redis": {
+        "command": "PING",
+        "keepalive": true
+      }
+    },
+    {
+      "name": "get",
+      "weight": 1,
+      "transport": "tcp",
+      "peer": {
+        "ip": "198.18.0.2",
+        "port": 6379
+      },
+      "redis": {
+        "command": "GET",
+        "keepalive": true,
+        "key": "snowtg:key"
+      }
+    },
+    {
+      "name": "set",
+      "weight": 1,
+      "transport": "tcp",
+      "peer": {
+        "ip": "198.18.0.2",
+        "port": 6379
+      },
+      "redis": {
+        "command": "SET",
+        "keepalive": true,
+        "key": "snowtg:key",
+        "value": "hello"
+      }
+    },
+    {
+      "name": "http",
+      "weight": 1,
+      "transport": "tcp",
+      "peer": {
+        "ip": "198.18.0.2",
+        "port": 8080
+      },
+      "http": {
+        "method": "GET",
+        "path": "/",
+        "keepalive": true
+      }
+    },
+    {
+      "name": "dns",
+      "weight": 1,
+      "transport": "udp",
+      "peer": {
+        "ip": "198.18.0.2",
+        "port": 1053
+      },
+      "dns": {
+        "qname": "snowtg.test",
+        "qtype": "A"
+      }
+    }
+  ],
+  "duration_sec": 10,
+  "target_cps": 100
+}

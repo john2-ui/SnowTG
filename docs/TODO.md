@@ -22,7 +22,7 @@ P0 单机闭环已有实现，不再重复列为待开发。下列条目跟踪�
 
 - [ ] **封闭负载模型**：有固定客户端业务需求时增加“完成后再发起”的并发模型，明确思考时间、事务吞吐和开放模型到达率的区别，并补齐校验、统计与示例；当前只支持带并发保护上限的 `open` 模型。
 - [ ] **分布式发压**：在单机 CPU、端口或链路容量确认受限后，增加场景/测试 ID 下发、版本与环境校验、同步启动、跨节点直方图与指标聚合、节点失联/部分失败处理及全局报告。
-- [ ] **轻量长连接协议**：Redis 或 MQTT 按目标案例二选一，复用现有 scenario、flow、连接池和统计。若选择 MQTT，应覆盖 CONNECT/CONNACK、订阅/发布、QoS 1、心跳、掉线重连、会话恢复及消息吞吐/端到端延迟，不能只完成报文编解码。
+- [x] **轻量长连接协议（Redis）**：完成 RESP2 PING/GET/SET 普通 class，复用 scenario、TCP flow、连接池、超时、排空与统计；支持 JSON/Python/Lua、HTTP/DNS 混合调度、连接复用和断线后后续请求重建，已发送请求不重放。Redis 错误响应单列 `error_redis_error`，吞吐、延迟、SLO 和 CSV/JSON/HTML 已接通。默认完整回归、解析器 ASan/UBSan、`rte`/`wheel` flow 回归及双 worker `net_null` 检查通过。真实 Redis 与网络故障恢复联调仍待执行，不能用本地检查替代实测；[范围与验收命令](../README.md#redis-基础读写长连接)。
 - [ ] **高阶 L7 场景**：有明确案例后再增加 HTTPS 小并发/握手压测或极简 MySQL 客户端，说明 TLS 与数据库状态机的 CPU、内存成本。
 - [x] **TCP echo server 并发化**：原 TCP 示例已使用公开非阻塞 API 与 `nepoll`，支持 32 个并发连接、每连接 1280 字节有界缓冲及短写背压处理；空闲连接不再阻塞其他连接的接受和回送。已通过本地并发、半关闭、连接复用和失败清理回归；真实链路检查脚本已补充空闲连接场景，双机验收待执行。
 
@@ -62,7 +62,7 @@ P0 单机闭环已有实现，不再重复列为待开发。下列条目跟踪�
 | 最大可持续负载 | 验收脚本已实现，产品化待补 | 脚本已完成 Nginx A/B 共 36 轮 SLO 搜索与重复测量；正式 CLI、容量结果 schema 和容量比较门禁仍未接入。 |
 | 长时间稳定性 | 30 分钟混合长测通过 | 907,500 次请求全部成功、排空正常；小时级混合实测及完整资源指标仍待补，不能用既有六小时 HTTP 剧本代替已执行证据。 |
 | 分布式发压 | 未实现 | 多 worker 是单机分片，尚无多节点控制、同步与汇总。 |
-| 协议扩展 | HTTP/DNS 已有，其余待选型 | [`registry.c`](../traffic-gen/proto/registry.c) 当前注册 HTTP/1.1 与 UDP DNS；MQTT/Redis/TLS/MySQL 不在现有插件中。 |
+| 协议扩展 | HTTP/DNS/Redis 已实现 | [`registry.c`](../traffic-gen/proto/registry.c) 注册 HTTP/1.1、UDP DNS 和 Redis RESP2 PING/GET/SET；Redis 真实服务联调待验收，MQTT/TLS/MySQL 未实现。 |
 | 真实发布验收案例 | 实验室配置 A/B 案例完成 | 真实双机上记录场景、SLO、服务端耗时、容量边界、拒绝退化配置与恢复结果。生产业务案例仍需按实际业务设计。 |
 
 原应用层 TODO 中的“端到端延迟直方图”已完成；“产品化入口”所列启动参数、剧本、长测命令、报告、排障与构建元数据归档已有基础实现和文档。长测与故障矩阵已有本轮实测，剩余产品化和覆盖边界按上方条目跟踪。
@@ -92,10 +92,12 @@ flowchart TB
     Scheduler --> Flow["flow / transaction 池"]
     Flow --> HTTP["HTTP 插件"]
     Flow --> DNS["DNS 插件"]
+    Flow --> Redis["Redis 插件"]
     Scheduler --> Workflow["多步骤事务 / 上下文 / 分支"]
     Workflow --> Flow
     HTTP --> OwnerIO["owner-local transport API"]
     DNS --> OwnerIO
+    Redis --> OwnerIO
     OwnerIO --> Socket["socket owner"]
     Socket --> TCP
     Socket --> UDP
@@ -130,7 +132,7 @@ traffic-gen/
 │   ├── scheduler.*       CPS、并发水位与混合选类
 │   ├── flow* / txn.*     连接与事务状态机
 │   ├── workflow* / value.* 多步骤编排、上下文与模板
-│   ├── conn_pool.*       HTTP keep-alive 连接池
+│   ├── conn_pool.*       HTTP/Redis keep-alive 连接池
 │   ├── latency.*         分组延迟直方图
 │   └── stats* / dataplane_stats.* 指标与 CSV 汇总
 ├── proto/
@@ -217,7 +219,7 @@ IDLE → SENDING → RECEIVING → IDLE
          └───────────┴→ FAILED → IDLE
 ```
 
-插件只处理应用层字节或数据报，不调用 `owner_io_*`。flow 层拥有 socket、非阻塞 I/O、ready event 和回收顺序；transaction 保存单次请求/响应状态。当前插件覆盖 HTTP/1.1 和 DNS，协议专用配置由插件自行编译、复制和释放。
+插件只处理应用层字节或数据报，不调用 `owner_io_*`。flow 层拥有 socket、非阻塞 I/O、ready event 和回收顺序；transaction 保存单次请求/响应状态。当前插件覆盖 HTTP/1.1、DNS 和 Redis，协议专用配置由插件自行编译、复制和释放。
 
 ### 就绪事件与每轮调度
 

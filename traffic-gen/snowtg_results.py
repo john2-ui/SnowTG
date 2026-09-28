@@ -33,7 +33,7 @@ COUNTS = ("planned", "attempted", "skipped", "admitted", "success", "failed", "s
 SCOPED = {"success_rate", "admitted_success_rate", "error_rate", "skipped_rate",
           "success_rps", "latency_ms"}
 ERROR_REASONS = {"error_" + name for name in ("connect_timeout", "response_timeout", "reset", "peer_eof",
-    "http_status", "dns_rcode", "parse", "resource", "connect", "io", "start", "workflow")}
+    "http_status", "dns_rcode", "parse", "resource", "connect", "io", "start", "workflow", "redis_error")}
 GLOBAL = ERROR_REASONS | {"tx_alloc_fail", "drained_live_sockets", "tcp_forced_cleanup", "drain_ms"}
 EXTRA = {"assertions", "purpose", "service", "dataset_sources"}
 LIMITS = ["Latency is client-observed software timing, not NIC timestamps or server-only time.",
@@ -74,7 +74,7 @@ def validate_assertions(plan):
     if not isinstance(assertions, list):
         raise ValueError("assertions must be an array")
     classes = {c["name"] for c in plan["classes"]}
-    protocols = {"transaction" if "transaction" in c else "http" if "http" in c else "dns" for c in plan["classes"]}
+    protocols = {p for c in plan["classes"] for p in ("transaction", "http", "dns", "redis") if p in c}
     steps = [(c["name"], step) for c in plan["classes"] for step in c.get("transaction", {}).get("steps", [])]
     phase_names = {p["name"] for p in phases(plan)}
     for item in assertions:
@@ -494,7 +494,7 @@ def collect(result, output):
             raise ValueError("step accounting mismatch")
     result["steps"] = list(step_groups.values())
     # Retain success_rps as the legacy class-completion alias. Network RPS counts
-    # only successful HTTP/DNS exchanges; think/branch successes are not requests.
+    # successful protocol exchanges; think/branch successes are not requests.
     summary["transaction_success_tps"] = summary["success_rps"]
     summary["request_success_rps"] = (sum(g["success"] for g in result["groups"] if g["protocol"] != "transaction") +
         sum(g["success"] for g in result["steps"] if g["protocol"] in ("http", "dns"))) / summary["duration_sec"]
@@ -547,7 +547,12 @@ def collect(result, output):
     result["errors"] = {k: final[k] for k in error_fields}
     result["errors"].update(start_failed=summary["start_failed"], skipped=summary["skipped"])
     result["error_reasons"] = {k: final[k] for k in sorted(ERROR_REASONS) if k in final}
-    if result["error_reasons"] and (set(result["error_reasons"]) != ERROR_REASONS or
+    # Older HTTP/DNS CSVs predate the additive Redis cause; preserve their
+    # measured fields without inventing a zero for an unrecorded metric.
+    reason_schemas = [ERROR_REASONS]
+    if not any("redis" in c for c in result["scenario"]["classes"]):
+        reason_schemas.append(ERROR_REASONS - {"error_redis_error"})
+    if result["error_reasons"] and (set(result["error_reasons"]) not in reason_schemas or
             sum(result["error_reasons"].values()) != final["fail"]):
         invalid.append("terminal error reasons do not partition failed transactions")
     result["errors"].update(result["error_reasons"])

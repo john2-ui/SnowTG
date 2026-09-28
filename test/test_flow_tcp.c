@@ -1,8 +1,9 @@
-/* Exercise the real Flow/HTTP parser with deterministic transport boundaries. */
+/* Exercise real Flow/HTTP/Redis parsers with deterministic transport boundaries. */
 #include "../traffic-gen/core/conn_pool.h"
 #include "../traffic-gen/core/flow_pool.h"
 #include "../traffic-gen/core/scenario.h"
 #include "../traffic-gen/proto/http/http_client.h"
+#include "../traffic-gen/proto/redis/redis_client.h"
 #include <assert.h>
 #include <errno.h>
 #include <rte_eal.h>
@@ -67,6 +68,7 @@ struct fixture {
         struct tg_conn_pool connections;
         struct tg_class_plan cls;
         struct tg_http_config http;
+        struct tg_redis_config redis;
         struct tg_flow *flow;
 };
 static void init(struct fixture *f) {
@@ -115,9 +117,117 @@ static void receive(struct fixture *f, const char *bytes, bool end) {
         tg_flow_on_event(&f->map, &f->pool, f->flow,
                            OWNER_IO_EV_READ | (end ? OWNER_IO_EV_HUP : 0));
 }
+
+static void init_redis(struct fixture *f, bool keepalive) {
+        init(f);
+        tg_txn_reset(&f->flow->txn);
+        f->redis.command = TG_REDIS_GET;
+        f->redis.keepalive = keepalive;
+        strcpy(f->redis.key, "snowtg:key");
+        assert(tg_redis_proto_ops.build_request(&f->redis, f->cls.request_template,
+                sizeof(f->cls.request_template), &f->cls.request_template_len) == 0);
+        assert(tg_txn_init_with_request(&f->flow->txn, &tg_redis_proto_ops, &f->redis,
+                f->cls.request_template, f->cls.request_template_len) == 0);
+}
+
+static int rearm_redis(struct fixture *f) {
+        assert(tg_conn_pool_take_idle(&f->connections, &f->cls) == f->flow);
+        return tg_flow_rearm_tcp(f->flow, &tg_redis_proto_ops, &f->redis,
+                                 f->cls.request_template, f->cls.request_template_len);
+}
+
+static void test_redis(void) {
+        struct fixture f;
+        init_redis(&f, true);
+        for (unsigned i = 0; i < 1000; i++) {
+                receive(&f, "$3\r\n", false);
+                assert(completed == i);
+                receive(&f, "ok!\r\n", false);
+                assert(completed == i + 1 && closed == 0 && f.flow->state == TG_FLOW_IDLE);
+                assert(last_result == TG_FLOW_RESULT_SUCCESS);
+                assert(rearm_redis(&f) == 0);
+        }
+        assert(sends == 1000 && f.flow->requests_started == 1001);
+        fini(&f);
+
+        for (unsigned limit = 1; limit <= 2; limit++) {
+                init_redis(&f, true);
+                f.connections.max_requests = limit;
+                receive(&f, "$-1\r\n", false);
+                if (limit == 2) {
+                        assert(closed == 0 && rearm_redis(&f) == 0);
+                        receive(&f, "$-1\r\n", false);
+                }
+                assert(completed == limit && closed == 1);
+                fini(&f);
+        }
+        init_redis(&f, false);
+        receive(&f, "$0\r\n\r\n", false);
+        assert(completed == 1 && closed == 1 && last_result == TG_FLOW_RESULT_SUCCESS);
+        fini(&f);
+        init_redis(&f, true);
+        receive(&f, "$0\r\n\r\n", true);
+        assert(completed == 1 && closed == 1 && last_result == TG_FLOW_RESULT_SUCCESS);
+        fini(&f);
+
+        init_redis(&f, true);
+        receive(&f, "$-1\r\n", false);
+        eof = true;
+        assert(rearm_redis(&f) == -1 && errno == ESTALE && sends == 0);
+        fini(&f);
+        init_redis(&f, true);
+        receive(&f, "$-1\r\n", false);
+        fail_after_partial_send = true;
+        assert(rearm_redis(&f) == -1 && errno == EIO);
+        assert(sends == 2 && f.flow->txn.request_offset == 2 && completed == 1);
+        fini(&f);
+
+        for (unsigned idle = 0; idle <= 1; idle++) {
+                init_redis(&f, true);
+                if (idle)
+                        receive(&f, "$-1\r\n", false);
+                recv_error = ECONNRESET;
+                tg_flow_on_event(&f.map, &f.pool, f.flow, OWNER_IO_EV_ERROR | OWNER_IO_EV_READ);
+                assert(completed == 1 && closed == 1);
+                if (!idle)
+                        assert(last_reason == TG_ERROR_RESET);
+                fini(&f);
+
+                init_redis(&f, true);
+                if (idle)
+                        receive(&f, "$-1\r\n", false);
+                assert(owner_timer_arm_at(&f.flow->timer, owner_timer_now()) == 0);
+                assert(owner_timer_poll(&f.timers) == 0);
+                tg_flow_expire(&f.map, &f.pool, UINT64_MAX);
+                assert(completed == 1 && closed == 1);
+                if (!idle)
+                        assert(last_reason == TG_ERROR_RESPONSE_TIMEOUT);
+                fini(&f);
+        }
+        const char *bad[] = {"-WRONGTYPE not a string\r\n", "$1\r\nx!", "$3\r\nx"};
+        const enum tg_error_reason reasons[] = {TG_ERROR_REDIS_ERROR, TG_ERROR_PARSE, TG_ERROR_PEER_EOF};
+        for (unsigned i = 0; i < 3; i++) {
+                init_redis(&f, true);
+                receive(&f, bad[i], true);
+                assert(completed == 1 && closed == 1 && last_reason == reasons[i]);
+                assert(last_result == TG_FLOW_RESULT_PROTOCOL_FAILURE);
+                fini(&f);
+        }
+        /* A subsequent request starts with fresh parser state after failures. */
+        init_redis(&f, true);
+        receive(&f, "$-1\r\n", false);
+        assert(completed == 1 && last_reason == TG_ERROR_NONE);
+        tg_conn_pool_begin_drain(&f.connections);
+        assert(tg_conn_pool_take_any_idle(&f.connections) == f.flow);
+        tg_flow_close_connection(&f.map, &f.pool, f.flow, false, TG_FLOW_RESULT_SUCCESS);
+        assert(completed == 1 && closed == 1);
+        fini(&f);
+}
+
 int main(int argc, char **argv) {
         assert(rte_eal_init(argc, argv) >= 0);
         assert(owner_timer_global_init() == 0);
+        test_redis();
         struct fixture f;
         init(&f);
         for (unsigned i = 0; i < 1000; i++) {

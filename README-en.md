@@ -20,14 +20,14 @@ The separate single-port group reuses earlier uncapped SnowTG/wrk measurements (
 
 ## Project Overview
 
-`SnowTG` is a DPDK-based userspace IPv4 network stack and mixed traffic generator. It uses a single-owner, per-core reactor architecture with lock-free hot paths, provides TCP/UDP socket capabilities, and drives HTTP/DNS load traffic through its own network stack.
+`SnowTG` is a DPDK-based userspace IPv4 network stack and mixed traffic generator. It uses a single-owner, per-core reactor architecture with lock-free hot paths, provides TCP/UDP socket capabilities, and drives HTTP/DNS/Redis load traffic through its own network stack.
 
 中文文档：[`README.md`](README.md)
 
 The repository contains:
 
 - [`pro-stack/`](pro-stack/): a userspace Ethernet/ARP/IPv4/ICMP/TCP/UDP stack with BSD-style APIs and owner-local non-blocking interfaces.
-- [`traffic-gen/`](traffic-gen/): a scenario-driven HTTP/1.1 and DNS traffic generator with CPS control, concurrency limits, connection reuse, sharded scheduling, and CSV metrics.
+- [`traffic-gen/`](traffic-gen/): a scenario-driven HTTP/1.1, DNS and Redis traffic generator with CPS control, concurrency limits, connection reuse, sharded scheduling, and CSV metrics.
 - [`apps/`](apps/): TCP/UDP echo examples and the network-stack runtime entry point.
 - [`test/`](test/): regression tests for protocols, owner lifecycle management, scheduling, scenario parsing, and statistics.
 

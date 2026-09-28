@@ -5,6 +5,7 @@
 #include "../traffic-gen/core/stats.h"
 #include "../traffic-gen/proto/dns/dns_client.h"
 #include "../traffic-gen/proto/http/http_client.h"
+#include "../traffic-gen/proto/redis/redis_client.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -627,7 +628,31 @@ static int test_phased_open_arrivals(void) {
         return 0;
 }
 
+static int test_redis_plan(void) {
+        struct tg_plan plan = {0}, shard = {0};
+        ASSERT_TRUE(tg_plan_load_file(&plan, "../traffic-gen/scenarios/test/redis-mixed.json") == 0);
+        ASSERT_TRUE(plan.class_count == 5);
+        for (unsigned i = 0; i < 3; i++) {
+                ASSERT_TRUE(plan.classes[i].proto == &tg_redis_proto_ops);
+                ASSERT_TRUE(plan.classes[i].transport == TG_TRANSPORT_TCP);
+                const struct tg_redis_config *c = plan.classes[i].proto_config;
+                ASSERT_TRUE(c->command == (enum tg_redis_command)i && c->keepalive);
+        }
+        ASSERT_TRUE(tg_plan_partition(&shard, &plan, 1, 2) == 0);
+        for (unsigned i = 0; i < 3; i++) {
+                ASSERT_TRUE(plan.classes[i].proto_config != shard.classes[i].proto_config);
+                ASSERT_TRUE(!memcmp(plan.classes[i].proto_config, shard.classes[i].proto_config,
+                                     sizeof(struct tg_redis_config)));
+        }
+        tg_plan_fini(&plan);
+        ASSERT_TRUE(shard.classes[2].request_template_len > 0);
+        ASSERT_TRUE(!strcmp(((struct tg_redis_config *)shard.classes[2].proto_config)->value, "hello"));
+        tg_plan_fini(&shard);
+        return 0;
+}
+
 int main(void) {
+        ASSERT_TRUE(test_redis_plan() == 0);
         ASSERT_TRUE(test_phased_open_arrivals() == 0);
         ASSERT_TRUE(test_plan_load_and_validation() == 0);
         ASSERT_TRUE(test_mixed_protocol_plan_and_partition() == 0);

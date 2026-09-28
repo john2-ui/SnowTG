@@ -6,7 +6,7 @@
  * @brief Owner-local TCP/UDP flow state, socket mapping, and lifecycle API.
  *
  * A flow owns one transport connection and one active transaction. TCP flows
- * may return to an owner-local idle pool after a successful HTTP transaction;
+ * may return to an owner-local idle pool after a reusable HTTP/Redis transaction;
  * the socket mapping remains in place until connection teardown.
  */
 

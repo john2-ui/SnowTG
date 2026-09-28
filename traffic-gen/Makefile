@@ -38,6 +38,8 @@ SRCS := main_tg.c \
 	core/dataplane_stats.c \
 	core/txn.c \
 	proto/registry.c \
+	proto/redis/redis_client.c \
+	proto/redis/redis_scenario.c \
 	proto/http/http_client.c \
 	proto/http/http_scenario.c \
 	proto/dns/dns_client.c \

@@ -32,6 +32,7 @@ int main(void) {
         assert(close(fd) == 0);
         assert(tg_stats_csv_open(&csv, path, 1000000) == 0);
         snapshot.resources.version = snapshot.resources.complete = 1;
+        snapshot.error_reasons[TG_ERROR_REDIS_ERROR] = 19;
         snapshot.resources.values[TG_RESOURCE_tcp_payload] = (struct resource_metric){
             .capacity = 10, .current = 2, .peak = 7, .exhausted = UINT64_C(4294967296)};
         struct tg_stats_snapshot total = {0}, aggregate = {0}, copy = {0};
@@ -42,6 +43,7 @@ int main(void) {
         tg_stats_snapshot_add(&aggregate, &snapshot);
         tg_stats_snapshot_add(&aggregate, &snapshot);
         assert(aggregate.resources.complete == 2);
+        assert(aggregate.error_reasons[TG_ERROR_REDIS_ERROR] == 38);
         assert(aggregate.resources.values[TG_RESOURCE_tcp_payload].current == 4);
         assert(aggregate.resources.values[TG_RESOURCE_tcp_payload].capacity == 20);
         assert(aggregate.resources.values[TG_RESOURCE_tcp_payload].peak == 7);
@@ -74,6 +76,7 @@ int main(void) {
         assert(header_count == record_count);
         bool found_resource = false;
         bool found_error = false;
+        bool found_redis = false;
         bool found_udp = false;
         bool found_ofo_drop = false;
         bool found_ofo_pressure = false;
@@ -81,6 +84,10 @@ int main(void) {
         bool found_forced_cleanup = false;
         bool found_pool_in_use = false;
         for (unsigned int i = 0; i < header_count; i++) {
+                if (strcmp(header_columns[i], "error_redis_error") == 0) {
+                        assert(strcmp(record_columns[i], "19") == 0);
+                        found_redis = true;
+                }
                 if (strcmp(header_columns[i], "res_tcp_payload_exhausted") == 0) {
                         assert(strcmp(record_columns[i], "4294967296") == 0);
                         found_resource = true;
@@ -117,6 +124,7 @@ int main(void) {
         }
         assert(found_resource);
         assert(found_error);
+        assert(found_redis);
         assert(found_udp);
         assert(found_ofo_drop);
         assert(found_ofo_pressure);

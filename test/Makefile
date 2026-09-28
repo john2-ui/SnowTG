@@ -75,6 +75,8 @@ DNS_CLIENT_OBJS := $(BUILD_DIR)/test_dns_client.o \
 	$(BUILD_DIR)/tg_txn.o \
 	$(BUILD_DIR)/tg_value.o \
 	$(BUILD_DIR)/tg_dns_client.o
+REDIS_CLIENT_OBJS := $(BUILD_DIR)/tg_redis_client.o $(BUILD_DIR)/tg_redis_scenario.o \
+	$(BUILD_DIR)/tg_txn.o $(BUILD_DIR)/tg_value.o $(BUILD_DIR)/tg_scenario_json.o
 SCENARIO_SCHEDULER_OBJS := $(BUILD_DIR)/test_scenario_scheduler.o \
 	$(BUILD_DIR)/tg_scenario.o \
 	$(BUILD_DIR)/tg_scenario_json.o \
@@ -88,6 +90,8 @@ SCENARIO_SCHEDULER_OBJS := $(BUILD_DIR)/test_scenario_scheduler.o \
 	$(BUILD_DIR)/tg_http_scenario.o \
 	$(BUILD_DIR)/tg_dns_client.o \
 	$(BUILD_DIR)/tg_dns_scenario.o \
+	$(BUILD_DIR)/tg_redis_client.o \
+	$(BUILD_DIR)/tg_redis_scenario.o \
 	$(BUILD_DIR)/llhttp.o \
 	$(BUILD_DIR)/llhttp_api.o \
 	$(BUILD_DIR)/llhttp_http.o
@@ -281,7 +285,7 @@ $(IPV4_REASSEMBLY_TEST): test_ipv4_reassembly.c \
 		-o $@ $(DPDK_LIBS) $(SANITIZER_LDFLAGS)
 
 $(STATS_CSV_TEST): test_stats_csv.c ../traffic-gen/core/stats.c ../traffic-gen/core/stats_csv.c \
-		../traffic-gen/core/stats_csv.h ../traffic-gen/core/stats.h | $(BUILD_DIR)
+		../traffic-gen/core/stats_csv.h ../traffic-gen/core/stats.h ../traffic-gen/core/txn.h | $(BUILD_DIR)
 	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) -I../traffic-gen/core \
 		test_stats_csv.c ../traffic-gen/core/stats.c ../traffic-gen/core/stats_csv.c -o $@ $(DPDK_LIBS)
 
@@ -322,6 +326,7 @@ $(BUILD_DIR)/tg_txn.o: ../traffic-gen/core/txn.c \
 
 $(BUILD_DIR)/test_scenario_scheduler.o: test_scenario_scheduler.c \
 		../traffic-gen/core/scenario.h ../traffic-gen/core/scheduler.h \
+		../traffic-gen/core/txn.h \
 		../traffic-gen/core/socket_capacity.h \
 		../traffic-gen/core/stats.h \
 		../traffic-gen/proto/http/http_client.h \
@@ -358,7 +363,7 @@ $(BUILD_DIR)/tg_scheduler.o: ../traffic-gen/core/scheduler.c \
 	$(CC) $(HTTP_CLIENT_CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/tg_stats.o: ../traffic-gen/core/stats.c \
-		../traffic-gen/core/stats.h ../traffic-gen/core/flow.h Makefile | $(BUILD_DIR)
+		../traffic-gen/core/stats.h ../traffic-gen/core/flow.h ../traffic-gen/core/txn.h Makefile | $(BUILD_DIR)
 	$(CC) $(HTTP_CLIENT_CFLAGS) $(DPDK_CFLAGS) -D_GNU_SOURCE -c $< -o $@
 
 $(BUILD_DIR)/tg_http_client.o: ../traffic-gen/proto/http/http_client.c \
@@ -448,12 +453,12 @@ test: test-flow-tcp
 
 $(BUILD_DIR)/test_flow_tcp: test_flow_tcp.c ../traffic-gen/core/flow.c \
 		../traffic-gen/core/flow.h ../traffic-gen/core/flow_pool.c \
-		../traffic-gen/core/conn_pool.c $(HTTP_CLIENT_OBJS) $(STACK_LIB)
+		../traffic-gen/core/conn_pool.c $(HTTP_CLIENT_OBJS) $(BUILD_DIR)/tg_redis_client.o $(STACK_LIB)
 	$(CC) $(OWNER_IO_CFLAGS) $(DPDK_CFLAGS) $(HTTP_CLIENT_CFLAGS) \
 		test_flow_tcp.c ../traffic-gen/core/flow.c \
 		../traffic-gen/core/flow_pool.c ../traffic-gen/core/conn_pool.c \
 		$(filter-out $(BUILD_DIR)/test_http_client.o,$(HTTP_CLIENT_OBJS)) \
-		$(STACK_LIB) -Wl,--wrap=owner_io_recv -Wl,--wrap=owner_io_send \
+		$(BUILD_DIR)/tg_redis_client.o $(STACK_LIB) -Wl,--wrap=owner_io_recv -Wl,--wrap=owner_io_send \
 		-Wl,--wrap=owner_io_close -Wl,--wrap=owner_io_error -o $@ $(DPDK_LIBS) $(SANITIZER_LDFLAGS)
 
 .PHONY: test-tcp-ack
@@ -524,3 +529,22 @@ test-resource-cli:
 	$(MAKE) -C ../traffic-gen $(BUILD_DIR)/traffic-gen-resource-test \
 		BUILD_DIR=$(BUILD_DIR) STACK_BUILD_DIR=$(STACK_BUILD_DIR) OWNER_TIMER_BACKEND=$(OWNER_TIMER_BACKEND)
 	python3 test_resource_cli.py ../traffic-gen/$(BUILD_DIR)/traffic-gen-resource-test
+
+# RESP2 tests run without EAL, a server, or a network interface.
+$(BUILD_DIR)/tg_redis_client.o: ../traffic-gen/proto/redis/redis_client.c ../traffic-gen/proto/redis/redis_client.h ../traffic-gen/core/txn.h | $(BUILD_DIR)
+	$(CC) $(TEST_CFLAGS) -c $< -o $@
+$(BUILD_DIR)/tg_redis_scenario.o: ../traffic-gen/proto/redis/redis_scenario.c ../traffic-gen/proto/redis/redis_scenario.h ../traffic-gen/proto/redis/redis_client.h ../traffic-gen/core/scenario.h ../traffic-gen/core/value.h | $(BUILD_DIR)
+	$(CC) $(TEST_CFLAGS) -c $< -o $@
+$(BUILD_DIR)/test_redis_client: test_redis_client.c $(REDIS_CLIENT_OBJS)
+	$(CC) $(TEST_CFLAGS) $^ -o $@ $(SANITIZER_LDFLAGS)
+.PHONY: test-redis-client test-redis-scripts test-redis-cli
+test-redis-client: $(BUILD_DIR)/test_redis_client
+	$<
+test-redis-scripts:
+	python3 test_redis_scripts.py
+	python3 test_redis_peer.py
+test: test-redis-client test-redis-scripts
+
+test-redis-cli:
+	$(MAKE) -C ../traffic-gen BUILD_DIR=$(BUILD_DIR) STACK_BUILD_DIR=$(STACK_BUILD_DIR) SANITIZERS=$(SANITIZERS)
+	SNOWTG_TEST_BINARY=$(abspath ../traffic-gen/$(BUILD_DIR)/traffic-gen) python3 test_redis_cli.py
