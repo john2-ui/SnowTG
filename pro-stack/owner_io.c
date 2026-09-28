@@ -126,6 +126,11 @@ int owner_io_connect(struct nsock_handle handle, const struct sockaddr *addr,
         return sk->ops->connect(sk, addr, addrlen);
 }
 
+int owner_io_error(struct nsock_handle handle) {
+        struct nsock *sk = owner_io_resolve(handle);
+        return sk == NULL ? -1 : sk->terminal_error;
+}
+
 ssize_t owner_io_send(struct nsock_handle handle, const void *buf, size_t len) {
         struct nsock *sk = owner_io_resolve(handle);
         if (sk == NULL)

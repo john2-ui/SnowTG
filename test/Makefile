@@ -432,6 +432,13 @@ test-workflow-scripts:
 	python3 test_workflow_scripts.py
 test: test-workflow-scripts
 
+.PHONY: test-acceptance-tools
+test-acceptance-tools:
+	python3 test_acceptance_search.py
+	python3 test_acceptance_peer.py
+	python3 test_acceptance_peer.py --pressure
+test: test-acceptance-tools
+
 .PHONY: test-flow-tcp
 test-flow-tcp: $(BUILD_DIR)/test_flow_tcp
 	$(BUILD_DIR)/test_flow_tcp --no-huge --no-pci --file-prefix flow-tcp-test
@@ -445,7 +452,7 @@ $(BUILD_DIR)/test_flow_tcp: test_flow_tcp.c ../traffic-gen/core/flow.c \
 		../traffic-gen/core/flow_pool.c ../traffic-gen/core/conn_pool.c \
 		$(filter-out $(BUILD_DIR)/test_http_client.o,$(HTTP_CLIENT_OBJS)) \
 		$(STACK_LIB) -Wl,--wrap=owner_io_recv -Wl,--wrap=owner_io_send \
-		-Wl,--wrap=owner_io_close -o $@ $(DPDK_LIBS) $(SANITIZER_LDFLAGS)
+		-Wl,--wrap=owner_io_close -Wl,--wrap=owner_io_error -o $@ $(DPDK_LIBS) $(SANITIZER_LDFLAGS)
 
 .PHONY: test-tcp-ack
 test: test-tcp-ack

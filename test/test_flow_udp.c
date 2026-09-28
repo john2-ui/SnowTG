@@ -55,6 +55,7 @@ static void mark_test_peer(struct rte_mbuf *mbuf) {
 struct finish_context {
         unsigned int calls;
         enum tg_flow_result result;
+        enum tg_error_reason reason;
 };
 
 static void test_on_finish(void *ctx,
@@ -64,6 +65,7 @@ static void test_on_finish(void *ctx,
 
         finish->calls++;
         finish->result = result;
+        finish->reason = flow->txn.error_reason;
 }
 
 static struct tg_flow *only_flow(struct tg_flow_map *map) {
@@ -588,6 +590,7 @@ int main(int argc, char **argv) {
         tg_flow_expire(&map, &pool, 2);
         assert(finish.calls == 3);
         assert(finish.result == TG_FLOW_RESULT_IO_FAILURE);
+        assert(finish.reason == TG_ERROR_RESPONSE_TIMEOUT);
         assert(tg_flow_map_lookup(&map, old_handle) == NULL);
 
         flow = start_udp_flow(&map, &pool, &peer, &finish);

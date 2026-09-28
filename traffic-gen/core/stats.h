@@ -55,6 +55,7 @@ struct tg_stats_snapshot {
         uint64_t fail_connect;
         uint64_t fail_io;
         uint64_t fail_proto;
+        uint64_t error_reasons[TG_ERROR_COUNT];
         uint64_t fail_resource;
         /** Starts deferred because local resources were unavailable. */
         uint64_t starts_deferred_resource;
@@ -203,6 +204,7 @@ struct tg_stats {
         uint64_t fail_connect;
         uint64_t fail_io;
         uint64_t fail_proto;
+        uint64_t error_reasons[TG_ERROR_COUNT];
         uint64_t fail_resource;
         uint64_t starts_deferred_resource;
         uint64_t bytes_tx;

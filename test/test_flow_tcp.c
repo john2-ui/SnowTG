@@ -18,6 +18,8 @@ static int recv_error;
 static bool eof, fail_after_partial_send;
 static unsigned closed, completed, sends;
 static enum tg_flow_result last_result;
+static enum tg_error_reason last_reason;
+int __wrap_owner_io_error(struct nsock_handle h) { (void)h; return recv_error; }
 
 ssize_t __wrap_owner_io_recv(struct nsock_handle h, void *buf, size_t len) {
         (void)h;
@@ -55,6 +57,7 @@ static void finish(void *ctx, const struct tg_flow *flow,
         assert(flow->txn.proto != NULL);
         completed++;
         last_result = result;
+        last_reason = flow->txn.error_reason;
 }
 
 struct fixture {
@@ -221,15 +224,40 @@ int main(int argc, char **argv) {
         assert(completed == 1 && last_result == TG_FLOW_RESULT_IO_FAILURE);
         fini(&f);
 
+        assert(last_reason == TG_ERROR_RESET);
+        init(&f);
+        recv_error = ECONNRESET;
+        tg_flow_on_event(&f.map, &f.pool, f.flow,
+                         OWNER_IO_EV_ERROR | OWNER_IO_EV_READ | OWNER_IO_EV_HUP);
+        assert(completed == 1 && last_reason == TG_ERROR_RESET);
+        fini(&f);
+        init(&f);
+        f.flow->deadline_cycles = rte_get_timer_cycles();
+        tg_flow_expire(&f.map, &f.pool, f.flow->deadline_cycles);
+        assert(completed == 1 && last_reason == TG_ERROR_RESPONSE_TIMEOUT);
+        fini(&f);
+        init(&f);
+        f.flow->state = TG_FLOW_CONNECTING;
+        f.flow->deadline_cycles = rte_get_timer_cycles();
+        tg_flow_expire(&f.map, &f.pool, f.flow->deadline_cycles);
+        assert(completed == 1 && last_reason == TG_ERROR_CONNECT_TIMEOUT);
+        fini(&f);
+        init(&f);
+        receive(&f, "HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\n\r\n", true);
+        assert(completed == 1 && last_reason == TG_ERROR_HTTP_STATUS);
+        fini(&f);
+
         /* Real malformed/truncated responses must still fail validation. */
         init(&f);
         receive(&f, "not HTTP\r\n", true);
+        assert(last_reason == TG_ERROR_PARSE);
         assert(completed == 1 && last_result == TG_FLOW_RESULT_PROTOCOL_FAILURE);
         fini(&f);
         init(&f);
         receive(&f, "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nx", true);
         assert(completed == 1 && last_result == TG_FLOW_RESULT_PROTOCOL_FAILURE);
         fini(&f);
+        assert(last_reason == TG_ERROR_PEER_EOF);
         assert(rte_eal_cleanup() == 0);
         return 0;
 }

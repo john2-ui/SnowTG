@@ -246,6 +246,8 @@ python3 traffic-gen/snowtg.py report debug/run2/result.json \
 
 `run` 自动保存 CSV 和日志；`result.json` 记录配置、环境/构建信息与验收结果，`report.html` 展示报告。
 输出目录必须是新目录，无需另传 CSV 路径。返回码：`0` 验收通过、`2` 关键 SLO 未达标、`1` 运行无效。
+
+错误原因分别记录在 CSV 的 `error_*` 列、`result.json.error_reasons` 和 HTML 中，包括建连/响应超时、RST、提前 EOF、HTTP 状态拒绝、DNS RCODE 和解析失败。可用 `assertion("error_reset", "==", 0)` 设置整次运行的门禁；原因计数不接受阶段/协议筛选，未记录细分原因的旧结果不会补成零。
 运行时也可在剧本路径前加 `--baseline PATH`；仅导出配置用 `--emit-json PATH`（不带 `run`）。
 比较会检查负载及环境是否可比；最大可持续负载仍标为未测定。`debug/` 下的结果不进入 Git。
 

@@ -65,6 +65,8 @@ static size_t build_a_response(const uint8_t *query, size_t query_len,
         return offset;
 }
 
+static enum tg_error_reason last_reason;
+
 static enum tg_proto_result
 parse_response(const struct tg_dns_config *config, const uint8_t *query,
                size_t query_len, const uint8_t *response, size_t response_len) {
@@ -75,6 +77,7 @@ parse_response(const struct tg_dns_config *config, const uint8_t *query,
                 return TG_PROTO_FAILED;
         enum tg_proto_result result =
             tg_txn_on_rx(&txn, response, response_len);
+        last_reason = txn.error_reason;
         tg_txn_reset(&txn);
         return result;
 }
@@ -154,6 +157,15 @@ static int test_response_validation(void) {
         ASSERT_TRUE(parse_response(&config, query, query_len, response,
                                    response_len) == TG_PROTO_COMPLETE);
 
+        put_u16(response + 2, 0x8182);
+        ASSERT_TRUE(parse_response(&config, query, query_len, response,
+                                   response_len) == TG_PROTO_FAILED);
+        ASSERT_TRUE(last_reason == TG_ERROR_DNS_RCODE);
+        put_u16(response, (uint16_t)(config.transaction_id + 1U));
+        ASSERT_TRUE(parse_response(&config, query, query_len, response,
+                                   response_len) == TG_PROTO_FAILED);
+        ASSERT_TRUE(last_reason == TG_ERROR_PARSE);
+        put_u16(response + 2, 0x8180);
         put_u16(response, (uint16_t)(config.transaction_id + 1U));
         ASSERT_TRUE(parse_response(&config, query, query_len, response,
                                    response_len) == TG_PROTO_FAILED);

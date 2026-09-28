@@ -22,8 +22,8 @@ int main(void) {
         char path[] = "/tmp/tg-stats-csv-XXXXXX";
         char header[4096];
         char record[4096];
-        char *header_columns[128];
-        char *record_columns[128];
+        char *header_columns[160];
+        char *record_columns[160];
         struct tg_stats_csv csv;
         struct tg_stats_snapshot snapshot = {0};
         int fd = mkstemp(path);
@@ -32,6 +32,7 @@ int main(void) {
         assert(close(fd) == 0);
         assert(tg_stats_csv_open(&csv, path, 1000000) == 0);
         snapshot.worker_index = 0;
+        snapshot.error_reasons[TG_ERROR_RESET] = 17;
         snapshot.phase = TG_STATS_PHASE_PERIODIC;
         snapshot.udp_tx_queue_drops = 77;
         snapshot.ofo_drop_pressure = 88;
@@ -56,6 +57,7 @@ int main(void) {
             split_csv(record, record_columns,
                       sizeof(record_columns) / sizeof(record_columns[0]));
         assert(header_count == record_count);
+        bool found_error = false;
         bool found_udp = false;
         bool found_ofo_drop = false;
         bool found_ofo_pressure = false;
@@ -63,6 +65,10 @@ int main(void) {
         bool found_forced_cleanup = false;
         bool found_pool_in_use = false;
         for (unsigned int i = 0; i < header_count; i++) {
+                if (strcmp(header_columns[i], "error_reset") == 0) {
+                        assert(strcmp(record_columns[i], "17") == 0);
+                        found_error = true;
+                }
                 if (strcmp(header_columns[i], "udp_tx_queue_drops") == 0) {
                         assert(strcmp(record_columns[i], "77") == 0);
                         found_udp = true;
@@ -89,6 +95,7 @@ int main(void) {
                         found_pool_in_use = true;
                 }
         }
+        assert(found_error);
         assert(found_udp);
         assert(found_ofo_drop);
         assert(found_ofo_pressure);

@@ -150,6 +150,7 @@ static int tg_http_on_headers_complete(llhttp_t *parser) {
                 return 0;
         if (!(config && config->accept_any_status) &&
             (status_code < 200 || status_code >= 300)) {
+                context->txn->error_reason = TG_ERROR_HTTP_STATUS;
                 llhttp_set_error_reason(parser,
                                         "HTTP response status is not 2xx");
                 return -1;

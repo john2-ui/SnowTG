@@ -74,7 +74,11 @@ int tg_stats_csv_open(struct tg_stats_csv *csv, const char *path,
                 "tx_bursts,nic_tx_cycles,nic_tx_sampled_packets,"
                 "nic_tx_sampled_bursts,nic_rx_packets,rx_burst_calls,"
                 "rx_empty_bursts,rx_full_bursts,rx_handoffs,rx_handoff_drops,"
-                "load_phase_index,arrivals_planned,arrivals_skipped\n") < 0) {
+                "load_phase_index,arrivals_planned,arrivals_skipped"
+#define TG_ERROR_HEADER(symbol, name) ",error_" #name
+                TG_ERROR_REASONS(TG_ERROR_HEADER)
+#undef TG_ERROR_HEADER
+                "\n") < 0) {
                 (void)fclose(csv->file);
                 memset(csv, 0, sizeof(*csv));
                 return -1;
@@ -120,7 +124,11 @@ int tg_stats_csv_write(struct tg_stats_csv *csv,
             "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
             "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
             "%" PRIu64 ",%" PRIu64 ",%" PRIu64 ","
-            "%" PRIu64 ",%" PRIu64 ",%" PRIu64 "\n",
+            "%" PRIu64 ",%" PRIu64 ",%" PRIu64
+#define TG_ERROR_FORMAT(symbol, name) ",%" PRIu64
+            TG_ERROR_REASONS(TG_ERROR_FORMAT)
+#undef TG_ERROR_FORMAT
+            "\n",
             scope, tg_csv_phase(snapshot->phase),
             tg_csv_cycles_to_us(snapshot->timestamp_cycles, hz),
             snapshot->sequence, snapshot->worker_index, snapshot->lcore_id,
@@ -184,7 +192,11 @@ int tg_stats_csv_write(struct tg_stats_csv *csv,
             snapshot->rx_empty_bursts, snapshot->rx_full_bursts,
             snapshot->rx_handoffs, snapshot->rx_handoff_drops,
             snapshot->load_phase_index, snapshot->arrivals_planned,
-            snapshot->arrivals_skipped);
+            snapshot->arrivals_skipped
+#define TG_ERROR_VALUE(symbol, name) , snapshot->error_reasons[TG_ERROR_##symbol]
+            TG_ERROR_REASONS(TG_ERROR_VALUE)
+#undef TG_ERROR_VALUE
+            );
         if (result < 0)
                 csv->failed = true;
         return result < 0 ? -1 : 0;

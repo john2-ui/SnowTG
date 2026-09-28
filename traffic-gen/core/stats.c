@@ -44,6 +44,7 @@ void tg_stats_on_start_failure(struct tg_stats *stats) {
         stats->txns_done++;
         stats->txns_fail++;
         stats->fail_connect++;
+        stats->error_reasons[TG_ERROR_START]++;
 }
 
 /** @copydoc tg_stats_on_resource_deferred */
@@ -102,6 +103,12 @@ void tg_stats_on_flow_finished(struct tg_stats *stats,
         }
 
         stats->txns_fail++;
+        enum tg_error_reason reason = flow->txn.error_reason;
+        if (reason <= TG_ERROR_NONE || reason >= TG_ERROR_COUNT)
+                reason = result == TG_FLOW_RESULT_CONNECT_FAILURE ? TG_ERROR_CONNECT :
+                         result == TG_FLOW_RESULT_PROTOCOL_FAILURE ? TG_ERROR_PARSE :
+                         result == TG_FLOW_RESULT_RESOURCE_PRESSURE ? TG_ERROR_RESOURCE : TG_ERROR_IO;
+        stats->error_reasons[reason]++;
         switch (result) {
         case TG_FLOW_RESULT_CONNECT_FAILURE:
                 stats->fail_connect++;
@@ -219,6 +226,7 @@ void tg_stats_snapshot_from_stats(struct tg_stats_snapshot *snapshot,
         snapshot->fail_connect = stats->fail_connect;
         snapshot->fail_io = stats->fail_io;
         snapshot->fail_proto = stats->fail_proto;
+        memcpy(snapshot->error_reasons, stats->error_reasons, sizeof(snapshot->error_reasons));
         snapshot->fail_resource = stats->fail_resource;
         snapshot->starts_deferred_resource = stats->starts_deferred_resource;
         snapshot->bytes_tx = stats->bytes_tx;
@@ -292,6 +300,8 @@ void tg_stats_snapshot_add(struct tg_stats_snapshot *aggregate,
         aggregate->fail_connect += sample->fail_connect;
         aggregate->fail_io += sample->fail_io;
         aggregate->fail_proto += sample->fail_proto;
+        for (unsigned i = 1; i < TG_ERROR_COUNT; i++)
+                aggregate->error_reasons[i] += sample->error_reasons[i];
         aggregate->fail_resource += sample->fail_resource;
         aggregate->starts_deferred_resource += sample->starts_deferred_resource;
         aggregate->bytes_tx += sample->bytes_tx;

@@ -261,16 +261,13 @@ static bool tg_dns_response_valid(const struct tg_dns_state *state,
         flags = tg_dns_get_u16(data + 2);
         if ((flags & UINT16_C(0x8000)) == 0 || /* QR */
             (flags & UINT16_C(0x7800)) != 0 || /* OPCODE */
-            (flags & UINT16_C(0x0200)) != 0 || /* TC */
-            (flags & UINT16_C(0x000f)) != 0)   /* RCODE */
+            (flags & UINT16_C(0x0200)) != 0)   /* TC */
                 return false;
         if (tg_dns_get_u16(data + 4) != 1)
                 return false;
         answer_count = tg_dns_get_u16(data + 6);
         authority_count = tg_dns_get_u16(data + 8);
         additional_count = tg_dns_get_u16(data + 10);
-        if (answer_count == 0)
-                return false;
 
         if (tg_dns_expand_name(data, length, offset, expanded_name,
                                sizeof(expanded_name), &offset) != 0 ||
@@ -402,6 +399,12 @@ static enum tg_proto_result tg_dns_on_rx(struct tg_txn *txn,
         config = txn->class_config;
         state = txn->proto_ctx;
         if (!tg_dns_response_valid(state, config, data, len))
+                return TG_PROTO_FAILED;
+        if ((tg_dns_get_u16(data + 2) & 15) != 0) {
+                txn->error_reason = TG_ERROR_DNS_RCODE;
+                return TG_PROTO_FAILED;
+        }
+        if (tg_dns_get_u16(data + 6) == 0)
                 return TG_PROTO_FAILED;
         if (config->require_address && tg_dns_address(state, config, data, len))
                 return TG_PROTO_FAILED;

@@ -76,6 +76,7 @@ enum nsock_io_mode {
  */
 struct nsock {
         uint8_t protocol; /**< IPPROTO_UDP / IPPROTO_TCP. */
+        int terminal_error; /**< Sticky owner-local errno; zero for orderly EOF. */
 
         uint32_t local_ip;   /**< Bound IPv4, network byte order. */
         uint16_t local_port; /**< Bound transport port, network byte order. */

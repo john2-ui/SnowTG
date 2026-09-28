@@ -23,7 +23,30 @@
  * @p class_config is immutable compiled-plan data.  @p proto_ctx is private
  * plugin state and is released through the protocol reset callback.
  */
+#define TG_ERROR_REASONS(X) \
+        X(CONNECT_TIMEOUT, connect_timeout) \
+        X(RESPONSE_TIMEOUT, response_timeout) \
+        X(RESET, reset) \
+        X(PEER_EOF, peer_eof) \
+        X(HTTP_STATUS, http_status) \
+        X(DNS_RCODE, dns_rcode) \
+        X(PARSE, parse) \
+        X(RESOURCE, resource) \
+        X(CONNECT, connect) \
+        X(IO, io) \
+        X(START, start) \
+        X(WORKFLOW, workflow)
+
+enum tg_error_reason {
+        TG_ERROR_NONE = 0,
+#define TG_ERROR_ENUM(symbol, name) TG_ERROR_##symbol,
+        TG_ERROR_REASONS(TG_ERROR_ENUM)
+#undef TG_ERROR_ENUM
+        TG_ERROR_COUNT
+};
+
 struct tg_txn {
+        enum tg_error_reason error_reason; /**< One terminal cause; reset on reuse. */
         const struct tg_proto_ops *proto;
         const void *class_config;
         void *proto_ctx;

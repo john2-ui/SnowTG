@@ -565,16 +565,21 @@ static void tg_flow_finish_transaction(struct tg_flow_map *map,
 
 /** Classify a failed send-side operation without blaming a local pool shortage.
  */
-static enum tg_flow_result tg_flow_io_result(void) {
-        return errno == ENOBUFS ? TG_FLOW_RESULT_RESOURCE_PRESSURE
-                                : TG_FLOW_RESULT_IO_FAILURE;
+static enum tg_flow_result tg_flow_io_result(struct tg_flow *flow) {
+        int error = errno;
+        flow->txn.error_reason = error == ECONNRESET ? TG_ERROR_RESET :
+            error == ETIMEDOUT ? (flow->state != TG_FLOW_CONNECTING
+                ? TG_ERROR_RESPONSE_TIMEOUT : TG_ERROR_CONNECT_TIMEOUT) :
+            error == ENOBUFS || error == ENOMEM ? TG_ERROR_RESOURCE : TG_ERROR_IO;
+        return flow->txn.error_reason == TG_ERROR_RESOURCE ? TG_FLOW_RESULT_RESOURCE_PRESSURE
+                                                          : TG_FLOW_RESULT_IO_FAILURE;
 }
 
 /** Keep parser violations distinct from local receive-memory exhaustion. */
-static enum tg_flow_result tg_flow_rx_result(void) {
+static enum tg_flow_result tg_flow_rx_result(struct tg_flow *flow) {
         if (errno == EPROTO)
                 return TG_FLOW_RESULT_PROTOCOL_FAILURE;
-        return tg_flow_io_result();
+        return tg_flow_io_result(flow);
 }
 
 /** @brief Compares one received UDP peer with the flow's configured peer. */
@@ -667,7 +672,7 @@ static void tg_flow_on_udp_event(struct tg_flow_map *map,
                 if (tg_flow_send_udp(flow) != 0) {
                         flow->state = TG_FLOW_FAILED;
                         tg_flow_finish_transaction(map, pool, flow,
-                                                   tg_flow_io_result(), false);
+                                                   tg_flow_io_result(flow), false);
                         return;
                 }
         }
@@ -678,7 +683,7 @@ static void tg_flow_on_udp_event(struct tg_flow_map *map,
                 if (tg_flow_drain_udp_receive(flow, &complete) != 0) {
                         flow->state = TG_FLOW_FAILED;
                         tg_flow_finish_transaction(map, pool, flow,
-                                                   tg_flow_rx_result(), false);
+                                                   tg_flow_rx_result(flow), false);
                         return;
                 }
                 if (complete) {
@@ -716,6 +721,9 @@ void tg_flow_on_event(struct tg_flow_map *map, struct tg_flow_pool *pool,
         }
 
         if (events & OWNER_IO_EV_ERROR) {
+                int error = owner_io_error(flow->handle);
+                errno = error > 0 ? error : EIO;
+                (void)tg_flow_io_result(flow);
                 if (flow->state == TG_FLOW_IDLE) {
                         tg_flow_close_connection(map, pool, flow, false,
                                                  TG_FLOW_RESULT_IO_FAILURE);
@@ -743,7 +751,7 @@ void tg_flow_on_event(struct tg_flow_map *map, struct tg_flow_pool *pool,
                 if (tg_flow_send_pending(flow) != 0) {
                         flow->state = TG_FLOW_FAILED;
                         tg_flow_finish_transaction(map, pool, flow,
-                                                   tg_flow_io_result(), false);
+                                                   tg_flow_io_result(flow), false);
                         return;
                 }
         }
@@ -757,7 +765,7 @@ void tg_flow_on_event(struct tg_flow_map *map, struct tg_flow_pool *pool,
                 if (tg_flow_drain_receive(flow, &eof, &complete) != 0) {
                         flow->state = TG_FLOW_FAILED;
                         tg_flow_finish_transaction(map, pool, flow,
-                                                   tg_flow_rx_result(), false);
+                                                   tg_flow_rx_result(flow), false);
                         return;
                 }
                 if (complete) {
@@ -824,6 +832,7 @@ void tg_flow_expire(struct tg_flow_map *map, struct tg_flow_pool *pool,
                         if (flow->deadline_cycles == 0 ||
                             now_cycles < flow->deadline_cycles)
                                 continue;
+                        flow->txn.error_reason = TG_ERROR_RESPONSE_TIMEOUT;
                         flow->state = TG_FLOW_FAILED;
                         tg_flow_finish_transaction(
                             map, pool, flow, TG_FLOW_RESULT_IO_FAILURE, false);
@@ -853,6 +862,7 @@ void tg_flow_expire(struct tg_flow_map *map, struct tg_flow_pool *pool,
                     flow->deadline_cycles != 0 &&
                     now_cycles >= flow->deadline_cycles) {
                         bool connecting = flow->state == TG_FLOW_CONNECTING;
+                        flow->txn.error_reason = connecting ? TG_ERROR_CONNECT_TIMEOUT : TG_ERROR_RESPONSE_TIMEOUT;
 
                         flow->state = TG_FLOW_FAILED;
                         tg_flow_finish_transaction(

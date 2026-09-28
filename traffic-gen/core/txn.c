@@ -88,7 +88,10 @@ enum tg_proto_result tg_txn_on_rx(struct tg_txn *txn, const uint8_t *data,
                 return TG_PROTO_FAILED;
 
         txn->response_bytes += len;
-        return txn->proto->on_rx(txn, data, len);
+        enum tg_proto_result result = txn->proto->on_rx(txn, data, len);
+        if (result == TG_PROTO_FAILED && txn->error_reason == TG_ERROR_NONE)
+                txn->error_reason = TG_ERROR_PARSE;
+        return result;
 }
 
 /** @copydoc tg_txn_on_eof */
@@ -96,5 +99,8 @@ enum tg_proto_result tg_txn_on_eof(struct tg_txn *txn) {
         if (txn == NULL || txn->proto == NULL || txn->proto->on_eof == NULL)
                 return TG_PROTO_FAILED;
 
-        return txn->proto->on_eof(txn);
+        enum tg_proto_result result = txn->proto->on_eof(txn);
+        if (result == TG_PROTO_FAILED && txn->error_reason == TG_ERROR_NONE)
+                txn->error_reason = TG_ERROR_PEER_EOF;
+        return result;
 }

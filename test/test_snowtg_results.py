@@ -23,7 +23,7 @@ plan = scenario('test', phases=[phase('steady', 10, 10)],
 r.validate_assertions(plan)
 for changes in [dict(metric='unknown'), dict(op='~'), dict(value=float('nan')),
                 dict(phase='missing'), {'class': 'missing'}, dict(critical='false'),
-                dict(quantile=.99), dict(extra=1)]:
+                dict(quantile=.99), dict(extra=1), dict(metric='error_reset', phase='steady')]:
     bad = deepcopy(plan)
     bad['assertions'] = [dict(plan['assertions'][0], **changes)]
     try:
@@ -126,4 +126,12 @@ with tempfile.TemporaryDirectory() as temp:
         r.validate_assertions(json.loads(exported.read_text()))
     if (temp/'lua.json').exists():
         assert json.loads((temp/'py.json').read_text()) == json.loads((temp/'lua.json').read_text())
+
+# Missing legacy detail is unavailable, never a fabricated zero.
+assert r.measure(result, {'metric':'error_reset'}) is None
+detailed = dict(result, error_reasons={k:0 for k in r.ERROR_REASONS})
+detailed['error_reasons']['error_reset'] = 3
+assert r.measure(detailed, {'metric':'error_reset'}) == 3
+assert not r.compare(result, detailed)['comparable']
+
 print('PASS: SLO semantics, histogram merging, comparison guards, failure artifacts and HTML escaping')

@@ -51,6 +51,7 @@ struct tg_business {
         struct nsock_handle handle;
         bool active, queued, waiting, thinking, timed_out, failed;
         enum tg_flow_result failure;
+        enum tg_error_reason error_reason;
         struct tg_http_config http;
         struct tg_dns_config dns;
         char request[TG_WF_REQUEST_CAP];
@@ -119,6 +120,7 @@ static void timing(struct tg_business *b, struct tg_flow *f) {
         f->class_index = b->cls;
         f->load_phase_index = b->phase;
         f->txn.proto = &tg_workflow_proto_ops;
+        f->txn.error_reason = b->error_reason;
         f->txn.request_offset = b->bytes_tx;
         f->txn.response_bytes = b->bytes_rx;
 }
@@ -147,6 +149,8 @@ static void finish(struct tg_business *b, bool ok) {
         struct tg_flow f;
         timing(b, &f);
         enum tg_flow_result result = ok ? TG_FLOW_RESULT_SUCCESS : b->failure;
+        if (!ok && f.txn.error_reason == TG_ERROR_NONE)
+                f.txn.error_reason = TG_ERROR_WORKFLOW;
         tg_stats_on_flow_finished(e->stats, &f, result);
         if (e->latency->groups)
                 tg_latency_on_finished(e->latency, &f, result,
@@ -402,6 +406,7 @@ static void response(void *arg, const struct tg_flow *f,
         if (!b->active || !b->waiting)
                 return;
         b->waiting = false;
+        b->error_reason = f->txn.error_reason;
         b->bytes_tx += f->txn.request_offset;
         b->bytes_rx += f->txn.response_bytes;
         const struct tg_step_plan *step = &b->plan->steps[b->step];
@@ -409,7 +414,10 @@ static void response(void *arg, const struct tg_flow *f,
         if (rte_get_timer_cycles() - b->step_start >=
             (uint64_t)step->timeout_ms *
                 b->engine->scheduler->cycles_per_second / 1000)
+        {
                 result = TG_FLOW_RESULT_IO_FAILURE;
+                b->error_reason = TG_ERROR_RESPONSE_TIMEOUT;
+        }
         bool ok = result == TG_FLOW_RESULT_SUCCESS;
         bool explicit_status = false;
         if (ok && step->checks >= 0) {
@@ -431,8 +439,10 @@ static void response(void *arg, const struct tg_flow *f,
         if (ok && step->kind == TG_STEP_HTTP && !explicit_status) {
                 struct tg_value v;
                 if (f->txn.proto->export_value(&f->txn, "status", "", 0, &v) ||
-                    atoi(v.text) < 200 || atoi(v.text) >= 300)
+                    atoi(v.text) < 200 || atoi(v.text) >= 300) {
                         ok = false;
+                        b->error_reason = TG_ERROR_HTTP_STATUS;
+                }
         }
         if (ok && step->extract >= 0) {
                 for (int i = step->extract + 1;
@@ -752,6 +762,7 @@ void tg_workflow_tick(struct tg_workflow_engine *e, unsigned budget) {
                             b->step < b->plan->count)
                                 record_step(b, false, false);
                         b->failure = TG_FLOW_RESULT_IO_FAILURE;
+                        b->error_reason = TG_ERROR_RESPONSE_TIMEOUT;
                         finish(b, false);
                         continue;
                 }

@@ -44,6 +44,8 @@ def run(name, path, expected):
 
 failed = run('failed', script, 2)
 assert failed['valid'] and not failed['invalid_reasons'], failed['invalid_reasons']
+assert failed['error_reasons']['error_response_timeout'] == failed['summary']['failed'] == 4
+assert sum(failed['error_reasons'].values()) == 4
 assert failed['summary']['planned'] == 50 and failed['summary']['skipped'] == 46
 assert [a['passed'] for a in failed['assertions']] == [False,False,True]
 assert failed['assertions'][1]['actual'] is None

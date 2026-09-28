@@ -62,6 +62,19 @@ int main(int argc, char **argv) {
         assert(socket_registry_init() == 0);
         assert(socket_owner_init(rte_lcore_id()) == 0);
 
+        struct nsock_handle reset_handle;
+        assert(owner_io_socket_create_local(IPPROTO_TCP, &reset_handle) == 0);
+        struct nsock *reset_sk = socket_owner_resolve_local(reset_handle);
+        assert(owner_io_error(reset_handle) == 0);
+        tcp_force_abort(reset_sk, ECONNRESET, "test-reset");
+        char byte;
+        assert(owner_io_error(reset_handle) == ECONNRESET);
+        assert(owner_io_recv(reset_handle, &byte, 1) == -1 && errno == ECONNRESET);
+        assert(owner_io_send(reset_handle, "x", 1) == -1 && errno == ECONNRESET);
+        assert(owner_io_error(reset_handle) == ECONNRESET);
+        assert(owner_io_close(reset_handle) == 0);
+        assert(owner_io_error(reset_handle) == -1);
+
         struct nsock_handle handle;
         assert(owner_io_socket_create(IPPROTO_UDP, &handle) == 0);
         struct nsock *sk = socket_owner_resolve_local(handle);

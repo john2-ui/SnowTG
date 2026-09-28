@@ -79,6 +79,8 @@ int owner_io_bind_ephemeral(struct nsock_handle handle, uint32_t local_ip);
  */
 int owner_io_connect(struct nsock_handle handle, const struct sockaddr *addr,
                      socklen_t addrlen);
+/** Read the sticky terminal errno without clearing it; -1 for an invalid handle. */
+int owner_io_error(struct nsock_handle handle);
 /** Try a connected send; returns -1/EAGAIN instead of parking the reactor. */
 ssize_t owner_io_send(struct nsock_handle handle, const void *buf, size_t len);
 /** Try a connected receive; returns -1/EAGAIN when no payload is ready. */

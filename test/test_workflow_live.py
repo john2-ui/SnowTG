@@ -39,6 +39,13 @@ def run(name,plan,success):
     result=json.loads((opts.output/name/'result.json').read_text())
     assert result['valid'] and result['summary']['planned']==4
     assert result['summary']['success' if success else 'failed']==4
+    reasons = result['error_reasons']
+    assert sum(reasons.values()) == (0 if success else 4)
+    expected = {'unrelated-dns':'error_parse', 'capture-limit':'error_parse',
+                'step-timeout':'error_response_timeout', 'overall-timeout':'error_response_timeout',
+                'default-non-2xx':'error_http_status'}.get(name, 'error_workflow')
+    if not success:
+        assert reasons[expected] == 4, (name, reasons)
     assert result['summary']['drained_live_sockets']==0
     parents={(g['phase'],g['class']):g['admitted'] for g in result['groups']}
     assert all(g['reached']+g['branch_skipped']+g['not_reached']==parents[(g['phase'],g['class'])] for g in result['steps'])
@@ -53,6 +60,7 @@ assert steps['route_a']['success']==steps['route_b']['success']==2
 # timeout failures cannot conceal one another.
 for name,mutate,success in [
  ('non-2xx',lambda w:(w['steps'][1]['http'].update(path='/status/404'),w['steps'][1]['checks'][0].update(right=404)),True),
+ ('default-non-2xx',lambda w:(w['steps'][1]['http'].update(path='/status/404'),w['steps'][1].update(checks=[])),False),
  ('missing-field',lambda w:w['steps'][1]['extract']['token'].update(path='/missing'),False),
  ('unrelated-dns',lambda w:w['steps'][0]['dns'].update(qname='missing.test'),False),
  ('capture-limit',lambda w:w['steps'][1]['http'].update(path='/large'),False),

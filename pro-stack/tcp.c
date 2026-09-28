@@ -919,6 +919,7 @@ struct nsock *tcp_stream_create(uint32_t remote_ip, uint32_t local_ip,
                 nsock_free(sk);
                 return NULL;
         }
+        sk->terminal_error = 0;
         sk->u.tcp.listener = NULL;
         sk->u.tcp.sent_seq = tcp_next_isn();
         sk->u.tcp.snd_una = sk->u.tcp.sent_seq;
@@ -1233,6 +1234,7 @@ static void tcp_timer_cb(__attribute__((unused)) struct owner_timer *timer,
                              TCP_SK_ARG(sk));
                 tcp_stream_set_status(sk, TCP_STATUS_CLOSED);
                 tcp_drain_send(sk);
+                sk->terminal_error = ETIMEDOUT;
                 socket_owner_complete_connect(sk, ETIMEDOUT);
                 socket_owner_ready_post(sk, OWNER_IO_EV_ERROR);
                 if (sk->app_closed) {
@@ -2790,6 +2792,7 @@ static void tcp_abort_stream(struct nsock *sk, int error, bool send_reset,
         tcp_stream_set_status(sk, TCP_STATUS_CLOSED);
         tcp_drain_send(sk);
         tcp_drain_recv(sk);
+        sk->terminal_error = error;
         socket_owner_abort_waiters(sk, error);
         socket_owner_ready_post(sk, OWNER_IO_EV_ERROR | OWNER_IO_EV_HUP);
         LOG_TCP_WARN(TCP_SK_FMT
@@ -3362,7 +3365,7 @@ ssize_t tcp_send(struct nsock *sk, const void *buf, size_t len, int flags) {
                 return 0;
 
         if (sk->u.tcp.status != TCP_STATUS_ESTABLISHED) {
-                errno = EPIPE;
+                errno = sk->terminal_error ? sk->terminal_error : EPIPE;
                 return -1;
         }
 
@@ -3408,6 +3411,10 @@ ssize_t tcp_recv(struct nsock *sk, void *buf, size_t len,
         if (len == 0)
                 return 0;
 
+        if (sk->terminal_error) {
+                errno = sk->terminal_error;
+                return -1;
+        }
         if (b == NULL) {
                 b = nsock_tcp_rx_dequeue(sk);
                 if (b == NULL) {
@@ -3741,6 +3748,7 @@ int tcp_connect(struct nsock *sk, const struct sockaddr *addr,
                 }
         }
 
+        sk->terminal_error = 0;
         sk->u.tcp.listener = NULL;
         sk->u.tcp.sent_seq = tcp_next_isn();
         sk->u.tcp.snd_una = sk->u.tcp.sent_seq;

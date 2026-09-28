@@ -32,7 +32,9 @@ LATENCIES = {"schedule", "connect", "first_rx", "complete", "scheduled_complete"
 COUNTS = ("planned", "attempted", "skipped", "admitted", "success", "failed", "start_failed")
 SCOPED = {"success_rate", "admitted_success_rate", "error_rate", "skipped_rate",
           "success_rps", "latency_ms"}
-GLOBAL = {"tx_alloc_fail", "drained_live_sockets", "tcp_forced_cleanup", "drain_ms"}
+ERROR_REASONS = {"error_" + name for name in ("connect_timeout", "response_timeout", "reset", "peer_eof",
+    "http_status", "dns_rcode", "parse", "resource", "connect", "io", "start", "workflow")}
+GLOBAL = ERROR_REASONS | {"tx_alloc_fail", "drained_live_sockets", "tcp_forced_cleanup", "drain_ms"}
 EXTRA = {"assertions", "purpose", "service", "dataset_sources"}
 LIMITS = ["Latency is client-observed software timing, not NIC timestamps or server-only time.",
           "Histogram quantiles use bucket upper bounds (up to ~6.25% plus microsecond rounding).",
@@ -164,6 +166,8 @@ def measure(result, spec):
     drain completions attributed to their planned phase / offered-load seconds.
     """
     metric = spec["metric"]
+    if metric in ERROR_REASONS:
+        return result.get("error_reasons", {}).get(metric)
     if metric in GLOBAL:
         return result["summary"].get(metric)
     groups = selected(result, spec)
@@ -375,6 +379,11 @@ def collect(result, output):
                     "tx_nic_drops", "udp_tx_queue_drops", "rx_handoff_drops", "tcp_forced_cleanup")
     result["errors"] = {k: final[k] for k in error_fields}
     result["errors"].update(start_failed=summary["start_failed"], skipped=summary["skipped"])
+    result["error_reasons"] = {k: final[k] for k in sorted(ERROR_REASONS) if k in final}
+    if result["error_reasons"] and (set(result["error_reasons"]) != ERROR_REASONS or
+            sum(result["error_reasons"].values()) != final["fail"]):
+        invalid.append("terminal error reasons do not partition failed transactions")
+    result["errors"].update(result["error_reasons"])
     result["nic_samples"] = [{k: v if k == "phase" else int(v) for k, v in r.items()} for r in nic]
     up = [r for r in result["nic_samples"] if r.get("link_rc") == 0 and r.get("link_up") == 1]
     speeds = {r["link_mbps"] for r in up}
@@ -561,6 +570,8 @@ def compare(baseline, candidate, tolerance=5.0):
             regressions.append(key)
     if metrics["error_rate"]["delta"] is not None and metrics["error_rate"]["delta"] > 0:
         regressions.append("error_rate")
+    if set(baseline.get("error_reasons", {})) != set(candidate.get("error_reasons", {})):
+        reasons.append("terminal error reason coverage differs")
     new_errors = sorted(k for k, v in candidate.get("errors", {}).items() if v and not baseline.get("errors", {}).get(k))
     resources = {k: change(baseline.get("resource_peaks", {}).get(k, {}).get("value"), v["value"])
                  for k, v in candidate.get("resource_peaks", {}).items()}
@@ -613,6 +624,8 @@ def report(result):
                 [(p["name"], p["duration_sec"], p.get("start_cps", p["target_cps"]), p["target_cps"])
                  for p in phases(scenario)]), "<details><summary>完整剧本</summary>", pre(scenario), "</details>",
              "<h2>关键结果</h2>", table(["指标", "值"], result.get("summary", {}).items()),
+             "<h2>终止错误原因（每个失败事务一个原因）</h2>",
+             pre(result.get("error_reasons") or "旧版结果未记录细分原因"),
              "<h2>SLO 验收</h2>", table(["指标 / 筛选条件", "实际值", "要求", "通过", "原因"],
                 [(canonical({k: v for k, v in a.items() if k not in ("actual", "passed", "reason", "value", "op")}),
                   a["actual"], f"{a['op']} {a['value']}", a["passed"], a["reason"]) for a in result.get("assertions", [])]),
