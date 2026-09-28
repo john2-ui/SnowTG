@@ -4,7 +4,8 @@
 Input is a JSON scenario with duration_sec/target_cps and critical SLOs.
 Every rate is repeated; all repetitions must pass. Invalid runs abort the search,
 not count as an overloaded server. A passing ceiling is only a lower bound.
-This experimental harness does not populate single-run maximum_sustainable_cps.
+Legacy search.json harness. For structured capacity results and regression gates,
+use snowtg.py capacity. Single-run maximum_sustainable_cps remains unmeasured.
 """
 import argparse
 from copy import deepcopy
@@ -15,30 +16,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'traffic-gen'))
 from snowtg_results import run, validate_assertions, write_json
-
-
-def search(probe, minimum, maximum, precision):
-    """Find a pass/fail bracket, assuming monotone SLO behavior within this run."""
-    if not 0 < minimum <= maximum or precision <= 0:
-        raise ValueError('require 0 < minimum <= maximum and positive precision')
-    low, high = 0, minimum
-    if not probe(high):
-        return dict(status='below_minimum', passed_cps=None, failed_cps=high)
-    low = high
-    while low < maximum:
-        high = min(maximum, low * 2)
-        if not probe(high):
-            break
-        low = high
-    if low == maximum:
-        return dict(status='lower_bound_only', passed_cps=low, failed_cps=None)
-    while high - low > precision:
-        mid = (low + high) // 2
-        if probe(mid):
-            low = mid
-        else:
-            high = mid
-    return dict(status='bracketed', passed_cps=low, failed_cps=high)
+from snowtg_capacity import search
 
 
 def main():

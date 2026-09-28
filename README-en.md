@@ -236,8 +236,42 @@ python3 traffic-gen/snowtg.py report debug/run2/result.json \
 Use a new output directory; CSV paths are managed automatically. Exit codes: `0` passes acceptance,
 `2` fails a critical SLO, `1` is an invalid run. Add `--baseline PATH` before the scenario path to include
 a baseline during a run; export configuration only with `--emit-json PATH` (without `run`).
-Comparison checks workload/environment compatibility; maximum sustainable load remains unmeasured.
+Comparison checks workload/environment compatibility; a single run leaves maximum sustainable load unmeasured.
 Generated results under `debug/` are ignored by Git.
+
+### Sustainable capacity and regression gates
+
+`snowtg.py capacity` accepts fixed-duration, fixed-rate JSON/Python/Lua scenarios with at least one
+critical SLO (no `phases`). It doubles the offered rate, then narrows a pass/fail interval; all
+`--repeats` measurements must pass at each rate. Invalid measurements abort immediately.
+
+```bash
+python3 traffic-gen/snowtg.py capacity --output debug/capacity-a \
+  --minimum 100 --maximum 10000 --precision 25 --repeats 3 \
+  capacity.py -- -l 4,0,2 --main-lcore 4 -a 0000:64:00.0 -m 512 -- \
+  --workers 2 --local-ip 192.168.10.86
+python3 traffic-gen/snowtg.py compare debug/capacity-a/result.json \
+  debug/capacity-b/result.json --max-capacity-drop-percent 10
+```
+
+See the [fixed-rate example and result schema](README.md#最大可持续负载与容量回归).
+The aggregate `result.json` has `kind: "capacity"`, search settings, environment/build metadata,
+round artifact paths, and `capacity.{status,passed_cps,failed_cps}`. A bracketed result reports its
+passing endpoint as `summary.maximum_sustainable_cps`, an estimate within the tested interval.
+A passing ceiling reports only `summary.sustainable_cps_lower_bound`, leaving the maximum null.
+Per-round single-run results always leave maximum capacity null. HTML reports work offline.
+
+Use `--baseline PATH --max-capacity-drop-percent 10` before the scenario path to gate a search directly.
+The default allowed drop is 5%, in `[0,100)`; `--timeout` applies to each measurement.
+Comparison requires matching workloads (excluding searched `target_cps`), SLOs, datasets, runtime
+arguments, environment, repeat counts and timeouts. Declared service versions may differ.
+For allowed drop fraction `d`, accept only when candidate passing rate ≥ baseline failing rate × `(1-d)`;
+reject when candidate failing rate ≤ baseline passing rate × `(1-d)`.
+Exit codes: **0** accepted, **2** regression, **1** invalid/incompatible/inconclusive bounds.
+Without a baseline: **0** bracketed or lower bound, **2** below minimum, **1** invalid.
+Two equal lower bounds cannot establish that capacity has not declined; increase the ceiling or
+narrow the interval when the gate is inconclusive. Results assume monotone SLO behavior and cover
+only the tested duration/repetitions; CPS means offered transaction starts, not successful RPS.
 
 ### Add an Application-Layer Protocol Plugin
 

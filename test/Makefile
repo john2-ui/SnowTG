@@ -147,6 +147,14 @@ test-snowtg-script:
 test-snowtg-results:
 	python3 test_snowtg_results.py
 
+.PHONY: test-snowtg-capacity test-capacity-cli
+test-snowtg-capacity:
+	python3 test_snowtg_capacity.py
+test: test-snowtg-capacity
+
+test-capacity-cli:
+	python3 test_capacity_cli.py
+
 .PHONY: test-bind-dpdk
 test-bind-dpdk:
 	python3 test_bind_dpdk.py

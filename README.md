@@ -251,7 +251,59 @@ python3 traffic-gen/snowtg.py report debug/run2/result.json \
 
 错误原因分别记录在 CSV 的 `error_*` 列、`result.json.error_reasons` 和 HTML 中，包括建连/响应超时、RST、提前 EOF、HTTP 状态拒绝、DNS RCODE、Redis 错误响应和解析失败。可用 `assertion("error_reset", "==", 0)` 设置整次运行的门禁；原因计数不接受阶段/协议筛选，未记录细分原因的旧结果不会补成零。
 运行时也可在剧本路径前加 `--baseline PATH`；仅导出配置用 `--emit-json PATH`（不带 `run`）。
-比较会检查负载及环境是否可比；最大可持续负载仍标为未测定。`debug/` 下的结果不进入 Git。
+比较会检查负载及环境是否可比；单次运行不测定最大可持续负载，容量搜索见下节。`debug/` 下的结果不进入 Git。
+
+### 最大可持续负载与容量回归
+
+`capacity` 接受 JSON/Python/Lua 的固定 `duration_sec` / `target_cps` 剧本，要求至少一个关键 SLO，
+不接受 `phases`。例如保存以下内容为 `capacity.py`，按实际部署修改目标地址：
+
+```python
+from snowtg import scenario, http, assertion
+plan = scenario('http-capacity', duration=30, cps=100, concurrency=256,
+    classes=[http('http', '192.168.10.234', 8888, keepalive=True)],
+    assertions=[assertion('success_rate', '>=', .999),
+                assertion('latency_ms', '<', 20, quantile=.99)])
+```
+
+```bash
+python3 traffic-gen/snowtg.py capacity --output debug/capacity-a \
+  --minimum 100 --maximum 10000 --precision 25 --repeats 3 \
+  capacity.py -- -l 4,0,2 --main-lcore 4 -a 0000:64:00.0 -m 512 -- \
+  --workers 2 --local-ip 192.168.10.86
+
+# 用相同条件生成 debug/capacity-b 后，允许容量最多下降 10%
+python3 traffic-gen/snowtg.py compare \
+  debug/capacity-a/result.json debug/capacity-b/result.json \
+  --max-capacity-drop-percent 10 --output debug/capacity-comparison.json
+```
+
+也可在 `capacity` 的剧本路径前直接传 `--baseline debug/capacity-a/result.json
+--max-capacity-drop-percent 10`，搜索完成后执行相同门禁。默认允许下降 5%，范围 `[0,100)`；
+`--timeout` 是每个测量轮次的墙钟上限。每个负载重复测量全部通过才算通过，逐级翻倍后区间搜索；
+无效测量立即中止并保存已有轮次，不当作服务过载。
+
+输出目录内的 `result.json` 使用 `kind: "capacity"`，保存场景、构建/环境、搜索配置、逐轮结果路径、
+`capacity` 区间及 `summary`；每轮原始 CSV、日志和单次结果保存在 `cps-<速率>-r<轮次>/`。
+`report.html` 支持离线查看，也可使用 `snowtg.py report` 重新生成。
+
+| 搜索状态 | 容量字段与含义 | 无基线退出码 |
+| --- | --- | --- |
+| `bracketed` | `[passed_cps, failed_cps)`；`summary.maximum_sustainable_cps` 为通过端点的估计值，区间宽度不超过 `precision` | 0 |
+| `lower_bound_only` | 上限仍通过；仅 `summary.sustainable_cps_lower_bound` 有值，最大容量为 `null` | 0 |
+| `below_minimum` | 最低负载失败，没有通过端点，最大容量为 `null` | 2 |
+| `invalid` | 测量无效/中断或轮次间环境、构建变化，容量字段为 `null` | 1 |
+
+容量比较检查相同工作负载（忽略被搜索替换的 `target_cps`）、SLO、数据集、环境、运行参数、重复次数和超时；
+服务版本可以变化。门禁使用整个区间而非只比较两个估计值：设允许下降比例为 `d`，
+候选通过端点 ≥ 基线失败端点 × `(1-d)` 才返回 **0**；候选失败端点 ≤ 基线通过端点 × `(1-d)`
+返回 **2**。区间重叠、缺少必要边界、不可比或无效结果返回 **1**（无法判定），可提高搜索上限或缩小精度。
+因此，两次都只报告相同下界不足以证明容量没有下降。
+
+CPS 表示计划的事务启动速率，不等同成功 RPS 或 TCP 建连速率。搜索假设 SLO 随负载单调变化，
+只证明给定持续时间和重复次数下的结果；单次 `run` 的 `maximum_sustainable_cps` 仍为 `null`。
+本地检查：`make -C test test-snowtg-capacity`；已有 native binary 时运行
+`make -C test test-capacity-cli` 验证 `net_null` 编排，不代表真实服务容量验收。
 
 ### Redis 基础读写长连接
 

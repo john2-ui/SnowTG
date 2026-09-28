@@ -41,7 +41,7 @@ LIMITS = ["Latency is client-observed software timing, not NIC timestamps or ser
           "Success rate uses planned arrivals; skipped/start-failed requests have no latency sample.",
           "Timeline latency is interval mean terminal latency, not interval P99; error rate also includes non-resource start failures; worker samples are asynchronous.",
           "Success RPS is completed successes attributed to planned phases / offered-load duration; it includes completions during drain.",
-          "A single run does not determine maximum sustainable load (requires the later load-search feature)."]
+          "A single run does not determine maximum sustainable load (use snowtg.py capacity)."]
 
 
 def canonical(value):
@@ -672,6 +672,9 @@ def load_result(path):
         raise ValueError("unsupported result schema")
     if any(not isinstance(data.get(k), dict) for k in ("scenario", "summary", "environment")):
         raise ValueError("incomplete result object")
+    if data.get("kind") == "capacity":
+        from snowtg_capacity import validate_result
+        validate_result(data)
     return data
 
 
@@ -684,14 +687,8 @@ def change(old, new):
                 reason="zero baseline" if old == 0 and new else None)
 
 
-def compare(baseline, candidate, tolerance=5.0):
-    """Gate a single-run comparison on equal workloads, SLOs and tested setup.
-
-    Ignore only EAL file-prefix among runtime arguments. RPS/latency use a
-    relative tolerance; any error-rate increase/new error type blocks acceptance.
-    Resource peaks are reported, not gated. Missing samples or critical SLOs
-    make the recommendation inconclusive; this is not a capacity search.
-    """
+def comparison_reasons(baseline, candidate):
+    """Shared workload, SLO and environment compatibility checks."""
     reasons = []
     if not baseline.get("valid") or not candidate.get("valid"):
         reasons.append("one or both runs invalid")
@@ -727,6 +724,21 @@ def compare(baseline, candidate, tolerance=5.0):
     for key in ("driver", "device", "rx_mode", "rxq", "txq", "workers", "main", "direct_rx", "direct_tx"):
         if baseline["environment"].get("dataplane", {}).get(key) != candidate["environment"].get("dataplane", {}).get(key):
             reasons.append("dataplane differs: " + key)
+    return reasons
+
+
+def compare(baseline, candidate, tolerance=5.0):
+    """Gate a single-run comparison on equal workloads, SLOs and tested setup.
+
+    Ignore only EAL file-prefix among runtime arguments. RPS/latency use a
+    relative tolerance; any error-rate increase/new error type blocks acceptance.
+    Resource peaks are reported, not gated. Missing samples or critical SLOs
+    make the recommendation inconclusive; this is not a capacity search.
+    """
+    if baseline.get("kind") == "capacity" or candidate.get("kind") == "capacity":
+        from snowtg_capacity import compare_capacity
+        return compare_capacity(baseline, candidate, tolerance)
+    reasons = comparison_reasons(baseline, candidate)
     metrics = {key: change(baseline.get("summary", {}).get(key), candidate.get("summary", {}).get(key))
                for key in ("success_rps", "transaction_success_tps", "request_success_rps", "p95_ms", "p99_ms", "error_rate", "maximum_sustainable_cps")}
     metrics["error_rate"]["delta_percentage_points"] = (
@@ -758,6 +770,9 @@ def compare(baseline, candidate, tolerance=5.0):
 
 def report(result):
     """Render escaped, self-contained HTML/SVG; timeline lines remain per worker."""
+    if result.get("kind") == "capacity":
+        from snowtg_capacity import report_capacity
+        return report_capacity(result)
     esc = lambda value: html.escape(str(value))
     def table(headers, rows):
         return "<table><thead><tr>" + "".join("<th>" + esc(h) + "</th>" for h in headers) + "</tr></thead><tbody>" + "".join(
@@ -844,6 +859,8 @@ def cli(argv):
     comp.add_argument("baseline", type=Path)
     comp.add_argument("candidate", type=Path)
     comp.add_argument("--tolerance-percent", type=float, default=5)
+    comp.add_argument("--max-capacity-drop-percent", type=float,
+                      help="capacity-only regression threshold (0 <= percent < 100)")
     comp.add_argument("--output", type=Path)
     rep = sub.add_parser("report")
     rep.add_argument("result", type=Path)
@@ -853,12 +870,20 @@ def cli(argv):
     if opts.command == "compare":
         if not math.isfinite(opts.tolerance_percent) or opts.tolerance_percent < 0:
             raise ValueError("tolerance must be finite and nonnegative")
-        data = compare(load_result(opts.baseline), load_result(opts.candidate), opts.tolerance_percent)
+        baseline, candidate = load_result(opts.baseline), load_result(opts.candidate)
+        tolerance = opts.tolerance_percent
+        if opts.max_capacity_drop_percent is not None:
+            if baseline.get("kind") != "capacity" or candidate.get("kind") != "capacity":
+                raise ValueError("--max-capacity-drop-percent requires two capacity results")
+            tolerance = opts.max_capacity_drop_percent
+        data = compare(baseline, candidate, tolerance)
         print(json.dumps(data, ensure_ascii=False, indent=2, allow_nan=False))
         if opts.output:
             if opts.output.resolve() in (opts.baseline.resolve(), opts.candidate.resolve()):
                 raise ValueError("comparison must not overwrite input result JSON")
             write_json(opts.output, data)
+        if baseline.get("kind") == "capacity" or candidate.get("kind") == "capacity":
+            return data["exit_code"]
         return 0 if data["recommendation"] == "accept_within_tested_scope" else 2
     data = load_result(opts.result)
     if opts.baseline:

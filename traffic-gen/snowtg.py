@@ -5,6 +5,7 @@
     python3 traffic-gen/snowtg.py scenario.lua -- -l 0,1 -- --workers 1
     python3 traffic-gen/snowtg.py --emit-json plan.json scenario.py
     python3 traffic-gen/snowtg.py run --output debug/run1 scenario.lua -- <EAL> -- <app>
+    python3 traffic-gen/snowtg.py capacity --output debug/capacity scenario.json -- <EAL> -- <app>
     python3 traffic-gen/snowtg.py compare baseline/result.json candidate/result.json
     python3 traffic-gen/snowtg.py report run/result.json --output report.html
 
@@ -231,11 +232,19 @@ def main(argv=None):
         except (OSError, ValueError, KeyError, TypeError) as error:
             print(f"snowtg: {error}", file=sys.stderr)
             return 1
+    capacity = argv[:1] == ["capacity"]
     managed = argv[:1] == ["run"]
-    if managed:
+    if managed or capacity:
         argv = argv[1:]
     parser = argparse.ArgumentParser(description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
+    if capacity:
+        parser.add_argument("--minimum", type=int, default=100)
+        parser.add_argument("--maximum", type=int, default=10000)
+        parser.add_argument("--precision", type=int, default=100)
+        parser.add_argument("--repeats", type=int, default=2)
+        parser.add_argument("--max-capacity-drop-percent", type=float, default=5,
+                            help="allowed capacity decrease against --baseline (default 5%%)")
     parser.add_argument("--emit-json", type=Path, metavar="PATH",
                         help="export only; native schema validation happens when run")
     parser.add_argument("--output", type=Path, help="new managed-run directory (CSV, result.json, report.html)")
@@ -249,6 +258,12 @@ def main(argv=None):
                         help="EAL arguments, then -- and traffic-gen arguments")
     options = parser.parse_args(argv)
     try:
+        if capacity:
+            if options.emit_json:
+                raise ValueError("capacity does not accept --emit-json")
+            from snowtg_capacity import validate_options
+            validate_options(options.minimum, options.maximum, options.precision,
+                             options.repeats, options.max_capacity_drop_percent, options.timeout)
         path = options.script.resolve()
         if path.suffix not in (".py", ".lua", ".json"):
             raise ValueError("scenario must be a .py, .lua or .json file")
@@ -273,6 +288,12 @@ def main(argv=None):
         plan = json.loads(text)
         if not isinstance(plan, dict):
             raise ValueError("scenario must be an object")
+        if capacity:
+            from snowtg_capacity import run_capacity
+            return run_capacity(plan, options.binary, options.args, output=options.output,
+                minimum=options.minimum, maximum=options.maximum, precision=options.precision,
+                repeats=options.repeats, timeout=options.timeout, baseline=options.baseline,
+                max_drop_percent=options.max_capacity_drop_percent)
         if managed or options.output or options.baseline or options.timeout is not None or any(
                 key in plan for key in ("assertions", "purpose", "service", "dataset_sources")):
             # Managed mode waits for the native child and evaluates final CSVs;
