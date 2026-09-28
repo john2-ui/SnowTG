@@ -8,3 +8,6 @@ __pycache__/
 # Local benchmark artifacts and ad hoc diagnostics; retain the repository index.
 /debug/*
 !/debug/README.md
+
+# Local acceptance reports and evidence.
+/docs/acceptance/
